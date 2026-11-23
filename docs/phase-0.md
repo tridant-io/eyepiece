@@ -27,10 +27,10 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | what | why it matters | windows | macos |
 |---|---|---|---|
 | does ffmpeg's demuxer hand over hap r and hap hdr packets? | if not, hap needs its own mov sample reader (adr 0003) | **yes** 2026-11-23 | n/a |
-| hap q at 8K60, including a one-chunk file: disk MB/s, snappy ms per frame by thread count, upload ms | the hap lane's real ceiling | **measured** 2026-11-23 | not run |
-| notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | blocked: no notchlc clip here, ffmpeg cannot encode one | not run |
+| hap q at 8K60, including a one-chunk file: disk MB/s, snappy ms per frame by thread count, upload ms | the hap lane's real ceiling | **measured** 2026-11-23: 4K60 solid, 8K60 at the edge | not run |
+| notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | not run: no notchlc clip yet. touchdesigner is installed here and can probably write one; not tried | not run |
 | prores 4444 xq at 4K60 in software | no hardware prores decode on windows | **measured** 2026-11-23: 30 to 37 fps on worst-case content | n/a |
-| can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | blocked: this pc has no touchpad | n/a |
+| can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | not run: a touchpad is attached to this pc, but the probe is not written and needs someone at the pad | n/a |
 | sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | not run: waits for the owner | not run |
 
 ## log
@@ -66,12 +66,13 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 - the os returns present statistics on a flip-model swapchain in a window: 1,195 distinct readings in 1,200 presents.
 - measured refresh rate 59.9964 Hz. over one-second windows it ran from 59.9963 to 59.9965 Hz.
 - showing every frame for one refresh (4K 10-bit hevc, hardware decode, drawn from the decoder's texture): 1,200 presents in 20.0 s, and 0 refreshes went by without a new frame.
-- keeping the clip at its own 59.9401 fps on this display should repeat a frame about once in 17.8 s. choosing the frame by counting refreshes gave 2 repeats and 0 skips in 20 s (1.1 predicted, plus one at the start from rounding). choosing it by reading the wall clock at the moment of the call gave 3 repeats and 1 skip: jitter around the true slip.
+- in a second 20 s run, 1,200 presents were matched by exactly 1,200 refreshes on the os's own count.
+- **as first written this gate failed.** its last test kept the clip at its own 59.9401 fps by asking the wall clock, at the moment of each call, which frame was due. a slip of one frame in 17.8 s was predicted; jitter gave 4 to 5 repeats and skips. the test was then changed to pick the frame by counting refreshes. the repeats under that rule (2 in 20 s) are arithmetic the code chose, not a measurement, so they prove nothing by themselves. what was measured is the two lines above: no missed refresh, and presents equal to refreshes.
 - not done: confirmation from outside the app. that needs a present-capture tool run as administrator, or a camera.
 
 **gate 4, cold start: measured. the 250 ms target is missed.** `gate4_coldstart <file> 15`. three readings for hap over about an hour. ms since the os created the process, p50 of warm launches:
 
-| reached | hap q 4K, best reading | hap q 4K, other two readings | prores 422 hq 4K, software | hevc 10-bit 4K, hardware |
+| reached | hap q 4K, best reading | hap q 4K, other two readings | prores 422 hq 4K, software (one reading, the fast hour) | hevc 10-bit 4K, hardware (one reading, the fast hour) |
 |---|---|---|---|---|
 | main() entered | 20 | 26 to 31 | 21 | 20 |
 | file header read | 23 | 28 to 33 | 23 | 22 |
@@ -86,9 +87,9 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 - tried and dropped: painting the first frame with the software rasterizer while the hardware device starts. direct3d serializes device creation, so the software device either waits for the hardware one or, made first, delays everything else. the hap first frame came no earlier than 194 ms that way, and the hardware frame came later.
 - not tried: converting the first frame on the cpu with our own code and putting it up with gdi. everything it needs is ready by about 55 ms on the hap lane.
 - still owed: one launch straight after a reboot.
-- readings an hour apart differed by 30 to 40% on an otherwise idle machine. treat every number here as this machine on this day.
+- readings an hour apart differed by 30 to 40% on an otherwise idle machine. prores and hevc were read once, in the same hour as the best hap reading; when hap read 300 they would have read higher too. treat every number here as this machine on this day.
 
-**the hap lane.** `hap_speed`, files in the os cache:
+**the hap lane.** `hap_speed`, files in the os cache, vsync off. these are cpu-side timings: nothing in this table shows that the gpu kept up or that 60 frames a second reached the display. the playback table under it does.
 
 | clip | on disk | in ram: decompress, one copy, draw | from the file, our own reads | from the file, ffmpeg's reader |
 |---|---|---|---|---|
@@ -100,9 +101,18 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | hap q 8K, 1 chunk | 1,898 MB/s | 7.9 to 8.3 ms | 18.3 ms (55 fps) | 24.1 ms (42 fps) |
 
 - **decompressing straight into the gpu's mapped memory is a trap.** it is fine for frames that do not compress (1.25 ms) and ruinous for frames that do: 39 ms with 8 chunks, 146 ms with 1 chunk, 81 ms for hap alpha. snappy reads back what it has written, and mapped gpu memory is very slow to read. decompress in ordinary ram, then copy once.
-- **8K60 hap q does not play through ffmpeg's reader**, even from the os cache: 42 to 47 fps. reading each frame ourselves by the offset and size in ffmpeg's index gives 3.2 GB/s against 1.6 to 1.8, and 55 to 63 fps with reads and decoding still on one thread. a read-ahead thread should clear 60 with room; that is not measured yet.
+- **8K60 hap q does not play through ffmpeg's reader**, even from the os cache: 42 to 47 fps. reading each frame ourselves by the offset and size in ffmpeg's index gives 3.2 GB/s against 1.6 to 1.8.
+- **from the file at one frame per refresh, vsync on** (`hap_play`, 20 s each, missed refreshes by the os's count):
+
+  | clip | read and decompress on one thread, present on another | read, decompress and present on three threads |
+  |---|---|---|
+  | hap q 4K60 (475 MB/s) | 0 missed | 0 missed |
+  | hap q 8K60, 16 chunks (1,898 MB/s) | 124 missed, 51 fps | 0 missed in 1,201 frames |
+  | hap q 8K60, 1 chunk | 0 missed in 899 frames | 66 missed, 57 fps |
+
+  4K60 is solid, with about 14 ms to spare in every frame. 8K60 on frames that do not compress is at the edge on this machine: each arrangement held one clip and lost the other. per frame it costs about 10 ms to read, 2 to 5 to decompress, 5 to 6 to copy to the gpu and 4 to 11 to draw and present, and the stages fight over memory bandwidth, not disk or gpu. not proven.
 - snappy stops scaling at about 4 threads. a one-chunk file costs one core and is still fast enough: 1.2 ms a frame at 4K, 3.9 ms at 8K.
-- the first frame drawn by the gpu differs from ffmpeg's own cpu hap decoder by at most 3 to 6 code values at 8-bit, mean 0.2 to 0.5. ffmpeg undoes ycocg with integer division; the reference shader, which ours follows, uses floats. the pixel readout needs one stated definition.
+- the first frame drawn by the gpu differs from ffmpeg's own cpu hap decoder by at most 3 to 6 code values at 8-bit, mean 0.2 to 0.5. the plain bc1 and bc3 clips, which have no ycocg step, show the largest difference, so block decoding itself differs between this gpu and ffmpeg. the cause is not verified. a hap pixel readout needs its own defined cpu decode, checked against the reference decoder.
 
 **software decode.** `decode_speed`, all cores, noisy worst-case content:
 
@@ -121,6 +131,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | the plan said | the gates say |
 |---|---|
+| 8K hap q at 60 fps is bounded by the disk | on this machine it is bounded by memory traffic, and it is at the edge even from the os cache. 4K60 is easy. |
 | snappy chunks decompress straight into the gpu's upload buffer | decompress in ram, then one copy. the direct way is up to 100 times slower on real content. |
 | ffmpeg demuxes; a reader thread feeds it | ffmpeg only supplies the index. we read each frame ourselves by offset and size. needed three times over: 8K60, random access to any frame, and opening files with delete sharing. |
 | files are opened shared | confirmed necessary, and ffmpeg's own open cannot do it: it blocks rename-over and delete-and-recreate. |
@@ -137,6 +148,6 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | gate 6 | a scratch share that logs opens. the owner has not said where. |
 | gate 4 after a reboot | the owner to reboot and run one command. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
-| notchlc step time, and a real hap r or hap hdr file | clips. nothing on this machine can encode them. |
-| touchpad against wheel | a windows machine with a precision touchpad. |
+| notchlc step time, and a real hap r or hap hdr file | clips from the owner, or their ok to render them from a second touchdesigner instance (three 2025 builds are installed; ffmpeg cannot encode either). |
+| touchpad against wheel | a small probe, not written yet, and someone to use the touchpad attached to this pc. |
 | signing | the owner's word to sign a throwaway binary with their signing setup. |

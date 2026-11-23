@@ -27,7 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File spike\media.ps1 -Big
 powershell -NoProfile -ExecutionPolicy Bypass -File spike\gate.ps1 gate1_zerocopy spike\media\hevc10_4k_5994.mp4
 ```
 
-the gates are `gate1_zerocopy`, `gate2_present`, `gate3_ramp`, `gate4_coldstart`, `gate5_share`, and the measurements `hap_demux`, `hap_speed`, `decode_speed`, `devtime`. a gate ends with `PASS` or `FAIL`; a measurement only prints numbers. what each one found is in `docs/phase-0.md`.
+the gates are `gate1_zerocopy`, `gate2_present`, `gate3_ramp`, `gate4_coldstart`, `gate5_share`, and the measurements `hap_demux`, `hap_speed`, `hap_play`, `decode_speed`, `devtime`. a gate ends with `PASS` or `FAIL`; a measurement only prints numbers. what each one found is in `docs/phase-0.md`.
 
 windows only so far. the macos side of each gate is not written yet.
 
