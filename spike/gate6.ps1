@@ -29,8 +29,8 @@ $sh = '/mnt/' + $PSScriptRoot.Substring(0, 1).ToLower() + $PSScriptRoot.Substrin
 function Invoke-Share { wsl.exe -d $distro -- sh -c "tr -d '\r' < '$sh' | sh -s -- $args" }
 function Measure-Match($lines, $pattern) { @($lines | Where-Object { $_ -match $pattern }).Count }
 
-# wsl stops a distro once nothing started from windows is running in it, and samba with it
-$keep = Start-Process wsl.exe -ArgumentList '-d', $distro, '--', 'tail', '-f', '/dev/null' -WindowStyle Hidden -PassThru
+# holds the distro up between the calls below; wsl may stop one that has nothing started from windows in it
+Start-Process wsl.exe -ArgumentList '-d', $distro, '--', 'tail', '-f', '/dev/null' -WindowStyle Hidden
 try {
     $samba = Invoke-Share setup $pw | Select-Object -Last 1
     if ((wsl.exe -d $distro -- ip -4 -o addr show eth0) -join ' ' -notmatch 'inet (\d+\.\d+\.\d+\.\d+)') { throw 'the distro has no address' }
@@ -76,5 +76,6 @@ try {
     } else { 'FAIL listing a folder opened files'; exit 1 }
 } finally {
     if ($share) { net.exe use $share /delete /y 2>$null | Out-Null }
-    Stop-Process -Id $keep.Id -ErrorAction SilentlyContinue
+    # stops this distro only, and samba and the keep-alive with it
+    wsl.exe -t $distro | Out-Null
 }
