@@ -42,6 +42,16 @@ unsafe extern "C" fn pick_d3d11(ctx: *mut ffi::AVCodecContext, fmts: *const ffi:
 impl Decoder {
     /// `device` = Some: hardware decode into that device's textures. None: software, on `threads` threads (0 = all cores).
     pub fn open(input: &Input, stream: usize, device: Option<&ID3D11Device>, threads: i32) -> Result<Decoder, String> {
+        Self::open_with(input, stream, device, threads, false)
+    }
+
+    /// a software decoder for stepping: all cores work on the slices of ONE frame, so a frame comes out for every packet
+    /// that goes in. the default (frame threading) is faster straight through but holds back a frame per thread.
+    pub fn open_stepping(input: &Input, stream: usize) -> Result<Decoder, String> {
+        Self::open_with(input, stream, None, 0, true)
+    }
+
+    fn open_with(input: &Input, stream: usize, device: Option<&ID3D11Device>, threads: i32, slice_only: bool) -> Result<Decoder, String> {
         unsafe {
             let st = input.stream(stream);
             let par = (*st).codecpar;
@@ -71,6 +81,9 @@ impl Decoder {
                 (*ctx).thread_count = 1;
             } else {
                 (*ctx).thread_count = threads;
+                if slice_only {
+                    (*ctx).thread_type = ffi::FF_THREAD_SLICE as i32;
+                }
             }
             let r = ffi::avcodec_open2(ctx, codec, ptr::null_mut());
             if r < 0 {
@@ -143,6 +156,14 @@ impl Decoder {
         unsafe {
             let stride = (*self.frame).linesize[i] as usize / 2;
             (std::slice::from_raw_parts((*self.frame).data[i] as *const u16, stride * rows), stride)
+        }
+    }
+
+    /// for a software frame: plane `i` as bytes and its stride in bytes.
+    pub fn plane8(&self, i: usize, rows: usize) -> (&[u8], usize) {
+        unsafe {
+            let stride = (*self.frame).linesize[i] as usize;
+            (std::slice::from_raw_parts((*self.frame).data[i] as *const u8, stride * rows), stride)
         }
     }
 

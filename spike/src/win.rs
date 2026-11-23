@@ -55,6 +55,13 @@ pub fn window(x: i32, y: i32, w: i32, h: i32) -> Result<HWND> {
     }
 }
 
+/// makes this process count in physical pixels. call before `screen_size` when the real size matters.
+pub fn dpi_aware() {
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
+
 pub fn screen_size() -> (i32, i32) {
     unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) }
 }

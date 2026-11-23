@@ -1,6 +1,7 @@
 //! shared helpers for the phase 0 gate programs. throwaway.
 
 pub mod ff;
+pub mod hap;
 #[cfg(windows)]
 pub mod d3d;
 #[cfg(windows)]

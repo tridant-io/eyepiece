@@ -23,8 +23,25 @@ pub struct Gpu {
     pub h: u32,
 }
 
-/// compiles hlsl at run time. the player will ship precompiled shaders; the cold-start gate reports this cost on its own line.
+/// shader bytecode, compiled once and then read from a small cache in the temp folder.
+/// the player will ship precompiled shaders; the cache stands in for that, so warm runs do not pay for the compiler.
 pub fn compile(src: &str, target: &str) -> Result<Vec<u8>> {
+    let mut hash = 0xcbf29ce484222325u64;
+    for b in src.bytes().chain(target.bytes()) {
+        hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    let dir = std::env::temp_dir().join("eyepiece-gate-shaders");
+    let file = dir.join(format!("{hash:016x}.cso"));
+    if let Ok(code) = std::fs::read(&file) {
+        return Ok(code);
+    }
+    let code = compile_now(src, target)?;
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&file, &code);
+    Ok(code)
+}
+
+fn compile_now(src: &str, target: &str) -> Result<Vec<u8>> {
     let (mut code, mut errs): (Option<ID3DBlob>, Option<ID3DBlob>) = (None, None);
     let t = std::ffi::CString::new(target).unwrap();
     let r = unsafe { D3DCompile(src.as_ptr() as *const c_void, src.len(), PCSTR::null(), None, None, PCSTR(b"main\0".as_ptr()), PCSTR(t.as_ptr() as *const u8), 0, 0, &mut code, Some(&mut errs)) };
@@ -168,4 +185,134 @@ pub fn plane_view(device: &ID3D11Device, tex: &ID3D11Texture2D, slice: u32, form
     let mut v = None;
     unsafe { device.CreateShaderResourceView(tex, Some(&desc), Some(&mut v))? };
     Ok(v.unwrap())
+}
+
+/// a texture filled once from system memory, and a view of it. `pitch` is bytes per row (per row of blocks for bc formats).
+pub fn texture_with_data(device: &ID3D11Device, w: u32, h: u32, format: DXGI_FORMAT, data: &[u8], pitch: u32) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: w,
+        Height: h,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_IMMUTABLE,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        ..Default::default()
+    };
+    let init = D3D11_SUBRESOURCE_DATA { pSysMem: data.as_ptr() as *const c_void, SysMemPitch: pitch, SysMemSlicePitch: 0 };
+    let (mut tex, mut view) = (None, None);
+    unsafe {
+        device.CreateTexture2D(&desc, Some(&init), Some(&mut tex))?;
+        let tex: ID3D11Texture2D = tex.unwrap();
+        device.CreateShaderResourceView(&tex, None, Some(&mut view))?;
+        Ok((tex, view.unwrap()))
+    }
+}
+
+/// a texture meant to be rewritten every frame, and a view of it.
+pub fn dynamic_texture(device: &ID3D11Device, w: u32, h: u32, format: DXGI_FORMAT) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: w,
+        Height: h,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_DYNAMIC,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+        ..Default::default()
+    };
+    let (mut tex, mut view) = (None, None);
+    unsafe {
+        device.CreateTexture2D(&desc, None, Some(&mut tex))?;
+        let tex: ID3D11Texture2D = tex.unwrap();
+        device.CreateShaderResourceView(&tex, None, Some(&mut view))?;
+        Ok((tex, view.unwrap()))
+    }
+}
+
+/// maps a dynamic texture for a full rewrite and hands the caller the gpu's own memory to fill.
+/// `rows` is the number of rows (rows of blocks for bc formats) and `row_bytes` what one row holds.
+/// when the driver's pitch equals `row_bytes` the caller gets one contiguous slice, so data can be decompressed straight into it.
+pub fn fill_dynamic(ctx: &ID3D11DeviceContext, tex: &ID3D11Texture2D, rows: usize, row_bytes: usize, fill: impl FnOnce(&mut [u8], usize)) -> Result<()> {
+    unsafe {
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        ctx.Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m))?;
+        let pitch = m.RowPitch as usize;
+        let len = pitch * (rows - 1) + row_bytes;
+        fill(std::slice::from_raw_parts_mut(m.pData as *mut u8, len), pitch);
+        ctx.Unmap(tex, 0);
+    }
+    Ok(())
+}
+
+/// the software rasterizer as a device. about 10 ms to create, against about 160 for the hardware one.
+pub fn warp() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+    let (mut device, mut ctx) = (None, None);
+    unsafe {
+        D3D11CreateDevice(None, windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP, HMODULE::default(), D3D11_CREATE_DEVICE_FLAG(0), Some(&[D3D_FEATURE_LEVEL_11_0]), D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx))?;
+    }
+    Ok((device.unwrap(), ctx.unwrap()))
+}
+
+pub struct CpuPlane<'a> {
+    pub w: u32,
+    pub h: u32,
+    pub format: DXGI_FORMAT,
+    pub data: &'a [u8],
+    pub pitch: u32,
+}
+
+/// paints one frame into `hwnd` without the hardware device, which takes far longer to create than everything else in a launch.
+/// the software rasterizer runs the same pixel shader offscreen, and gdi puts the result in the window.
+/// `warp` must be made with `warp()` BEFORE the hardware device starts: device creation is serialized inside direct3d,
+/// so a software device asked for while the hardware one is being made waits for it, which defeats the purpose.
+/// returns the milliseconds spent on (shaders, draw and read back, the gdi blit).
+pub fn cpu_first_frame(warp: &(ID3D11Device, ID3D11DeviceContext), hwnd: HWND, w: u32, h: u32, ps_src: &str, planes: &[CpuPlane]) -> Result<[f64; 3]> {
+    use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC, SetDIBitsToDevice, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS};
+    let t0 = std::time::Instant::now();
+    unsafe {
+        let (device, ctx) = (warp.0.clone(), warp.1.clone());
+        let (mut vs, mut ps) = (None, None);
+        device.CreateVertexShader(&compile(VS, "vs_5_0")?, None, Some(&mut vs))?;
+        device.CreatePixelShader(&compile(ps_src, "ps_5_0")?, None, Some(&mut ps))?;
+        let t1 = std::time::Instant::now();
+        let mut views = Vec::new();
+        for p in planes {
+            views.push(Some(texture_with_data(&device, p.w, p.h, p.format, p.data, p.pitch)?.1));
+        }
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            ..Default::default()
+        };
+        let (mut target, mut rtv) = (None, None);
+        device.CreateTexture2D(&desc, None, Some(&mut target))?;
+        let target: ID3D11Texture2D = target.unwrap();
+        device.CreateRenderTargetView(&target, None, Some(&mut rtv))?;
+        ctx.OMSetRenderTargets(Some(&[rtv]), None);
+        ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: w as f32, Height: h as f32, MinDepth: 0.0, MaxDepth: 1.0 }]));
+        ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx.VSSetShader(&vs.unwrap(), None);
+        ctx.PSSetShader(&ps.unwrap(), None);
+        ctx.PSSetShaderResources(0, Some(&views));
+        ctx.Draw(3, 0);
+        let (px, _) = read_texture(&device, &ctx, &target, 0, w, h)?;
+        let t2 = std::time::Instant::now();
+        let info = BITMAPINFO { bmiHeader: BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32, biWidth: w as i32, biHeight: -(h as i32), biPlanes: 1, biBitCount: 32, biCompression: BI_RGB.0, ..Default::default() }, ..Default::default() };
+        let dc = GetDC(Some(hwnd));
+        SetDIBitsToDevice(dc, 0, 0, w, h, 0, 0, 0, h, px.as_ptr() as *const c_void, &info, DIB_RGB_COLORS);
+        ReleaseDC(Some(hwnd), dc);
+        let t3 = std::time::Instant::now();
+        Ok([(t1 - t0).as_secs_f64() * 1000.0, (t2 - t1).as_secs_f64() * 1000.0, (t3 - t2).as_secs_f64() * 1000.0])
+    }
 }

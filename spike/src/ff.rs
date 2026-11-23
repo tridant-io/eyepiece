@@ -151,3 +151,19 @@ impl Drop for Packet {
         unsafe { ffi::av_packet_free(&mut self.ptr) };
     }
 }
+
+impl Input {
+    /// where each frame of a stream lies in the file: (offset, size), in decode order. built by the demuxer from the header alone.
+    pub fn index(&self, stream: usize) -> Vec<(u64, usize)> {
+        unsafe {
+            let st = self.stream(stream);
+            let n = ffi::avformat_index_get_entries_count(st);
+            (0..n)
+                .filter_map(|i| {
+                    let e = ffi::avformat_index_get_entry(st, i);
+                    if e.is_null() { None } else { Some(((*e).pos as u64, (*e).size() as usize)) }
+                })
+                .collect()
+        }
+    }
+}
