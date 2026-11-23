@@ -1,0 +1,4 @@
+target/
+spike/third_party/
+spike/media/
+*.log

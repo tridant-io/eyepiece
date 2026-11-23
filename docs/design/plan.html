@@ -1,0 +1,1573 @@
+<meta charset="utf-8">
+<title>Tridant Media Player Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600&family=Michroma&display=swap">
+<style>
+/* layout: one 1152px mission-document column on paper; every mock is a dark instrument plate; registers carry the facts */
+:root{
+  --ground:#f0eadb; --ground-deep:#e6deca; --surface:#f7f3e6; --border:#c2b99d; --rule:#d6cdb3;
+  --ink:#1a1812; --muted:#4d483b; --dim:#6f6855;
+  --accent:#c93818; --accent-ink:#f7f2e2; --blue:#0b3d91;
+  --ok:#1e6e54; --warn:#8a6410;
+  --plate:#0a0e1a; --plate-ink:#c9d3e6;
+  /* inside the app window: neutral on purpose, same in both themes */
+  --pl-bar:rgba(18,18,18,.9); --pl-solid:#161616; --pl-line:rgba(255,255,255,.13);
+  --pl-fg:#ededed; --pl-dim:#9c9c9c; --pl-accent:#ff5a36; --pl-amber:#ffc46b;
+  --sans:"Archivo",ui-sans-serif,system-ui,sans-serif;
+  --wide:"Michroma","Archivo",ui-sans-serif,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --ground:#0d1220; --ground-deep:#0a0e1a; --surface:#131a2c; --border:#3a4663; --rule:#242e48;
+  --ink:#e2e8f4; --muted:#aab5cd; --dim:#7e8aa8;
+  --accent:#e65a33; --accent-ink:#1a0c06; --blue:#6b97ec;
+  --ok:#37a583; --warn:#d9a83a; --plate:#06080f; --plate-ink:#c9d3e6; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --ground:#0d1220; --ground-deep:#0a0e1a; --surface:#131a2c; --border:#3a4663; --rule:#242e48;
+  --ink:#e2e8f4; --muted:#aab5cd; --dim:#7e8aa8;
+  --accent:#e65a33; --accent-ink:#1a0c06; --blue:#6b97ec;
+  --ok:#37a583; --warn:#d9a83a; --plate:#06080f; --plate-ink:#c9d3e6; color-scheme:dark }
+
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:400 16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+.doc{max-width:1152px;margin:0 auto;padding-block:26px 96px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:76px}
+a{color:var(--blue);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+p{margin:0;max-width:66ch;color:var(--muted)}
+p b,li b,td b{color:var(--ink);font-weight:600}
+h1,h2,h3{margin:0;text-wrap:balance}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font:500 11.5px/1.3 var(--mono);letter-spacing:.15em;text-transform:uppercase;color:var(--dim)}
+.eyebrow b{color:var(--accent);font-weight:600}
+kbd{font:500 12px/1 var(--mono);display:inline-block;min-width:22px;text-align:center;padding:4px 6px;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;background:var(--surface);color:var(--ink);white-space:nowrap}
+
+/* masthead */
+.mast{display:flex;flex-direction:column;gap:22px;border-top:2px solid var(--ink);padding-top:14px}
+.mast-line{display:flex;flex-wrap:wrap;gap:6px 22px;justify-content:space-between}
+h1{font:900 clamp(34px,6.4vw,76px)/.98 var(--sans);font-stretch:125%;letter-spacing:-.015em;text-transform:uppercase;max-width:15ch}
+.mast p{font-size:18px;max-width:60ch}
+.glance{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:0;border-top:1px solid var(--border);border-left:1px solid var(--border)}
+.glance>div{padding:14px 16px 16px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;min-width:0}
+.glance dt{font:500 11px/1.3 var(--mono);letter-spacing:.15em;text-transform:uppercase;color:var(--dim)}
+.glance dd{margin:0;font-weight:600;font-size:17px;line-height:1.25}
+.glance dd small{display:block;font-weight:400;font-size:13.5px;color:var(--muted);margin-top:4px;line-height:1.4}
+dl{margin:0}
+
+/* sections */
+section{display:flex;flex-direction:column;gap:26px;min-width:0}
+.sh{display:flex;align-items:flex-end;gap:16px;border-top:2px solid var(--ink)}
+.sh .tab{font:400 12px/1 var(--wide);letter-spacing:.14em;background:var(--accent);color:var(--accent-ink);padding:9px 11px 8px;flex:none}
+h2{font:900 clamp(24px,3.6vw,40px)/1 var(--sans);font-stretch:125%;letter-spacing:-.012em;text-transform:uppercase;padding-top:14px}
+h3{font:700 17px/1.25 var(--sans);letter-spacing:0}
+.lede{font-size:17.5px;color:var(--muted);max-width:64ch}
+.stack{display:flex;flex-direction:column;gap:14px;min-width:0}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:26px 34px}
+ul.plain{margin:0;padding-left:18px;color:var(--muted);display:flex;flex-direction:column;gap:7px;max-width:68ch}
+
+/* figures */
+.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));gap:30px 24px;align-items:start}
+figure{margin:0;display:flex;flex-direction:column;gap:10px;min-width:0}
+figure.wide{grid-column:1/-1}
+.plate{position:relative;background:var(--plate);padding:16px}
+.plate::before,.plate::after{content:"";position:absolute;inset:5px;pointer-events:none;
+  background:
+   linear-gradient(var(--plate-ink),var(--plate-ink)) 0 0/9px 1px no-repeat, linear-gradient(var(--plate-ink),var(--plate-ink)) 0 0/1px 9px no-repeat,
+   linear-gradient(var(--plate-ink),var(--plate-ink)) 100% 0/9px 1px no-repeat, linear-gradient(var(--plate-ink),var(--plate-ink)) 100% 0/1px 9px no-repeat;opacity:.55}
+.plate::after{transform:scaleY(-1)}
+figcaption{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:baseline;font-size:14px;color:var(--muted);line-height:1.45}
+figcaption .fn{font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink);flex:none}
+figcaption span{flex:1 1 260px;min-width:0}
+.hint{font:400 12.5px/1.5 var(--mono);color:var(--dim);max-width:92ch}
+
+/* registers and tables */
+.scroll{overflow-x:auto;min-width:0}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th{font:500 11px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);text-align:left;padding:8px 14px 8px 0;border-bottom:1px solid var(--ink);white-space:nowrap}
+td{padding:9px 14px 9px 0;border-bottom:1px solid var(--rule);vertical-align:top;color:var(--muted)}
+td:first-child{color:var(--ink);font-weight:600}
+td.k{font:500 13px/1.9 var(--mono);white-space:nowrap}
+td .mono,td.mono{font-size:13px}
+td.q{font-weight:400;color:var(--muted);font-style:italic}
+.pill{display:inline-block;font:600 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 6px 3px;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
+.pill.ok{color:var(--ok)} .pill.later{color:var(--dim)} .pill.no{color:var(--dim);text-decoration:line-through} .pill.warn{color:var(--warn)} .pill.you{color:var(--accent)}
+details{border-top:1px solid var(--border)}
+details:last-of-type{border-bottom:1px solid var(--border)}
+summary{cursor:pointer;padding:12px 0;font-weight:600;list-style:none;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+";font:500 14px/1 var(--mono);color:var(--accent);width:12px;flex:none}
+details[open] summary::before{content:"–"}
+summary small{font-weight:400;color:var(--dim);font-size:13.5px}
+details>.stack,details>.scroll{padding:2px 0 20px 24px}
+.dec{counter-reset:d;display:flex;flex-direction:column;gap:0;border-top:1px solid var(--ink)}
+.dec>div{counter-increment:d;display:grid;grid-template-columns:44px minmax(0,1fr);gap:4px 10px;padding:16px 0;border-bottom:1px solid var(--rule)}
+.dec>div::before{content:counter(d,decimal-leading-zero);font:400 12px/1.9 var(--wide);color:var(--accent);letter-spacing:.1em}
+.dec h3{grid-column:2}
+.dec p{grid-column:2;max-width:76ch}
+.dec .rec{grid-column:2;font-size:14.5px;color:var(--ink)}
+.dec .rec::before{content:"recommend";font:500 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-right:10px}
+svg.dia{width:100%;min-width:880px;height:auto;display:block;color:var(--ink)}
+.dia text{font-family:var(--mono);fill:currentColor}
+.dia .bx{fill:none;stroke:var(--blue);stroke-width:1.5}
+.dia .hot{fill:none;stroke:var(--accent);stroke-width:2.2}
+.dia .ar{fill:none;stroke:var(--blue);stroke-width:1.5}
+.dia .dash{stroke-dasharray:5 4}
+.dia .ahf{fill:var(--blue)}
+.dia .t1{font-size:12.5px;font-weight:600}
+.dia .t2{font-size:11px;fill:var(--muted)}
+.dia .lb{font-size:10.5px;fill:var(--dim)}
+
+/* ---------- the mock app window (fixed logical size, scaled to fit) ---------- */
+.fitw{position:relative;width:100%;overflow:hidden;background:#000;box-shadow:0 0 0 1px rgba(255,255,255,.16)}
+.fit{position:absolute;left:0;top:0;transform-origin:0 0}
+.pl{background:#000;color:var(--pl-fg);font:400 12.5px/1.3 var(--sans);overflow:hidden;user-select:none;-webkit-user-select:none;outline:0}
+.pl:fullscreen{transform:none!important}
+.pl.live:focus-visible{box-shadow:inset 0 0 0 1px rgba(255,255,255,.45)}
+.pl-cv{position:absolute;inset:0;width:100%;height:100%;display:block}
+.pl.is-zoomed .pl-cv{cursor:grab} .pl.is-pan .pl-cv{cursor:grabbing}
+.pl svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:square;display:block;flex:none}
+.pl svg .f{fill:currentColor;stroke:none}
+.pl button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer}
+.pl-grow{flex:1 1 auto}
+.pl-top,.pl-bot{position:absolute;left:0;right:0;background:var(--pl-bar);opacity:0;pointer-events:none;transition:opacity .14s linear}
+.pl.is-chrome .pl-top,.pl.is-chrome .pl-bot{opacity:1;pointer-events:auto}
+.pl-top{top:0;height:32px;display:flex;align-items:stretch;border-bottom:1px solid var(--pl-line)}
+.pl-tabs{display:flex;min-width:0}
+.pl-tab{display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;max-width:310px;min-width:0;border-right:1px solid var(--pl-line);color:#7d7d7d;cursor:pointer;font:400 11.5px/1 var(--mono);position:relative;white-space:nowrap}
+.pl-tab.on{color:#fff;background:#2e2e2e;font-weight:500}
+.pl-tab span{overflow:hidden;text-overflow:ellipsis;line-height:1.7}
+.pl-tab em{font-style:normal;color:var(--pl-dim)}
+.pl-tab .pl-nav{font-style:normal;padding:4px 5px;color:var(--pl-dim)} .pl-tab .pl-nav:hover{color:var(--pl-fg)}
+.pl-cnt{font-weight:500;color:var(--pl-fg);text-decoration:underline dotted;text-underline-offset:3px}
+.pl-tab .pl-x{opacity:.7;display:flex} .pl-tab:not(.on) .pl-x{visibility:hidden} .pl-tab .pl-x svg{width:12px;height:12px}
+.pl-plus{width:32px;display:flex;align-items:center;justify-content:center;font:400 16px/1 var(--mono);color:var(--pl-dim)}
+.pl-win{display:flex;align-items:stretch}
+.pl-win i{width:40px;position:relative;display:block}
+.pl-win i::before{content:"";position:absolute;left:15px;top:11px;width:10px;height:10px}
+.pl-win .w1::before{border-bottom:1px solid var(--pl-dim);height:5px}
+.pl-win .w2::before{border:1px solid var(--pl-dim)}
+.pl-win .w3::before{background:linear-gradient(45deg,transparent 46%,var(--pl-dim) 46% 54%,transparent 54%),linear-gradient(-45deg,transparent 46%,var(--pl-dim) 46% 54%,transparent 54%)}
+.pl-bot{bottom:0;border-top:1px solid var(--pl-line)}
+.pl-row{display:flex;align-items:center;gap:2px;height:36px;padding:0 8px}
+.pl-ib{width:30px;height:28px;display:flex!important;align-items:center;justify-content:center;border-radius:3px;color:var(--pl-fg);flex:none;position:relative}
+.pl-tb{height:28px;display:flex!important;align-items:center;gap:6px;padding:0 8px!important;border-radius:3px;font:500 11.5px/1 var(--mono)!important;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+.pl-tb b{font-weight:500}
+.pl-ib:hover,.pl-tb:hover,.pl-ib.on,.pl-tb.on{background:rgba(255,255,255,.1)}
+.pl-ib.act{background:rgba(255,255,255,.2)}
+.pl-ib.flagged::after{content:"";position:absolute;right:5px;top:5px;width:5px;height:5px;border-radius:50%;background:var(--pl-amber)}
+.pl-read{margin-left:8px;letter-spacing:.02em} .pl-read small{font-size:9.5px;color:var(--pl-dim);letter-spacing:.12em;margin-right:2px}
+.pl-read i{font-style:normal;color:var(--pl-dim)}
+.pl-volw{display:flex;align-items:center;flex:none}
+.pl-vr{width:0;opacity:0;margin:0;height:16px;accent-color:#ededed;transition:width .12s linear,opacity .12s linear}
+.pl-volw:hover .pl-vr,.pl-vr:focus-visible,.pl.is-vol .pl-vr{width:60px;opacity:1;margin:0 4px}
+.pl-time{height:14px;display:flex;align-items:flex-end;cursor:pointer;touch-action:none}
+.pl-track{position:relative;height:4px;width:100%;background:rgba(255,255,255,.2);transition:height .1s linear}
+.pl-time:hover .pl-track,.pl.is-hover .pl-track{height:8px}
+.pl-fill{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.55)}
+.pl-head{position:absolute;top:-4px;bottom:0;width:2px;margin-left:-1px;background:#fff}
+.pl-ghost{position:absolute;top:-3px;bottom:0;width:1px;background:rgba(255,255,255,.7);display:none}
+.pl-seamtick{position:absolute;left:50%;top:-9px;bottom:0;width:1px;background:#fff;display:none}
+.pl-gaps i{position:absolute;top:-4px;bottom:0;width:2px;background:var(--pl-amber)}
+.pl.is-seam .pl-seamtick{display:block}
+.pl.is-seam .pl-fill{background:rgba(255,255,255,.35)}
+.pl-chips{position:absolute;left:10px;right:10px;top:10px;display:flex;flex-wrap:wrap;gap:8px;pointer-events:none;transition:top .14s linear}
+.pl.is-chrome .pl-chips{top:42px}
+.pl-chip{font:500 11px/1 var(--mono);background:rgba(0,0,0,.72);color:var(--pl-fg);padding:6px 8px;border:1px solid var(--pl-line);display:none;white-space:nowrap}
+.pl-chip.show{display:block} .pl-chip i{font-style:normal;font-weight:600} .pl-chip em{font-style:normal;color:var(--pl-dim)}
+.pl-ban{flex:1 0 100%;display:none;font:400 11.5px/1.5 var(--mono);background:rgba(20,20,20,.95);border:1px solid var(--pl-line);border-left:2px solid var(--pl-amber);padding:8px 10px;color:var(--pl-dim)}
+.pl-ban.show{display:block} .pl-ban b{color:var(--pl-fg);font-weight:500}
+.pl-flash{position:absolute;left:10px;bottom:12px;font:500 11px/1 var(--mono);background:rgba(0,0,0,.72);border:1px solid var(--pl-line);padding:6px 8px;display:none;white-space:nowrap;pointer-events:none}
+.pl.is-chrome .pl-flash{bottom:62px}
+.pl-flash.show{display:block} .pl-flash i{font-style:normal;color:var(--pl-dim)} .pl-flash em{font-style:normal;color:var(--pl-amber)}
+.pl-prev{position:absolute;bottom:58px;width:164px;background:var(--pl-solid);border:1px solid var(--pl-line);padding:2px 2px 0;display:none;pointer-events:none}
+.pl-prev canvas{display:block;width:160px;height:90px;background:#000}
+.pl-prev span{display:block;text-align:center;font:500 10.5px/1 var(--mono);padding:5px 0;font-variant-numeric:tabular-nums}
+.pop{position:absolute;bottom:58px;width:268px;max-height:calc(100% - 68px);overflow:auto;background:var(--pl-solid);border:1px solid var(--pl-line);padding:12px;display:none;flex-direction:column;gap:11px;box-shadow:0 10px 28px rgba(0,0,0,.5)}
+.pop.show{display:flex}
+.pop h6{margin:0;font:500 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--pl-dim);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.pop h6 kbd,.pop kbd{font-size:10px;padding:2px 4px;min-width:0;background:none;border-color:var(--pl-line);border-bottom-width:1px;color:var(--pl-dim)}
+.pop h6 button{font:500 10px/1 var(--mono)!important;letter-spacing:.08em;color:var(--pl-fg)!important;border:1px solid var(--pl-line)!important;padding:4px 6px!important;text-transform:none}
+.seg{display:flex;border:1px solid var(--pl-line)}
+.seg button{flex:1;height:26px;font:500 11px/1 var(--mono)!important;border-right:1px solid var(--pl-line)!important;color:var(--pl-dim)!important}
+.seg button:last-child{border-right:0!important}
+.seg button.on{background:#ececec;color:#111!important}
+.pop-r{display:flex;align-items:center;gap:10px}
+.pop-r input[type=range]{flex:1;min-width:0;accent-color:var(--pl-accent);height:18px;margin:0}
+.fld{display:flex;align-items:center;gap:4px;border:1px solid var(--pl-line);padding:0 7px;height:26px;font:500 11.5px/1 var(--mono);color:var(--pl-dim);flex:none}
+.fld input{width:46px;background:none;border:0;color:var(--pl-fg);font:inherit;text-align:right;outline:0;padding:0}
+.fld:focus-within{border-color:var(--pl-accent)}
+.pop p{font-size:11.5px;line-height:1.4;color:var(--pl-dim);max-width:none}
+.tog{display:flex;align-items:center;gap:9px;font-size:12px;cursor:pointer}
+.tog>i{width:26px;height:14px;border:1px solid var(--pl-dim);position:relative;flex:none}
+.tog>i::after{content:"";position:absolute;left:2px;top:2px;width:8px;height:8px;background:var(--pl-dim)}
+.tog.on>i{border-color:var(--pl-accent)} .tog.on>i::after{left:14px;background:var(--pl-accent)}
+.pop.meta{width:372px;gap:9px}
+.pop.meta.pinned{bottom:auto;top:44px;right:10px!important;max-height:calc(100% - 54px)}
+.pl.is-chrome .pop.meta.pinned{top:76px;max-height:calc(100% - 138px)}
+.mreg{display:grid;grid-template-columns:86px minmax(0,1fr);gap:5px 10px;font:400 11.5px/1.35 var(--mono);user-select:text;-webkit-user-select:text}
+.mreg dt{color:var(--pl-dim)} .mreg dd{margin:0;color:var(--pl-fg);overflow-wrap:anywhere}
+.mreg dd span{color:var(--pl-dim)} .mreg dd.flag{color:var(--pl-amber)} .mreg dd.flag::before{content:"! "} .mreg dd.note{color:var(--pl-dim)}
+.mreg .sep{grid-column:1/-1;height:1px;background:var(--pl-line);margin:2px 0}
+.pop.list{top:40px;left:8px;bottom:auto;width:456px;gap:6px;max-height:calc(100% - 104px)}
+.li{display:grid;grid-template-columns:minmax(0,1fr) 84px 50px 56px;gap:10px;font:400 11px/1 var(--mono);padding:6px;color:var(--pl-dim);cursor:pointer}
+.li b{font-weight:500;color:var(--pl-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.li.on{background:rgba(255,255,255,.09)} .li .w{color:var(--pl-amber)}
+.pl-toast{position:absolute;left:50%;bottom:64px;transform:translateX(-50%);background:var(--pl-solid);border:1px solid var(--pl-line);font:500 11.5px/1.2 var(--mono);padding:9px 12px;display:none;white-space:nowrap}
+.pl-toast.show{display:block} .pl-toast i{font-style:normal;color:var(--pl-dim)}
+.pl-msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;pointer-events:none}
+.pl-msg.show{display:flex}
+.pl-msg.drop{background:rgba(0,0,0,.55)} .pl-msg.drop::before{content:"";position:absolute;inset:14px;border:1px dashed rgba(255,255,255,.6)}
+.pl-msg.err{background:#0b0b0b} .pl-msg.keys{background:rgba(0,0,0,.86)}
+.pl-msg>div{display:flex;flex-direction:column;gap:8px;max-width:460px;padding:20px}
+.pl-msg.keys>div{max-width:none}
+.pl-msg strong{font:600 15px/1.3 var(--sans)} .pl-msg span{font:400 12px/1.5 var(--mono);color:var(--pl-dim)}
+.pl-msg span b{color:var(--pl-fg);font-weight:500}
+.kt{display:grid;grid-template-columns:repeat(2,auto);gap:5px 34px;text-align:left}
+.kt span{font:400 11px/1.3 var(--mono);color:var(--pl-dim);white-space:nowrap}
+.kt span b{display:inline-block;min-width:96px}
+
+/* browser mock */
+.brw{background:#0e0e0e;color:var(--pl-fg);font:400 12.5px/1.3 var(--sans);display:grid;grid-template-rows:32px minmax(0,1fr);overflow:hidden;user-select:none;-webkit-user-select:none}
+.brw .pl-top{position:static;opacity:1;background:#141414}
+.b-body{display:grid;min-height:0}
+.b-side{background:#121212;border-right:1px solid var(--pl-line);padding:12px 0;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+.b-side h6,.b-meta h6{margin:12px 14px 5px;font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#777}
+.b-side h6:first-child{margin-top:0}
+.b-side a{padding:5px 14px;color:var(--pl-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;display:flex;gap:8px;align-items:center}
+.b-side a.on{color:var(--pl-fg);background:rgba(255,255,255,.08)}
+.b-side a em{font:500 9px/1 var(--mono);font-style:normal;letter-spacing:.1em;border:1px solid #555;color:#888;padding:2px 3px;margin-left:auto;flex:none}
+.b-col{border-right:1px solid var(--pl-line);padding:8px 0;overflow:hidden;display:flex;flex-direction:column}
+.b-col div{padding:5px 10px 5px 12px;display:flex;gap:8px;align-items:center;white-space:nowrap;color:#c9c9c9}
+.b-col div span{overflow:hidden;text-overflow:ellipsis;flex:1}
+.b-col div.on{background:rgba(255,255,255,.1);color:#fff}
+.b-col div.dimd{color:#6d6d6d}
+.b-col div::before{content:"";width:11px;height:9px;border:1px solid #8a8a8a;flex:none}
+.b-col div.f::before{height:11px;width:9px;border-color:#666;margin:0 1px}
+.b-col div.d::after{content:"›";color:#777}
+.b-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.b-path{height:36px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--pl-line);font:400 11.5px/1 var(--mono);color:var(--pl-dim);flex:none;white-space:nowrap}
+.b-path b{color:var(--pl-fg);font-weight:500}
+.b-path .btn{margin-left:auto;border:1px solid var(--pl-line);padding:6px 9px;color:var(--pl-fg)}
+.b-path .btn kbd,.b-note kbd{font-size:9.5px;padding:1px 3px;min-width:0;background:none;border-color:var(--pl-line);border-bottom-width:1px;color:var(--pl-dim);margin-left:6px}
+.b-note{margin:14px 14px 0;border:1px solid var(--pl-line);border-left:2px solid var(--pl-amber);padding:10px 12px;font:400 11.5px/1.5 var(--mono);color:var(--pl-dim);display:flex;gap:14px;align-items:center}
+.b-note b{color:var(--pl-fg);font-weight:500}
+.b-note .btn{margin-left:auto;border:1px solid var(--pl-fg);color:var(--pl-fg);padding:6px 9px;white-space:nowrap;flex:none}
+.b-cards{display:grid;gap:14px 12px;padding:14px;align-content:start}
+.card{display:flex;flex-direction:column;gap:6px;min-width:0;cursor:default}
+.card .th{position:relative;aspect-ratio:16/9;background:#000;outline:1px solid var(--pl-line)}
+.card .th.plain{background:#161616;display:flex;align-items:center;justify-content:center;font:500 11px/1 var(--mono);letter-spacing:.14em;color:#5f5f5f}
+.card.on .th{outline:2px solid #ededed}
+.card canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.card .ln{position:absolute;top:0;bottom:0;width:1px;background:#fff;display:none}
+.card .ft{position:absolute;left:4px;bottom:4px;font:500 10px/1 var(--mono);background:rgba(0,0,0,.75);padding:3px 4px;display:none}
+.card.scrub .ln,.card.scrub .ft{display:block}
+.card .bd{position:absolute;right:4px;top:4px;display:flex;gap:3px}
+.card .bd i{font:600 9px/1 var(--mono);font-style:normal;letter-spacing:.06em;background:rgba(0,0,0,.75);padding:3px 4px;color:#ddd}
+.card .bd i.w{color:var(--pl-amber)}
+.card .nm{font:500 11.5px/1.25 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .sp{font:400 10.5px/1.25 var(--mono);color:var(--pl-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .sp.w{color:var(--pl-amber)}
+.b-meta{background:#121212;border-left:1px solid var(--pl-line);padding:12px 14px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.b-meta h6{margin:0}
+.b-meta .th{aspect-ratio:16/9;background:#000;position:relative;outline:1px solid var(--pl-line);flex:none}
+.b-meta .th.plain{background:#161616}
+.b-meta .th canvas{position:absolute;inset:0;width:100%;height:100%}
+.b-meta .acts{display:flex;gap:6px;margin-top:auto}
+.b-meta .acts span{border:1px solid var(--pl-line);padding:6px 8px;font:500 11px/1 var(--mono)}
+.b-meta .acts span:first-child{background:#ececec;color:#111;border-color:#ececec}
+
+@media (prefers-reduced-motion: reduce){ *{transition:none!important} }
+</style>
+
+<style>
+/* rev c: markup strip, screenshot menu, view menu, saved-image figure */
+.pl-mk{position:absolute;left:50%;top:10px;transform:translateX(-50%);display:none;align-items:center;gap:2px;background:var(--pl-solid);border:1px solid var(--pl-line);padding:3px;transition:top .14s linear;white-space:nowrap}
+.pl.is-chrome .pl-mk{top:42px}
+.pl.is-markup .pl-mk{display:flex}
+.pl.is-markup .pl-cv{cursor:crosshair}
+.pl-mk .pl-ib.on{background:#ececec;color:#111}
+.pl-mk .sw{width:22px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.pl-mk .sw i{width:12px;height:12px;border-radius:50%;display:block;box-shadow:0 0 0 1px rgba(255,255,255,.35)}
+.pl-mk .sw.on i{box-shadow:0 0 0 2px #161616,0 0 0 3px #fff}
+.pl-mk .sp{width:1px;height:18px;background:var(--pl-line);margin:0 4px;display:block}
+.pl-mtxt{position:absolute;display:none;font:600 13px/1 var(--sans);background:rgba(0,0,0,.82);border:1px solid #fff;padding:5px 6px;width:170px;outline:0}
+.pl-marks i{position:absolute;top:-8px;width:1px;height:5px;background:#fff}
+.pop.shot{width:308px}
+.pop .btns{display:flex;gap:6px;flex-wrap:wrap}
+.pop .btns button{border:1px solid var(--pl-line)!important;padding:6px 8px!important;font:500 11px/1 var(--mono)!important;display:flex!important;gap:7px;align-items:center}
+.pop .btns button.on{background:#ececec;color:#111!important}
+.pop .two{display:flex;align-items:center;gap:5px;font:400 11px/1 var(--mono);color:var(--pl-dim)}
+.pop .two em{font-style:normal}
+.fld.sm{padding:0 5px}.fld.sm input{width:32px}
+.outw{display:block;width:100%;height:auto;background:#000;box-shadow:0 0 0 1px rgba(255,255,255,.16)}
+</style>
+
+<div class="doc">
+
+<header class="mast">
+  <div class="mast-line">
+    <span class="eyebrow"><b>tridant</b> · review player · design for approval</span>
+    <span class="eyebrow">rev c · 2026-11-23 · nothing is built yet</span>
+  </div>
+  <h1>First frame first.</h1>
+  <p>a review player for vfx and install content: opens a clip before you have let go of the mouse, steps one true frame at a time, shows true pixels, and tells you exactly what the file is. this page is the proposed interface, engine and build order, after three hostile reviews and your first round of notes. what is settled and what is still open is in <a href="#decide">section 10</a>.</p>
+  <dl class="glance">
+    <div><dt>name</dt><dd>eyepiece<small>the only candidate with no conflict in video software, homebrew, winget, flathub or apt. runner-up: gate.</small></dd></div>
+    <div><dt>built in</dt><dd>rust, one small renderer per system<small>direct3d 11 on windows, metal on macos. ffmpeg's decoders, our own hap path. no webview, no wgpu.</small></dd></div>
+    <div><dt>first thing built</dt><dd>six pass or fail gates<small>decoder frame to screen with no copy, present timing, 10-bit read-back, staged cold start, shared file opens, zero opens while browsing the nas.</small></dd></div>
+    <div><dt>still open</dt><dd><a href="#decide">two things</a><small>network folders, and your go to create the repo and start phase 0. the rest is settled.</small></dd></div>
+  </dl>
+</header>
+
+<section id="name">
+  <div class="sh"><span class="tab">01</span><h2>Name</h2></div>
+  <p class="lede"><b>eyepiece.</b> the part of the instrument you put your eye to. it sits beside orrery and glimpse without echoing either, and it says what the app is for: a close, exact look at the frame.</p>
+  <div class="scroll"><table>
+    <tr><th>name</th><th>reads as</th><th>conflicts found</th><th></th></tr>
+    <tr><td>eyepiece</td><td>the lens you look through</td><td>none in video, vfx or av software, homebrew, winget, flathub, debian or ubuntu. only the rust crate name is taken (a star-field simulator), and this is not published as a crate.</td><td><span class="pill ok">clear · pick</span></td></tr>
+    <tr><td>gate</td><td>the film gate. "check the gate" is the on-set qc call. also a quality gate.</td><td>nothing in the same space. a generic word, so hard to search, and we already say "gates" for ci.</td><td><span class="pill later">usable</span></td></tr>
+    <tr><td>porthole</td><td>the capsule window. the app is a window with nothing around it.</td><td>one small alpha winget package.</td><td><span class="pill later">usable</span></td></tr>
+    <tr><td>plate</td><td>vfx word for source footage, and our own word for a dark framed figure</td><td>no package conflict. in a vfx room "send me the plate" stops being clear.</td><td><span class="pill later">usable</span></td></tr>
+    <tr><td>reticle</td><td>the sighting crosshair</td><td>an active 1.3k-star project of the same name; people split on how to say it.</td><td><span class="pill later">usable</span></td></tr>
+    <tr><td>blink</td><td>instant; the blink comparator</td><td>foundry's blink and blinkscript inside nuke, and a <span class="mono">blink</span> binary in homebrew. it was my first choice until checked.</td><td><span class="pill no">blocked</span></td></tr>
+    <tr><td>mira · lumen · firstlight</td><td>—</td><td>signage and player products called mira; unreal's lumen; cineform firstlight.</td><td><span class="pill no">blocked</span></td></tr>
+  </table></div>
+  <p class="hint">checked against package managers, github and the web on 2026-11-23. no trademark register search has been run; do one on the pick before it goes public.</p>
+</section>
+
+<section id="ui">
+  <div class="sh"><span class="tab">02</span><h2>The interface, state by state</h2></div>
+  <p class="lede">the video is the window. nothing else is drawn until the pointer moves. figure 01 is live; the others are the same mock frozen in one state each. the stand-in footage is a mapping chart, drawn in the page.</p>
+
+  <div class="figs">
+    <figure class="wide">
+      <div class="plate"><div class="fitw plw" data-live='{"L":1088}'></div></div>
+      <figcaption><span class="fn">fig. 01 · live</span><span>click it, then use the keys and wheel from section 03. <kbd>?</kbd> or a right-click lists them. <kbd>esc</kbd> hands the keyboard back to the page. <kbd>E</kbd> marks up a frame and <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> shuttle. tab one is a three-clip folder with mixed shapes; tab two is another version of its first clip, so <kbd>[</kbd> <kbd>]</kbd> flips between the two on the same frame.</span></figcaption>
+      <p class="hint">in this mock 100% means one video pixel per page pixel; the real app counts physical display pixels. pinch arrives here as ctrl + wheel. the browser keeps ctrl + W and ctrl + shift + T for itself.</p>
+    </figure>
+
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"playing":true}}'></div></div>
+      <figcaption><span class="fn">fig. 02 · playing</span><span>pointer away: the frame and nothing else. no title bar on any system. fullscreen (<kbd>P</kbd>) is this at the size of the display, with the pointer hidden.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"chrome":true,"playing":true}}'></div></div>
+      <figcaption><span class="fn">fig. 03 · pointer in window</span><span>tabs and window buttons on top, one row of twelve controls and the full-width timebar below. the selected tab is the bright, filled one. the strip and the bar carry no color, with one exception: an amber dot on the metadata button when the file has a fault. gone 2.4 s after the pointer stops. hover the speaker for a level slider; click it to mute.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"chrome":true,"hover":0.71}}'></div></div>
+      <figcaption><span class="fn">fig. 04 · timebar hover</span><span>the bar thickens under the pointer and shows the frame at that point with its number. click or drag to go there.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742,"zoom":2,"cx":930,"cy":330},"state":{"chrome":true,"pop":"zoom","chip":false}}'></div></div>
+      <figcaption><span class="fn">fig. 05 · zoom menu</span><span>the button always shows the current zoom. the menu has presets, a long slider and a field you can type into.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"chrome":true,"pop":"speed","speed":0.5}}'></div></div>
+      <figcaption><span class="fn">fig. 06 · speed menu</span><span>same pattern as zoom. any speed other than 1× leaves a chip on screen, so you never judge motion at the wrong speed without knowing. audio keeps its pitch from 0.5× to 2× and is silent beyond.</span></figcaption>
+    </figure>
+    <figure class="wide">
+      <div class="plate"><div class="fitw plw" data-fig='{"L":1000,"item":1,"view":{"f":300},"state":{"pin":true}}'></div></div>
+      <figcaption><span class="fn">fig. 07 · metadata, pinned</span><span>hover the button to read it, click to pin, click again to close. pinned, it stands alone with the controls hidden, and can be dragged to any corner. amber means a fault in this file. gray means the format cannot say, with the assumption in use. the text selects, and <b>copy all</b> puts it on the clipboard.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742,"zoom":16,"cx":243,"cy":722},"state":{"ptr":{"x":372,"y":214}}}'></div></div>
+      <figcaption><span class="fn">fig. 08 · pixels</span><span><kbd>shift</kbd> + scroll or pinch zooms about the pointer; the window keeps its size. from 100% up a pixel is a square. the chip gives the zoom and the pixel under the pointer, then fades when the pointer rests.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":743,"zoom":4,"cx":960,"cy":300},"state":{"flash":"<i>F</i> 000743","chip":false}}'></div></div>
+      <figcaption><span class="fn">fig. 09 · a step, controls hidden</span><span>keys never bring the controls up. a step by key or wheel shows the frame number as an overlay for a second, or the timecode if that is what the readout is set to. once zoomed, only the top and bottom edges bring the controls back.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"item":2,"view":{"f":120},"state":{"chrome":true,"pop":"guides","grid":true,"center":true}}'></div></div>
+      <figcaption><span class="fn">fig. 10 · the view menu</span><span>a grid with a tile size in pixels, center lines and circle, one channel alone, and mirror, flip, rotate. guides are drawn on the image, not the window, so they stay true when a clip is letterboxed or zoomed.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"o":{"m":true}}'></div></div>
+      <figcaption><span class="fn">fig. 11 · mirrored</span><span><kbd>H</kbd> mirrors, <kbd>V</kbd> flips, <kbd>Q</kbd> turns a quarter: for rear projection and rotated panels. it changes the view, never the file, and a chip stays up so a mirrored frame is not mistaken for the content.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"playing":true,"sh":-2}}'></div></div>
+      <figcaption><span class="fn">fig. 12 · shuttle</span><span><kbd>L</kbd> plays forward and doubles on each press, <kbd>J</kbd> does the same in reverse, <kbd>K</kbd> stops. the chip shows the rate. audio is off while shuttling.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"item":1,"view":{"f":1403},"state":{"chrome":true,"seam":true,"p":144,"pop":"loop"}}'></div></div>
+      <figcaption><span class="fn">fig. 13 · loop analysis</span><span>the timebar becomes six seconds: the last three, the seam, the first three. it cycles, with a short pause on black for the trip back so the seam is the only cut. stepping crosses the seam, and <kbd>shift</kbd> + <kbd>F</kbd> / <kbd>G</kbd> jump to its two sides.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"item":1,"view":{"f":300},"state":{"chrome":true,"pop":"list"}}'></div></div>
+      <figcaption><span class="fn">fig. 14 · a folder, mixed shapes</span><span>playing a folder sizes the window once to its biggest clip; the rest are letterboxed, so nothing jumps. click the count for the list. a size or rate that differs from the first clip is amber, which is how you find the one 59.94 in forty.</span></figcaption>
+    </figure>
+    <figure class="wide">
+      <div class="plate"><div class="fitw plw" data-fig='{"L":1088,"H":360,"single":1,"view":{"f":300},"state":{"chrome":true,"pop":"zoom","tc":true}}'></div></div>
+      <figcaption><span class="fn">fig. 15 · a ribbon on its own</span><span>a 3840 × 480 clip would make a window too thin for its own controls. the player window never goes under 640 × 360; thinner clips are letterboxed inside it. the readout shows the file's own timecode.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"L":640,"H":520,"single":2,"view":{"f":120},"state":{"chrome":true,"tc":true,"seam":true,"p":40}}'></div></div>
+      <figcaption><span class="fn">fig. 16 · a totem on its own</span><span>at the narrowest width the row shortens instead of spilling: the loop label loses its prefix and the readout drops its total, in that order.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"msg":{"kind":"drop","title":"drop to open in a new tab","body":"3 files · one tab, played in name order"}}}'></div></div>
+      <figcaption><span class="fn">fig. 17 · drop</span><span>a drop always opens a new tab and never replaces what you are looking at. several files or a folder become one tab. a numbered run of stills becomes one sequence.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"chrome":true,"pop":"shot","burn":true,"withGuides":true}}'></div></div>
+      <figcaption><span class="fn">fig. 18 · screenshot menu</span><span><kbd>S</kbd> saves the source frame at full size: 16-bit png when the file is deeper than 8-bit, alpha kept. <kbd>shift</kbd> + <kbd>S</kbd> saves the view as shown, which is how you save one part of the picture. three switches add a caption with the name, frame and timecode, the guides, and your markup. always to one local folder, never beside the media.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"marks":[{"t":"rect","x0":225,"y0":705,"x1":375,"y1":855,"c":"#ff3b30"},{"t":"ell","x0":1010,"y0":200,"x1":1280,"y1":364,"c":"#ffd60a"},{"t":"pen","pts":[[566,792],[520,786],[470,783],[425,781],[388,780]],"c":"#ff3b30"},{"t":"text","x":580,"y":782,"s":"1 px checker shimmers on the wall","c":"#ffffff"},{"t":"text","x":1010,"y":376,"s":"blue reads purple","c":"#ffd60a"}],"state":{"markup":true}}'></div></div>
+      <figcaption><span class="fn">fig. 19 · markup</span><span><kbd>E</kbd> turns the pointer into a pen: rectangle, circle, freehand and text, four inks, undo. marks sit on the frame they were drawn on and stay put through zoom and pan. a tick on the timebar shows which frames carry marks.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><canvas class="outw" data-out='{"clip":0,"f":742,"width":1200,"marks":[{"t":"rect","x0":225,"y0":705,"x1":375,"y1":855,"c":"#ff3b30"},{"t":"ell","x0":1010,"y0":200,"x1":1280,"y1":364,"c":"#ffd60a"},{"t":"pen","pts":[[566,792],[520,786],[470,783],[425,781],[388,780]],"c":"#ff3b30"},{"t":"text","x":580,"y":782,"s":"1 px checker shimmers on the wall","c":"#ffffff"},{"t":"text","x":1010,"y":376,"s":"blue reads purple","c":"#ffd60a"}]}' role="img" aria-label="a saved screenshot: the frame with markup and guides, and a caption strip under it"></canvas></div>
+      <figcaption><span class="fn">fig. 20 · what gets saved</span><span>the picture at full size with your marks, the guides if you asked for them, and a caption under it, so the caption covers no pixel. this is the image you send back as feedback.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"msg":{"kind":"keys"}}}'></div></div>
+      <figcaption><span class="fn">fig. 21 · the keys</span><span><kbd>?</kbd> shows the table. a right-click opens every command with its key beside it, and each button names its key in a tooltip. on a mac the same list fills the menu bar.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"toast":"reloaded <i>· wall_main_v012.mov changed on disk at 14:32 · same frame</i>"}}'></div></div>
+      <figcaption><span class="fn">fig. 22 · reloaded</span><span>when a render overwrites the clip you have open, the player picks up the new file, keeps your frame, zoom and pan, and says so. it never holds a lock, so the render is never blocked.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"state":{"chrome":true,"solo":"intro_v004.mov","msg":{"kind":"err","title":"dxv3 (resolume) is not supported","body":"<b>intro_v004.mov</b> cannot be decoded here.<br>its container, size and frame count still read: press <b>I</b>."}}}'></div></div>
+      <figcaption><span class="fn">fig. 23 · cannot decode</span><span>an error names the codec and says what still works. the metadata stays available.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":60},"state":{"chrome":true,"solo":"wall_idle.[0001-0240].exr","gaps":[0.483,0.487],"ban":"<b>2 frames missing: 0117, 0118.</b> 238 of 240 on disk. they play as a slate that says so, and are marked on the timebar."}}'></div></div>
+      <figcaption><span class="fn">fig. 24 · sequence gaps</span><span>a sequence with holes still opens and plays. the gap is named, marked on the timebar, and cannot be mistaken for content.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":212},"state":{"chrome":true,"counting":true,"playing":true,"ban":"<b>reading from network · 96 MB/s of 265 needed.</b> playback will stutter; that is the link, not the file."}}'></div></div>
+      <figcaption><span class="fn">fig. 25 · still counting, slow link</span><span>opening never waits. an mkv has no frame count in its header, so the total fills in when the count is done. when the disk cannot feed the clip, the player says which is at fault.</span></figcaption>
+    </figure>
+    <figure>
+      <div class="plate"><div class="fitw plw" data-fig='{"view":{"f":742},"state":{"chrome":true,"ban":"<b>the file is gone.</b> D:\\delivery_2026-11-20\\wall\\wall_main_v012.mov was moved or the volume was lost. the last frame stays up. it reopens by itself if the file returns."}}'></div></div>
+      <figcaption><span class="fn">fig. 26 · file lost mid-play</span><span>a moved file, a dropped share and a refused permission all look like this: one line with the reason, and the picture you had.</span></figcaption>
+    </figure>
+  </div>
+
+  <div class="figs">
+    <figure class="wide">
+      <div class="plate"><div class="fitw" data-w="1088" data-h="600"><div class="fit brw">
+        <div class="pl-top"><div class="pl-tabs"><div class="pl-tab on"><span>new tab</span><i class="pl-x"><svg viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></svg></i></div></div><span class="pl-plus">+</span><span class="pl-grow"></span><div class="pl-win"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div></div>
+        <div class="b-body" style="grid-template-columns:176px 220px minmax(0,1fr)">
+          <aside class="b-side">
+            <h6>places</h6><a class="on">downloads</a><a>desktop</a><a>documents</a><a>videos</a><a>pictures</a>
+            <h6>pinned in explorer</h6><a>show_content</a><a>renders_out</a>
+            <h6>volumes</h6><a>system (C:)</a><a>media (D:)</a><a>projects<em>net</em></a>
+            <h6>recent</h6><a>delivery_2026-11-20 / wall</a><a>renders_out / totems</a>
+          </aside>
+          <div class="b-col">
+            <div class="d"><span>delivery_2026-11-20</span></div><div class="d"><span>delivery_2026-11-13</span></div><div class="d"><span>lut_tests</span></div><div class="d"><span>stills</span></div>
+            <div class="f"><span>ribbon_L3_v007.mov</span></div><div class="f"><span>totem_A_v003.mov</span></div><div class="f"><span>wall_main_v012.mov</span></div><div class="f dimd"><span>spec_sheet.pdf</span></div>
+          </div>
+          <div class="b-main">
+            <div class="b-path"><b>downloads</b><span>4 folders · 3 videos</span><span class="btn">play folder<kbd>shift + enter</kbd></span></div>
+            <div class="b-cards" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+              <div class="card" data-clip="1"><div class="th"><canvas data-th="1:300"></canvas><i class="ln"></i><span class="ft"></span><div class="bd"><i>♪</i><i class="w">audio −4 f</i></div></div><div class="nm">ribbon_L3_v007.mov</div><div class="sp w">3840×480 · 59.94 · NotchLC · 1439 f</div></div>
+              <div class="card" data-clip="2"><div class="th"><canvas data-th="2:120"></canvas><i class="ln"></i><span class="ft"></span><div class="bd"><i>α</i></div></div><div class="nm">totem_A_v003.mov</div><div class="sp">1080×1920 · 30 · ProRes 4444 · 900 f</div></div>
+              <div class="card" data-clip="0"><div class="th"><canvas data-th="0:742"></canvas><i class="ln"></i><span class="ft"></span></div><div class="nm">wall_main_v012.mov</div><div class="sp">1920×1080 · 60 · HAP Q · 1800 f</div></div>
+            </div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 27 · launch</span><span>no file given, or <kbd>N</kbd>: the browser, on downloads. finder-style columns list everything; the grid shows the videos of the folder you are in. places are explorer's quick access on windows. on a mac they are the standard folders and mounted volumes, since finder's favorites have no supported way in (to confirm in phase 3).</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="fitw" data-w="1240" data-h="700"><div class="fit brw">
+        <div class="pl-top"><div class="pl-tabs"><div class="pl-tab"><span>wall_main_v011.mov</span><i class="pl-x"><svg viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></svg></i></div><div class="pl-tab on"><span>new tab</span><i class="pl-x"><svg viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></svg></i></div></div><span class="pl-plus">+</span><span class="pl-grow"></span><div class="pl-win"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div></div>
+        <div class="b-body" style="grid-template-columns:150px 168px 150px minmax(0,1fr) 316px">
+          <aside class="b-side">
+            <h6>places</h6><a class="on">downloads</a><a>desktop</a><a>documents</a><a>videos</a><a>pictures</a>
+            <h6>volumes</h6><a>system (C:)</a><a>media (D:)</a><a>projects<em>net</em></a>
+          </aside>
+          <div class="b-col">
+            <div class="d on"><span>delivery_2026-11-20</span></div><div class="d"><span>delivery_2026-11-13</span></div><div class="d"><span>lut_tests</span></div><div class="d"><span>stills</span></div>
+            <div class="f"><span>ribbon_L3_v007.mov</span></div><div class="f"><span>totem_A_v003.mov</span></div><div class="f"><span>wall_main_v012.mov</span></div><div class="f dimd"><span>spec_sheet.pdf</span></div>
+          </div>
+          <div class="b-col">
+            <div class="d on"><span>wall</span></div><div class="d"><span>ribbon</span></div><div class="d"><span>totems</span></div><div class="d"><span>audio</span></div><div class="f dimd"><span>readme.txt</span></div>
+          </div>
+          <div class="b-main">
+            <div class="b-path"><b>wall</b><span>3 videos · 1 sequence</span><span class="btn">play folder<kbd>shift + enter</kbd></span></div>
+            <div class="b-cards" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+              <div class="card on" data-clip="0"><div class="th"><canvas data-th="0:742"></canvas><i class="ln"></i><span class="ft"></span></div><div class="nm">wall_main_v012.mov</div><div class="sp">1920×1080 · 60 · HAP Q · 1800 f</div></div>
+              <div class="card scrub" data-clip="3" data-hold="0.609"><div class="th"><canvas data-th="3:1095"></canvas><i class="ln" style="left:60.9%"></i><span class="ft" style="display:block">001095</span></div><div class="nm">wall_main_v011.mov</div><div class="sp">1920×1080 · 60 · HAP Q · 1800 f</div></div>
+              <div class="card" data-clip="0"><div class="th"><canvas data-th="0:60"></canvas><i class="ln"></i><span class="ft"></span><div class="bd"><i>seq</i><i class="w">2 missing</i></div></div><div class="nm">wall_idle.[0001-0240].exr</div><div class="sp w">1920×1080 · 24 assumed · EXR half · 238 of 240</div></div>
+              <div class="card" data-clip="3"><div class="th"><canvas data-th="3:410"></canvas><i class="ln"></i><span class="ft"></span><div class="bd"><i>♪</i><i class="w">vfr</i></div></div><div class="nm">wall_sting_v002.mp4</div><div class="sp w">1920×1080 · ~29.97 vfr · H.264 · 452 f</div></div>
+            </div>
+          </div>
+          <aside class="b-meta">
+            <div class="th"><canvas data-th="0:742"></canvas></div>
+            <dl class="mreg" data-meta="0"></dl>
+            <div class="acts"><span>open</span><span>new tab</span><span>reveal</span></div>
+          </aside>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 28 · browse</span><span>columns for the path, a grid for the folder you are in, and a metadata column for the selected card. moving across a card scrubs it through its 24 preview frames (second card; try it), and the label names the frame shown. <kbd>enter</kbd> opens the card. <kbd>O</kbd> lays this same browser over a playing tab, and <kbd>esc</kbd> goes back to the clip. faults show on the card before you open anything.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="fitw" data-w="1240" data-h="520"><div class="fit brw">
+        <div class="pl-top"><div class="pl-tabs"><div class="pl-tab on"><span>new tab</span><i class="pl-x"><svg viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></svg></i></div></div><span class="pl-plus">+</span><span class="pl-grow"></span><div class="pl-win"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div></div>
+        <div class="b-body" style="grid-template-columns:150px 190px minmax(0,1fr) 300px">
+          <aside class="b-side">
+            <h6>places</h6><a>downloads</a><a>desktop</a><a>documents</a><a>videos</a><a>pictures</a>
+            <h6>volumes</h6><a>system (C:)</a><a>media (D:)</a><a class="on">projects<em>net</em></a>
+          </aside>
+          <div class="b-col">
+            <div class="d"><span>2026_arena_refit</span></div><div class="d on"><span>2026_museum_wall</span></div><div class="d"><span>2026_totems</span></div><div class="d"><span>_archive</span></div>
+          </div>
+          <div class="b-main">
+            <div class="b-path"><b>2026_museum_wall</b><span>300 videos · by name</span><span class="btn">play folder<kbd>shift + enter</kbd></span></div>
+            <div class="b-note"><span><b>network folder: look-only.</b> nothing here has been opened. names, sizes and dates come from the folder listing.</span><span class="btn">make previews · reads 300 files</span></div>
+            <div class="b-cards" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+              <div class="card on"><div class="th plain">MOV</div><div class="nm">mw_a01_main_v014.mov</div><div class="sp">4.82 GB · 2026-11-19 16:02</div></div>
+              <div class="card"><div class="th plain">MOV</div><div class="nm">mw_a01_main_v013.mov</div><div class="sp">4.80 GB · 2026-11-17 11:40</div></div>
+              <div class="card"><div class="th plain">MOV</div><div class="nm">mw_a02_idle_v006.mov</div><div class="sp">1.12 GB · 2026-11-12 09:15</div></div>
+              <div class="card"><div class="th plain">MP4</div><div class="nm">mw_a03_sting_v002.mp4</div><div class="sp">86 MB · 2026-11-10 18:27</div></div>
+            </div>
+          </div>
+          <aside class="b-meta">
+            <div class="th plain"></div>
+            <dl class="mreg"><dt>file</dt><dd>mw_a01_main_v014.mov</dd><dt>size</dt><dd>4.82 GB</dd><dt>modified</dt><dd>2026-11-19 16:02</dd><i class="sep"></i><dt>everything else</dt><dd class="note">not read. opening the file reads it.</dd></dl>
+            <div class="acts"><span>open</span><span>new tab</span><span>read metadata</span></div>
+          </aside>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 29 · a network folder</span><span>on a network path the browser lists and does nothing else: no probing, no posters, no hover scrub, and selecting a card opens nothing. you open one file, read one file's metadata, or ask for previews of the folder, and each says what it will read. <b>play folder</b> here asks once, with the count.</span></figcaption>
+    </figure>
+  </div>
+
+  <details>
+    <summary>eleven states not drawn <small>one line each</small></summary>
+    <div class="scroll"><table>
+      <tr><th>state</th><th>what you see</th></tr>
+      <tr><td>before the gpu is ready</td><td>a black window, never white, for the few frames it lasts.</td></tr>
+      <tr><td>first launch on a mac</td><td>the system asks for the downloads folder. if refused, the browser opens on home with the volumes.</td></tr>
+      <tr><td>a folder with no video</td><td>the grid reads "no video here". the columns keep working.</td></tr>
+      <tr><td>a card before its previews exist</td><td>its poster. the 24 preview frames fill in as you hover, in an order that scrubs coarsely at once.</td></tr>
+      <tr><td>dropping something that is not video</td><td>the drop frame reads "not a video" and nothing changes.</td></tr>
+      <tr><td>more tabs than fit</td><td>tabs narrow to a minimum, then the strip scrolls. long names are cut in the middle so the version stays.</td></tr>
+      <tr><td>closing the last tab</td><td>the browser. the window stays. <kbd>ctrl</kbd> + <kbd>shift</kbd> + <kbd>T</kbd> brings a closed tab back at its frame and zoom.</td></tr>
+      <tr><td>an audio-only file</td><td>not opened. this is a picture tool.</td></tr>
+      <tr><td>hdr and float files</td><td>shown through a stated curve, with a chip saying so (section 05).</td></tr>
+      <tr><td>one channel alone, alpha over checker</td><td>that channel as a gray picture, with the same kind of chip as fig. 11.</td></tr>
+      <tr><td>a file still being written</td><td>"still being written", and it opens when the writer finishes.</td></tr>
+    </table></div>
+  </details>
+</section>
+
+<section id="controls">
+  <div class="sh"><span class="tab">03</span><h2>Keys and gestures</h2></div>
+  <p class="lede">your brief had three inputs that collide: scroll scrubs, two-finger drag pans, and a two-finger drag is a scroll. the table settles each one by whether the whole frame is in view.</p>
+  <div class="cols">
+    <div class="stack">
+      <h3>gestures</h3>
+      <div class="scroll"><table>
+        <tr><th>input</th><th>whole frame in view</th><th>zoomed in</th></tr>
+        <tr><td>mouse wheel</td><td>scrub, one frame per notch</td><td>scrub</td></tr>
+        <tr><td><kbd>shift</kbd> + wheel · pinch</td><td>zoom about the pointer</td><td>zoom about the pointer</td></tr>
+        <tr><td>two-finger drag, mac trackpad</td><td>scrub</td><td><b>pan</b></td></tr>
+        <tr><td><kbd>alt</kbd> + scroll, any device</td><td>scrub</td><td>scrub</td></tr>
+        <tr><td>click and drag</td><td>moves the window</td><td><b>pan</b></td></tr>
+        <tr><td>double-click</td><td>back to the last zoom and pan</td><td>fit</td></tr>
+        <tr><td>single click</td><td>shows or hides the controls</td><td>shows or hides the controls</td></tr>
+        <tr><td>right-click</td><td>every command, with its key</td><td>every command, with its key</td></tr>
+        <tr><td>in markup mode</td><td colspan="2">click and drag draws with the chosen tool. the wheel and the keys work as usual.</td></tr>
+      </table></div>
+      <ul class="plain">
+        <li>windows reports a touchpad's two fingers as a wheel, so there they scrub and panning is click-drag, as your brief has it. telling the two apart on windows needs raw touchpad input; gate 0 tries it.</li>
+        <li>one frame per 120 wheel units, so a free-spinning wheel stays exact. the coasting after a trackpad flick is ignored while scrubbing.</li>
+        <li>a single click costs nothing to tell from a double-click, because showing the controls is harmless either way. <kbd>space</kbd> plays.</li>
+        <li>every route to fit remembers the zoom it left. a first double-click with nothing remembered goes to 1:1 at the pointer.</li>
+        <li>shift + wheel walks a ladder (fit, 25, 50, 100, 200, 300, 400, 600, 800% …). a pinch settles on the nearest whole multiple above 100%. the chip says <b>exact</b> at whole multiples and <b>scaled</b> otherwise.</li>
+        <li>frame numbers start at 0 and the right-hand number is the count. one setting starts them at 1.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <h3>keys</h3>
+      <div class="scroll"><table>
+        <tr><th>key</th><th>does</th><th></th></tr>
+        <tr><td class="k"><kbd>F</kbd> <kbd>G</kbd> · <kbd>←</kbd> <kbd>→</kbd></td><td>previous / next frame. arrows with shift: 10 frames</td><td><span class="pill you">yours</span></td></tr>
+        <tr><td class="k"><kbd>shift</kbd>+<kbd>F</kbd> <kbd>G</kbd></td><td>first / last frame. also <kbd>home</kbd> <kbd>end</kbd></td><td><span class="pill you">yours</span></td></tr>
+        <tr><td class="k"><kbd>O</kbd> · <kbd>N</kbd> · <kbd>[</kbd> <kbd>]</kbd></td><td>open (browser over this tab) · new tab · switch tabs</td><td><span class="pill you">yours</span></td></tr>
+        <tr><td class="k"><kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd></td><td>fit · 1:1 · 2×, about the pointer when it is over the picture</td><td><span class="pill you">yours</span></td></tr>
+        <tr><td class="k"><kbd>P</kbd> · <kbd>esc</kbd></td><td>fullscreen on and off · esc leaves fullscreen first, then closes a menu</td><td><span class="pill you">yours</span></td></tr>
+        <tr><td class="k"><kbd>space</kbd></td><td>play / pause</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>pg up</kbd> <kbd>pg dn</kbd></td><td>previous / next clip in the folder</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>R</kbd> · <kbd>A</kbd></td><td>loop off → one → all · loop analysis</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>-</kbd> <kbd>=</kbd> · <kbd>⌫</kbd></td><td>slower / faster · back to 1×</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>T</kbd> · <kbd>I</kbd></td><td>frames ↔ timecode · pin metadata</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>D</kbd> · <kbd>C</kbd></td><td>grid · center lines and circle</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>S</kbd> · <kbd>shift</kbd>+<kbd>S</kbd></td><td>screenshot of the source frame · of the view as shown</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>M</kbd> · <kbd>↑</kbd> <kbd>↓</kbd></td><td>mute · volume</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>alt</kbd>+arrows</td><td>pan</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd></td><td>reverse · stop · forward. each press of J or L doubles the rate</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>H</kbd> <kbd>V</kbd> <kbd>Q</kbd></td><td>mirror · flip · rotate a quarter turn</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>E</kbd></td><td>markup mode. <kbd>ctrl</kbd>+<kbd>Z</kbd> takes back a mark</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>?</kbd> · <kbd>shift</kbd>+<kbd>P</kbd></td><td>the key table · fullscreen on the next display</td><td><span class="pill later">added</span></td></tr>
+        <tr><td class="k"><kbd>ctrl</kbd>+<kbd>W</kbd> · <kbd>C</kbd> · <kbd>shift</kbd>+<kbd>T</kbd></td><td>close tab · copy frame · reopen the closed tab (<kbd>cmd</kbd> on a mac)</td><td><span class="pill later">added</span></td></tr>
+      </table></div>
+      <ul class="plain">
+        <li><b>in the browser</b> the letter keys type to select instead. arrows move, <kbd>enter</kbd> opens the card, <kbd>shift</kbd> + <kbd>enter</kbd> plays the folder, <kbd>⌫</kbd> goes up a folder, <kbd>esc</kbd> returns to the clip.</li>
+        <li>keys are matched by position, so <kbd>[</kbd> <kbd>]</kbd> and <kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd> sit in the same place on every keyboard layout.</li>
+        
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="window">
+  <div class="sh"><span class="tab">04</span><h2>The window</h2></div>
+  <div class="scroll"><table>
+    <tr><th>situation</th><th>what the window does</th></tr>
+    <tr><td>no header</td><td>borderless on windows, macos and linux, with square corners so no pixel of the frame is clipped. the top strip that appears on hover is the title bar: drag it to move, window buttons at the right (at the left on a mac, drawn by us). the os shadow stays, the outer edges resize, and dragging to a screen edge or win + arrows still snaps.</td></tr>
+    <tr><td>opened with no file</td><td>the browser, at its last size (first run 1180 × 720), centered on the display under the pointer.</td></tr>
+    <tr><td>one file</td><td>the window takes the video's shape exactly: 100% if that fits in 90% of the screen, otherwise fitted to 90%. never smaller than 640 × 360 (figs 15, 16).</td></tr>
+    <tr><td>stepping to another file</td><td><kbd>pg up</kbd> and <kbd>pg dn</kbd> never resize. the next clip is fitted inside the window you have.</td></tr>
+    <tr><td>playing a folder</td><td>sized once to the biggest clip by pixel count; a tie goes to the first in name order. every other clip is letterboxed on black (fig. 14). the first frame does not wait for this: the window settles once, when the headers are read.</td></tr>
+    <tr><td>several tabs</td><td>the window grows when something bigger is opened. it never shrinks or moves when you switch tabs. switching between two clips of the same size and length keeps the frame, zoom and pan, which makes two tabs a flip comparison.</td></tr>
+    <tr><td>you resize it</td><td>your size holds for the session. dragging an edge keeps the video's shape; maximize and fullscreen letterbox. the bottom edge belongs to the timebar, so resize from the corners and the other edges.</td></tr>
+    <tr><td>a second launch</td><td>hands its file to the running window as a new tab and brings it forward. if that window is fullscreen, the new tab opens behind what is showing.</td></tr>
+    <tr><td>fullscreen</td><td>borderless, on the display the window is on, instant: no os animation, no new mac space. the pointer hides with the controls, and the controls come up only from the bottom and top edges. a chip states the zoom on entry.</td></tr>
+    <tr><td>hi-dpi</td><td>100% means one video pixel on one physical pixel. where the os rescales the whole desktop (scaled modes on a mac) a window cannot be exact; the chip reads "scaled by os" and fullscreen is exact.</td></tr>
+    <tr><td>linux tiling managers</td><td>the manager decides the size. the player fits inside it and hides the buttons that mean nothing there.</td></tr>
+  </table></div>
+</section>
+
+<section id="engine">
+  <div class="sh"><span class="tab">05</span><h2>The engine</h2></div>
+  <p class="lede">rust. one small renderer per system, ffmpeg for demux and most decoding, and our own code for hap. the first build is a set of pass or fail gates, because two claims carry the whole design and neither is proven: a decoder's frame reaching the screen with no copy, and a cold start you do not notice.</p>
+
+  <figure>
+    <div class="scroll"><svg class="dia" viewBox="0 0 1120 300" role="img" aria-label="Structure: one window holds many tabs; each tab has its view state, a player and the browser sheet. Every read goes through one queue per volume, in priority order, to files that are opened shared and never written. A cache folder and a settings file are the only things the app writes.">
+      <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahf" d="M0 0 10 5 0 10z"/></marker></defs>
+      <rect class="bx" x="8" y="100" width="120" height="70"/><text class="t1" x="68" y="130" text-anchor="middle">window</text><text class="t2" x="68" y="148" text-anchor="middle">one, borderless</text>
+      <path class="ar" d="M128 135H158" marker-end="url(#ah2)"/>
+      <rect class="bx" x="160" y="100" width="120" height="70"/><text class="t1" x="220" y="130" text-anchor="middle">tab × n</text><text class="t2" x="220" y="148" text-anchor="middle">a clip or a folder</text>
+      <path class="ar" d="M280 135H300V55H318" marker-end="url(#ah2)"/><path class="ar" d="M280 135H318" marker-end="url(#ah2)"/><path class="ar" d="M300 135V235H318" marker-end="url(#ah2)"/>
+      <rect class="bx" x="320" y="20" width="220" height="70"/><text class="t1" x="430" y="50" text-anchor="middle">view state</text><text class="t2" x="430" y="68" text-anchor="middle">frame · zoom · pan · loop · speed</text>
+      <rect class="bx" x="320" y="100" width="220" height="70"/><text class="t1" x="430" y="130" text-anchor="middle">player</text><text class="t2" x="430" y="148" text-anchor="middle">fig. 31, one per tab</text>
+      <rect class="bx" x="320" y="200" width="220" height="70"/><text class="t1" x="430" y="230" text-anchor="middle">browser sheet</text><text class="t2" x="430" y="248" text-anchor="middle">columns · grid · metadata</text>
+      <path class="ar" d="M540 135H578" marker-end="url(#ah2)"/><path class="ar" d="M540 235H558V190H578" marker-end="url(#ah2)"/>
+      <rect class="hot" x="580" y="50" width="230" height="160"/><text class="t1" x="596" y="76">read queue, per volume</text>
+      <text class="t2" x="596" y="100">1  the frame on screen</text><text class="t2" x="596" y="118">2  frames for stepping back</text><text class="t2" x="596" y="136">3  timebar preview</text><text class="t2" x="596" y="154">4  next and previous clip</text><text class="t2" x="596" y="172">5  posters and previews</text><text class="lb" x="596" y="196">5 waits while anything plays</text>
+      <path class="ar" d="M810 110H858" marker-end="url(#ah2)"/><text class="lb" x="834" y="102" text-anchor="middle">reads</text>
+      <rect class="bx" x="860" y="75" width="252" height="70"/><text class="t1" x="986" y="105" text-anchor="middle">media files</text><text class="t2" x="986" y="123" text-anchor="middle">opened shared, never written</text>
+      <path class="ar" d="M810 180H835V235H858" marker-end="url(#ah2)"/><text class="lb" x="822" y="228" text-anchor="end">writes</text>
+      <rect class="bx" x="860" y="200" width="252" height="70"/><text class="t1" x="986" y="230" text-anchor="middle">cache folder</text><text class="t2" x="986" y="248" text-anchor="middle">facts · posters · previews</text>
+      <path class="ar dash" d="M68 170V198" marker-end="url(#ah2)"/><text class="lb" x="78" y="190">saved on change</text>
+      <rect class="bx" x="8" y="200" width="272" height="70"/><text class="t1" x="144" y="230" text-anchor="middle">settings file</text><text class="t2" x="144" y="248" text-anchor="middle">readout · loop · volume · guides</text>
+    </svg></div>
+    <figcaption><span class="fn">fig. 30 · what it is made of</span><span>every read goes through one queue per volume, in the order shown, so a poster or a pre-opened neighbor never takes disk time from the frame on screen. the cache folder and the settings file are the only things the app ever writes.</span></figcaption>
+  </figure>
+
+  <figure>
+    <div class="scroll"><svg class="dia" viewBox="0 0 1120 420" role="img" aria-label="Data path inside one player: a reader thread feeds the demuxer, which feeds three decode lanes (our hap code, ffmpeg software, the os hardware decoder) into a frame store and one present shader. Audio has its own lane.">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahf" d="M0 0 10 5 0 10z"/></marker></defs>
+      <rect class="bx" x="8" y="140" width="112" height="60"/><text class="t1" x="64" y="166" text-anchor="middle">file</text><text class="t2" x="64" y="184" text-anchor="middle">local or nas</text>
+      <path class="ar" d="M120 170H148" marker-end="url(#ah)"/>
+      <rect class="bx" x="150" y="140" width="140" height="60"/><text class="t1" x="220" y="166" text-anchor="middle">reader thread</text><text class="t2" x="220" y="184" text-anchor="middle">own read-ahead</text>
+      <path class="ar" d="M290 170H318" marker-end="url(#ah)"/>
+      <rect class="bx" x="320" y="140" width="150" height="60"/><text class="t1" x="395" y="166" text-anchor="middle">demux</text><text class="t2" x="395" y="184" text-anchor="middle">index in background</text>
+      <path class="ar" d="M470 170H500V70H528" marker-end="url(#ah)"/><path class="ar" d="M470 170H528" marker-end="url(#ah)"/><path class="ar" d="M500 170V270H528" marker-end="url(#ah)"/>
+      <rect class="hot" x="530" y="40" width="230" height="60"/><text class="t1" x="645" y="66" text-anchor="middle">hap · our code</text><text class="t2" x="645" y="84" text-anchor="middle">snappy, one core per chunk</text>
+      <rect class="bx" x="530" y="140" width="230" height="60"/><text class="t1" x="645" y="166" text-anchor="middle">ffmpeg, software</text><text class="t2" x="645" y="184" text-anchor="middle">notchlc · prores · sequences</text>
+      <rect class="bx" x="530" y="240" width="230" height="60"/><text class="t1" x="645" y="266" text-anchor="middle">os hardware decoder</text><text class="t2" x="645" y="284" text-anchor="middle">h.264 · hevc · prores on mac</text>
+      <path class="ar" d="M760 70H898" marker-end="url(#ah)"/><text class="lb" x="829" y="62" text-anchor="middle">bc blocks, as stored</text>
+      <path class="ar" d="M760 170H898" marker-end="url(#ah)"/><text class="lb" x="829" y="162" text-anchor="middle">10 to 16-bit planes</text>
+      <path class="ar" d="M760 270H898" marker-end="url(#ah)"/><text class="lb" x="829" y="262" text-anchor="middle">surface, no copy</text>
+      <rect class="bx" x="900" y="40" width="100" height="260"/><text class="t1" x="950" y="142" text-anchor="middle">frame store</text><text class="t2" x="950" y="162" text-anchor="middle">packets in</text><text class="t2" x="950" y="178" text-anchor="middle">ram, frames</text><text class="t2" x="950" y="194" text-anchor="middle">on the gpu,</text><text class="t2" x="950" y="210" text-anchor="middle">both budgeted</text>
+      <path class="ar" d="M1000 170H1018" marker-end="url(#ah)"/>
+      <rect class="bx" x="1020" y="110" width="92" height="120"/><text class="t1" x="1066" y="136" text-anchor="middle">present</text><text class="t2" x="1066" y="156" text-anchor="middle">one shader</text><text class="t2" x="1066" y="172" text-anchor="middle">yuv to rgb</text><text class="t2" x="1066" y="188" text-anchor="middle">exact texels</text><text class="t2" x="1066" y="204" text-anchor="middle">at 100%+</text>
+      <path class="ar" d="M395 200V375H528" marker-end="url(#ah)"/>
+      <rect class="bx" x="530" y="350" width="230" height="50"/><text class="t1" x="645" y="372" text-anchor="middle">audio decode + stretch</text><text class="t2" x="645" y="389" text-anchor="middle">stretcher off at 1×</text>
+      <path class="ar" d="M760 375H898" marker-end="url(#ah)"/>
+      <rect class="bx" x="900" y="350" width="212" height="50"/><text class="t1" x="1006" y="372" text-anchor="middle">audio out</text><text class="t2" x="1006" y="389" text-anchor="middle">the clock when a clip has sound</text>
+      <path class="ar dash" d="M1066 348V232" marker-end="url(#ah)"/><text class="lb" x="1074" y="294">clock</text>
+    </svg></div>
+    <figcaption><span class="fn">fig. 31 · data path in one player</span><span>the red lane is why this is not a skin on an existing player. ffmpeg expands hap to rgba on the cpu and cannot read hap r or hap hdr at all. here the compressed blocks reach the gpu exactly as stored, four to eight times fewer bytes per frame.</span></figcaption>
+  </figure>
+
+  <div class="stack">
+    <h3>decode, per codec</h3>
+    <div class="scroll"><table>
+      <tr><th>codec</th><th>decoded by</th><th>reaches the gpu as</th><th>what the panel must admit</th></tr>
+      <tr><td>hap, hap alpha, hap q, hap q alpha</td><td>our parser, snappy with one core per chunk</td><td>bc1 / bc3 / bc4 blocks as stored, padded when a size is not a multiple of 4. ycocg is undone in the shader.</td><td>8-bit. the chunk count, since a one-chunk file decodes on one core. the disk is the limit: 4K hap q at 60 fps reads 0.5 GB/s, 8K reads 2 GB/s.</td></tr>
+      <tr><td>hap r, hap hdr</td><td>our parser only. ffmpeg cannot decode either.</td><td>bc7 / bc6h blocks as stored</td><td>8-bit · half float</td></tr>
+      <tr><td>notchlc</td><td>ffmpeg, software</td><td>12-bit planes</td><td>12-bit luma over 8-bit chroma and alpha. notch calls it 10-bit equivalent. a lone frame step decodes on one core: measured at gate 0.</td></tr>
+      <tr><td>prores</td><td>mac: videotoolbox, hardware on m1 pro and later. windows and linux: ffmpeg, software.</td><td>10-bit 4:2:2 or 12-bit 4:4:4 planes</td><td>depth is nominal by profile. ffmpeg's decoder keeps 12 of the 16 alpha bits, said in the panel until we unpack alpha ourselves.</td></tr>
+      <tr><td>h.264, hevc</td><td>the os decoder: direct3d 11 video on windows, videotoolbox on macos; on linux vaapi for intel and amd and nvdec for nvidia. software when the gpu declines (10-bit h.264, 4:2:2 on most cards). one hardware session per tab.</td><td>the decoder's own surface, no copy. frames kept for stepping back are gpu copies.</td><td>hardware or software, and the group length, because stepping back is instant only inside the kept frames.</td></tr>
+      <tr><td>image sequences</td><td>exr, dpx, png, jpeg first. tiff and tga after.</td><td>half float, 10, 16 or 8-bit</td><td>the rate, typed by you when the files do not carry one. how many seconds fit in ram: 4K exr at 24 fps sits at the decode ceiling and plays from ram after the first pass, as rv does.</td></tr>
+    </table></div>
+    <p class="hint">frames wider or taller than the gpu's limit (16384 on most cards) are refused with that reason. hap in an .avi needs our own tag mapping; ffmpeg has none.</p>
+  </div>
+
+  <div class="cols">
+    <div class="stack">
+      <h3>how the first frame gets there</h3>
+      <ul class="plain">
+        <li>the first thing the process does is look for a running window and hand it the file. that path loads neither the gpu nor ffmpeg.</li>
+        <li>otherwise the window appears at once, black. the gpu starts on its own thread while the file is opened and its first frame decoded.</li>
+        <li>the frame index, an exact count for mkv, the controls and audio all come after the picture.</li>
+        <li>rendering has its own thread, so dragging or resizing the window never freezes the video.</li>
+      </ul>
+      <h3>targets, set by us, not yet measured</h3>
+      <div class="scroll"><table>
+        <tr><td>warm launch on a local hap or prores file, to first frame</td><td class="mono">250 ms</td></tr>
+        <tr><td>the same, first launch after a reboot</td><td class="mono">measured, not promised</td></tr>
+        <tr><td>a file opened into the running app, local disk</td><td class="mono">50 ms</td></tr>
+        <tr><td>next or previous clip, pre-opened</td><td class="mono">1 refresh</td></tr>
+        <tr><td>one frame step: hap, notchlc, prores, sequences, and inside the kept frames</td><td class="mono">1 refresh</td></tr>
+        <tr><td>a step back past the kept frames, h.264 or hevc</td><td class="mono">measured per group</td></tr>
+        <tr><td>paused</td><td class="mono">no redraws, &lt; 0.5% of a core</td></tr>
+        <tr><td>installed size · memory, paused on one 4K clip</td><td class="mono">60 MB · 300 MB</td></tr>
+        <tr><td>anything over a network</td><td class="mono">no number. it says "reading from network".</td></tr>
+      </table></div>
+    </div>
+    <div class="stack">
+      <h3>what "exact" means, stage by stage</h3>
+      <ul class="plain">
+        <li><b>decoded planes are the truth.</b> the pixel readout and screenshots come from them, never from the screen.</li>
+        <li><b>scaling.</b> at 100% and above luma is read by integer address: no filter. 4:2:0 and 4:2:2 chroma has to be upsampled; bilinear at the file's stated siting by default, nearest on request, and the panel says which.</li>
+        <li><b>color.</b> v1 does no color management. yuv is converted by the file's tags, or by the assumption shown, and the rgb values go to the display unchanged.</li>
+        <li><b>depth.</b> 10-bit output where the display takes it. a deeper file on an 8-bit display is dithered, with a toggle and a chip.</li>
+        <li><b>alpha.</b> rgb is shown as stored, over black. nothing is premultiplied or divided for you.</li>
+        <li><b>float and hdr.</b> linear exr is shown through an srgb curve, hdr is tone-mapped, and both carry a chip saying so. true hdr output is a later phase.</li>
+      </ul>
+      <h3>timing</h3>
+      <ul class="plain">
+        <li><b>silent clips</b>, which is most install content: every frame is shown for a whole number of display refreshes. nothing is dropped. a rate that does not divide the refresh (24 on 60) gets an uneven cadence, named in the panel.</li>
+        <li><b>clips with sound:</b> audio is the clock. on a mismatch such as 59.94 on a 60 Hz display, one frame repeats about every 17 s and the panel counts it (fig. 07).</li>
+        <li>locking audio to the display instead removes that repeat. it is a later improvement, not v1.</li>
+      </ul>
+      <h3>reverse, shuttle and reload</h3>
+      <ul class="plain">
+        <li><b>reverse and shuttle.</b> hap, prores, notchlc and sequences play backward as easily as forward. h.264 and hevc play backward through the kept frames, one group at a time, and may pause between groups. audio is off.</li>
+        <li><b>reload.</b> files are opened shared, so a render can overwrite a clip that is open. the player watches the open file's size and modified time, reloads when they change, keeps your place, and says so (fig. 22). a file still growing is left alone until it stops.</li>
+      </ul>
+    </div>
+  </div>
+
+  <details>
+    <summary>the stack and its licenses <small>every dependency is a proposal</small></summary>
+    <div class="scroll"><table>
+      <tr><th>part</th><th>choice</th><th>license</th><th>why</th></tr>
+      <tr><td>window, input</td><td>winit, plus per-system code through the windows and objc2 crates</td><td>apache-2.0 · mit</td><td>owlette's native code already uses both crates. the per-system code is the borderless frame, hit-testing and touchpad input.</td></tr>
+      <tr><td>renderer</td><td>one per system, ours: direct3d 11, metal. linux is chosen at its phase (opengl or vulkan).</td><td>os apis</td><td>taking a decoder's surface and asking when a frame reached the screen are native calls. each renderer is one textured quad and the controls' triangles.</td></tr>
+      <tr><td>controls, browser</td><td>egui, painted by those renderers</td><td>mit · apache-2.0</td><td>small, immediate, with screen-reader support. no webview.</td></tr>
+      <tr><td>demux, most decoders</td><td>ffmpeg, lgpl build, shared libraries, one pinned version</td><td>lgpl</td><td>no gpl or non-free parts, never linked statically, loaded only after the single-instance check</td></tr>
+      <tr><td>hap</td><td>ours, with snap for snappy</td><td>bsd-3</td><td>a few hundred lines against the published spec</td></tr>
+      <tr><td>audio</td><td>cpal out, signalsmith-stretch for speed</td><td>apache-2.0 · mit</td><td>the stretcher is cleanest from 0.75× to 1.5× and is bypassed at 1×</td></tr>
+      <tr><td>sequences</td><td>openexr or the rust exr crate, chosen at phase 4</td><td>bsd-3</td><td>whichever decodes dwaa and dwab fastest</td></tr>
+    </table></div>
+    <div class="stack">
+      <p><b>wgpu, and why it is out.</b> the stack research recommended wgpu, on condition of a cold-start test: one layer for three systems. the engineering review then showed it offers only an unsafe, per-backend way to take a decoder's surface, and none to report when a frame reached the screen, so the hard parts would be per-system code either way. the two disagreed and i sided with the review. the cost of going native is two egui painters we write ourselves, for direct3d 11 and metal; dear imgui ships both ready-made.</p>
+      <p><b>also ruled out.</b> libmpv: no exact frame number, stepping back re-decodes the whole group, and it cannot hand bc blocks to the gpu. qt: size and start time. sdl's gpu layer: cannot take a decoder's surface. libplacebo: no metal, no bc formats.</p>
+      <p><b>the c++ alternative</b> is sdl3, dear imgui and the same three renderers. equal in capability and with more prior art. rust is the pick because the org's native code is already rust on the same os crates, one cargo build covers three systems, and the code that parses untrusted files is memory-safe.</p>
+    </div>
+  </details>
+
+  <details open>
+    <summary>where each number in the metadata panel comes from <small>exact, or labeled as not in the file</small></summary>
+    <div class="scroll"><table>
+      <tr><th>field</th><th>source of truth</th><th>cost</th><th>what gets flagged</th></tr>
+      <tr><td>frames</td><td>mov and mp4: frames counted by their presentation time, so samples an edit list hides and pictures that cannot be shown are left out. avi: index entries, empty chunks included. mkv and fragmented mp4 carry no count, so packets are counted. sequences: the files on disk.</td><td>header. mkv, fragmented mp4: one background pass over packet headers, no decoding.</td><td>presented, stored and decodable counts when they differ.</td></tr>
+      <tr><td>frame rate</td><td>the file's own ratio: sample duration over timescale. 60000/1001 stays 60000/1001, and a file written as 2997/100 shows 2997/100.</td><td>header. the vfr check is the same background pass.</td><td>variable rate. mkv, whose nanosecond durations cannot express 60000/1001: marked derived. a sequence with no rate in the file: 24 assumed, and you can type another.</td></tr>
+      <tr><td>duration</td><td>presented frames × frame duration, per stream. audio and picture are compared.</td><td>header</td><td>audio off by a frame or more, with the difference.</td></tr>
+      <tr><td>timecode</td><td>our own read of the tmcd track in both its forms, with the drop-frame flag. mxf and dpx: their own.</td><td>first sample</td><td>none in file: counted from 00:00:00:00 and labeled. a drop-frame flag on a whole-number rate.</td></tr>
+      <tr><td>bit depth</td><td>h.264 and hevc: the sequence header. hap: the texture format. exr, dpx, png, tiff: the file header. prores has no depth field, so its depth is nominal by profile. notchlc: 12-bit luma over 8-bit chroma.</td><td>first frame</td><td>"nominal" for prores. anything narrowed on the way to the screen.</td></tr>
+      <tr><td>color and range</td><td>container tags and stream tags, both read: the colr atom, h.264 and hevc stream tags, the prores frame header, the mkv color element, exr chromaticities.</td><td>header and first frame</td><td>amber: container and stream disagreeing, or untagged where tagging is normal. gray: formats that cannot say (hap, notchlc). the assumption in use is always shown.</td></tr>
+      <tr><td>alpha</td><td>the hap variant, the prores frame header (4444 can carry none), the hevc alpha layer, the channels of exr, png, tiff and tga. never the decoder's pixel format, which claims alpha for every notchlc file.</td><td>first frame</td><td>straight or premultiplied is read where a file signals it and labeled where it does not. "present but fully opaque" needs a decode pass, on request.</td></tr>
+      <tr><td>audio</td><td>channel count and layout from the track, mono tracks summed; codec, sample rate, bit depth. the first two channels of the first track play.</td><td>header</td><td>unlabeled channels shown as discrete. compressed audio where a server wants pcm.</td></tr>
+      <tr><td>variant</td><td>the four-character code and, for hap, the section byte: Hap1, Hap5, HapY, HapM, HapA, Hap7, HapH; apco to ap4x. chunk count from the first frame.</td><td>first frame</td><td>shown, not judged.</td></tr>
+    </table></div>
+    <div class="stack">
+      <p>ffmpeg's summary fields are not trusted for these. its frame count ignores edit lists, its headline frame rate is documented as a guess, and its prores range and notchlc color are constants in the decoder, not facts from the file.</p>
+      <p><b>the tests use a different referee per codec.</b> hap: the blocks after snappy against the reference decoder's. h.264 and hevc: decoded planes against ffmpeg in software, which the standard makes bit-exact. prores on videotoolbox: a tolerance, since its maths is allowed to differ. counts and rates: clips generated with a known frame count and a burned-in counter, never ffprobe. the display: a known ramp read back on each gpu vendor.</p>
+    </div>
+  </details>
+</section>
+
+<section id="cache">
+  <div class="sh"><span class="tab">06</span><h2>Caching and previews</h2></div>
+  <p class="lede">copying every folder you look at to local disk is not worth it: it means terabytes, and on your nas opening a file resets its ctime and sets off a re-hash. four small caches are worth it. none is ever written beside the media.</p>
+  <div class="scroll"><table>
+    <tr><th>layer</th><th>verdict</th><th>what it does</th><th>cost</th></tr>
+    <tr><td>metadata</td><td><span class="pill ok">yes</span></td><td>probe once, keyed by path + size + modified time as the folder listing reports them.</td><td>about 1 KB a file</td></tr>
+    <tr><td>poster</td><td><span class="pill ok">yes, local</span></td><td>one frame for each card on screen. lowest disk priority, paused while anything plays.</td><td>one frame read per file</td></tr>
+    <tr><td>hover previews</td><td><span class="pill ok">on first hover</span></td><td>24 small jpegs, made the first time you hover a card and kept. made in bisection order (0, 12, 6, 18 …), so the card scrubs while they fill in. not made for a whole folder up front: hap cannot be decoded small, so one 4K hap q card reads 200 MB.</td><td>about 250 KB stored a file. 2 GB cap, oldest out first.</td></tr>
+    <tr><td>neighbor pre-open</td><td><span class="pill ok">yes, local</span></td><td>the next and previous clip are opened with their first frame decoded, so <kbd>pg dn</kbd> is a texture swap.</td><td>one frame each, about 33 MB at 4K</td></tr>
+    <tr><td>ram around the playhead</td><td><span class="pill ok">yes</span></td><td>hap, prores and notchlc are kept as compressed packets and re-decoded. h.264 and hevc keep a budgeted set of decoded frames. loop analysis preloads its six seconds. the player states what fits ("4K exr: 5.1 s fit in ram") and says so when something does not.</td><td>up to a quarter of ram</td></tr>
+    <tr><td>copy viewed folders locally</td><td><span class="pill no">no</span></td><td>—</td><td>terabytes, and it touches every file on the nas</td></tr>
+    <tr><td>memory-mapped reads</td><td><span class="pill no">no</span></td><td>plain buffered reads with our own read-ahead instead.</td><td>windows does not keep mappings of network files coherent</td></tr>
+  </table></div>
+  <div class="cols">
+    <div class="stack">
+      <h3>timebar preview: performant, as a hybrid</h3>
+      <ul class="plain">
+        <li>the open clip gets a denser strip, one frame per two seconds, at most 100. the nearest of those shows at once.</li>
+        <li>hap, prores, notchlc and sequences: a spare decoder then replaces it with the exact frame. newest request wins. target 16 to 50 ms from local disk, to be measured.</li>
+        <li>h.264 and hevc: the nearest key frame only. an exact frame there can cost a whole group of decodes.</li>
+        <li>fallback if the measurements say no: the strip frame alone.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <h3>network volumes are look-only</h3>
+      <ul class="plain">
+        <li>the browser uses the folder listing and nothing else. it <b>opens no file</b> until you open one, read one, or ask for previews (fig. 29). a plain metadata call opens the file on windows, so that is avoided too.</li>
+        <li>until gate 0 has measured it, any open is assumed to change ctime.</li>
+        <li>cloud placeholders (onedrive, dropbox, icloud files not on disk) are treated the same way, since reading one downloads it.</li>
+        <li>unknown volume types count as network.</li>
+        <li>a test browses a share with audit logging on and fails if the server logs a single open.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="hint">cache lives in %LOCALAPPDATA%, ~/Library/Caches or $XDG_CACHE_HOME, in its own eyepiece folder. one cache file per video: its facts, its poster, its previews. no database. eviction removes only cache files this app wrote, one at a time. it never removes a directory, never recurses, and refuses to run if its folder resolves to nothing, a drive root or a home folder.</p>
+</section>
+
+<section id="adds">
+  <div class="sh"><span class="tab">07</span><h2>What you did not ask for</h2></div>
+  <p class="lede">from the docs of rv, xstudio, djv, mrv2, mpv, switch, screen and loopeek, and the content specs of disguise, pixera, watchout, resolume, touchdesigner, notch, millumin and madmapper. the left column is in v1 on your word. the right column waits.</p>
+  <div class="cols">
+    <div class="stack">
+      <h3><span class="pill ok">in v1</span> agreed 2026-11-23</h3>
+      <div class="scroll"><table>
+        <tr><td>pixel values</td><td>beside the position in the zoom chip: the code values under the pointer at the file's own bit depth, read from the decoded data (fig. 08).</td></tr>
+        <tr><td>tile grid</td><td>the grid takes a tile width and height in pixels, so led panel borders can be checked against content (fig. 10).</td></tr>
+        <tr><td>flags on cards</td><td>vfr, audio off by a frame or more, hap size not a multiple of 4, sequence gaps, container and stream color disagreeing. amber only for a fault in the file (figs 27, 28).</td></tr>
+        <tr><td>seam difference</td><td>in loop analysis: how much changes from the last frame to the first, and a plain warning when they are identical, the doubled frame that makes a loop stutter (fig. 13).</td></tr>
+        <tr><td>source timecode</td><td>the readout starts from the file's own timecode (fig. 15), and a setting starts frame numbers at 1.</td></tr>
+        <tr><td>channel and alpha view</td><td>r, g, b or alpha alone, shown in gray. alpha over checker, black or white; straight or premultiplied (fig. 10).</td></tr>
+        <tr><td>j k l</td><td>shuttle and reverse play (fig. 12).</td></tr>
+        <tr><td>reload on change</td><td>with a toast (fig. 22).</td></tr>
+        <tr><td>mirror, flip, rotate</td><td>view only, always chipped (fig. 11).</td></tr>
+        <tr><td>screenshot options</td><td>caption, guides and markup, each a switch (figs 18, 20).</td></tr>
+        <tr><td>markup</td><td>rectangle, circle, pen and text on a frame, saved as an image (fig. 19).</td></tr>
+      </table></div>
+      <h3>markup, kept small</h3>
+      <ul class="plain">
+        <li>four tools, four inks, undo, clear. no layers, no arrows, no fonts.</li>
+        <li>marks belong to one frame of one clip and last until its tab closes. the saved image is the record. nothing is written into or beside the media.</li>
+        <li>to mark up one part of the picture, zoom to it and save the view.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <h3><span class="pill later">later</span> real value, real cost</h3>
+      <ul class="plain">
+        <li><b>a/b compare</b> with wipe and difference. two tabs already flip on the same frame (section 04).</li>
+        <li><b>in and out points</b> and a to b loop.</li>
+        <li><b>target spec</b>: name the size, rate, codec and alpha a job wants; cards pass or fail; a folder report.</li>
+        <li>one .cube lut. exposure for float exr. out-of-range view. true hdr output.</li>
+        <li>audio meters with per-channel solo. spout and syphon output. wrap view for 360° seams.</li>
+        <li>markup that survives a restart. frame-stamped notes exported as a list. a scan for doubled or dropped frames.</li>
+      </ul>
+      <h3><span class="pill no">no</span> a different tool</h3>
+      <ul class="plain">
+        <li>conversion or any encoding. ocio. ndi. pixel-mapped output across displays. a test pattern generator (open a pattern file). checksums. loudness. contact sheets. deleting, renaming or moving files: the browser is read-only.</li>
+      </ul>
+    </div>
+  </div>
+  <details>
+    <summary>against loopeek, vlc and potplayer <small>loopeek read from its own site on 2026-11-23</small></summary>
+    <div class="scroll"><table>
+      <tr><th></th><th>loopeek v0.7.0</th><th>this plan</th></tr>
+      <tr><td>platforms</td><td>macos on apple silicon, windows x64 (unsigned build)</td><td>windows, macos (both architectures), linux</td></tr>
+      <tr><td>tabs, 1:1 and 200 to 800% zoom, guides</td><td>pro, $19</td><td>core</td></tr>
+      <tr><td>folder grid with hover scrub, hap type and chunk count, alpha flag</td><td>free</td><td>core, plus bit depth, color tags, exact rate and frames</td></tr>
+      <tr><td>hevc, image sequences, audio, frame stepping, loop modes, timecode</td><td>not stated on its site</td><td>core</td></tr>
+      <tr><td>convert hap ⇄ prores / h.264, export png or exr</td><td>pro</td><td>not built, on purpose. png screenshots only.</td></tr>
+      <tr><td>output to a projector or led processor</td><td>pro</td><td>fullscreen on a chosen display at true 1:1</td></tr>
+      <tr><td>checks over time: loop seam, sequence gaps, audio length, vfr</td><td>not stated on its site</td><td>the point of this player</td></tr>
+    </table></div>
+    <div class="stack">
+      <p><b>vlc</b> steps forward one frame only and, as of 3.0.4, does not play hap q alpha or hap r. that is from touchdesigner's hap page, not vlc's own docs. <b>potplayer</b> has a-b repeat and frame stepping per its update notes; nothing else about it was checked. a real comparison with both waits for a build to put beside them.</p>
+    </div>
+  </details>
+  <details>
+    <summary>what the media servers reject <small>the rules behind the card flags</small></summary>
+    <div class="scroll"><table>
+      <tr><th>server</th><th>rule in its own docs</th></tr>
+      <tr><td>disguise</td><td>no hap q alpha. embedded audio must be uncompressed, stereo, 16-bit. sequences number from 0 with no gaps. premultiplied and straight alpha use different blend modes.</td></tr>
+      <tr><td>watchout</td><td>6.6: hap width and height in multiples of 4, no hap q alpha. 7: h.264 up to level 5.2. audio as separate 48 kHz 24-bit wav.</td></tr>
+      <tr><td>pixera</td><td>clip rate should match output refresh; a 59.94 clip in a 60 timeline once came out one frame short. h.264 and h.265 are rated low performance.</td></tr>
+      <tr><td>resolume</td><td>audio as separate uncompressed wav; embedded audio gets cut to a whole number of video frames.</td></tr>
+      <tr><td>madmapper, millumin</td><td>madmapper: no notchlc; h.264 needs every frame a key frame to scrub. millumin: no alpha in h.264 or hevc.</td></tr>
+      <tr><td>hap chunks</td><td>dataton says never more chunks than cores; touchdesigner says it does not matter. so the count is shown and never judged.</td></tr>
+    </table></div>
+  </details>
+</section>
+
+<section id="review">
+  <div class="sh"><span class="tab">08</span><h2>What the reviews broke</h2></div>
+  <p class="lede">three reviewers were given the first draft and told to make it fail: one against your brief line by line, one as a video engineer, one as a vfx reviewer and an installer on site. these are the hits that changed the plan.</p>
+  <div class="scroll"><table>
+    <tr><th>the attack</th><th>what changed</th></tr>
+    <tr><td class="q">the spike measured disk and decoder speed, which are the same under any graphics stack. it could not decide anything.</td><td>phase 0 is six pass or fail gates on the things that do differ, on windows and macos.</td></tr>
+    <tr><td class="q">wgpu offers only an unsafe, per-backend way to import a decoder's surface, and none to read present timing. you would write three native integrations anyway.</td><td>wgpu is out, against the stack research's conditional recommendation. one small native renderer per system (section 10).</td></tr>
+    <tr><td class="q">250 ms ignores what dominates: driver load after a reboot, a mov with its index at the end on a sleeping nas, counting frames in an mkv.</td><td>targets carry their conditions. the instance check runs before anything loads. the index builds in the background. no number is promised over a network.</td></tr>
+    <tr><td class="q">one enter on a nas folder opens 300 files to size the window.</td><td>enter opens the selected card only. play folder on a network path asks once, with the count.</td></tr>
+    <tr><td class="q">"look-only" would still open files: rust's file metadata call opens the file on windows.</td><td>network paths use listing data only, and a test fails the build if the server logs an open.</td></tr>
+    <tr><td class="q">loop analysis has two hard cuts per cycle and only one is the seam. with audio the other one clicks.</td><td>the trip back is a short hold on black with audio faded. audio plays sample-exact through the seam.</td></tr>
+    <tr><td class="q">every pointer move and every key brought the controls up over the pixels being inspected.</td><td>keys never show them. once zoomed, only the top and bottom edges do. a pinned panel stands alone.</td></tr>
+    <tr><td class="q">a ribbon gives a 216-pixel-high window; the menus do not fit. a totem is narrower than the control row.</td><td>640 × 360 minimum with the clip letterboxed, and a row that shortens in a stated order (figs 15, 16).</td></tr>
+    <tr><td class="q">speed was invisible with the controls hidden, and leaked between tabs. play folder with loop "one" looped clip one forever.</td><td>a chip whenever speed is not 1×. speed and loop belong to the tab; a folder starts on loop all.</td></tr>
+    <tr><td class="q">comparing v011 and v012 meant finding the frame again on every flip.</td><td>two clips of the same size and length share frame, zoom and pan when you switch.</td></tr>
+    <tr><td class="q">frame hashes against ffmpeg are the wrong referee for half the codecs.</td><td>a referee per codec (section 05).</td></tr>
+    <tr><td class="q">a 250-frame group at 4K is 6 GB. the ring of decoded frames cannot hold it.</td><td>one refresh is promised only inside the kept frames. the group length is shown. long-group timebar previews use key frames.</td></tr>
+    <tr><td class="q">amber on every hap file teaches people to ignore amber.</td><td>amber only for a fault in this file. what a format cannot say is gray.</td></tr>
+    <tr><td class="q">the hover previews would read 10 GB to thumbnail one folder of hap.</td><td>posters only up front. the 24 preview frames are made on first hover.</td></tr>
+    <tr><td class="q">nothing teaches the keys. volume was only a mute button. the launch screen was not column view.</td><td>right-click and <kbd>?</kbd> (fig. 21), a level slider, and columns from the first screen (fig. 27).</td></tr>
+    <tr><td class="q">phase 1 was most of the product on two systems, and ten extras were in by default.</td><td>phase 1 is one clip in one window on windows. the extras are opt-in.</td></tr>
+    <tr><td class="q">cache eviction deletes many files from a path built from environment variables.</td><td>it is bounded in writing (section 06): own files only, one at a time, never a directory.</td></tr>
+  </table></div>
+  <div class="stack">
+    <h3>attacks i did not act on</h3>
+    <ul class="plain">
+      <li><b>"move open to ctrl + O; O is mark-out everywhere else."</b> your keys stand. the aliases are added.</li>
+      <li><b>"fullscreen should default to 1:1 so wrong-size content shows."</b> fullscreen fits, as you specified. the zoom is stated on entry and <kbd>1</kbd> switches.</li>
+      <li><b>"write it in c++ with dear imgui."</b> equal in capability. rust is kept for the reasons in section 05, and you agreed.</li>
+    </ul>
+  </div>
+  <div class="stack">
+    <h3>then your notes, 2026-11-23</h3>
+    <ul class="plain">
+      <li><b>no orange on the tab strip or the bar.</b> the selected tab is the bright, filled one. the playhead, the seam mark and the on-states are white. orange is left to the sliders, switches and focused field inside menus.</li>
+      <li><b>guides are one color, cyan,</b> since the grid was orange. the color is a setting.</li>
+      <li><b>speed buttons read 0.25× and 0.5×.</b> american spelling throughout.</li>
+      <li><b>the extras you named are in v1</b> (section 07), with the screenshot menu, markup and the saved image drawn in figs 18 to 20.</li>
+      <li><b>builds are signed from the first one:</b> windows here, macos on tec-mba.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="plan">
+  <div class="sh"><span class="tab">09</span><h2>Build order</h2></div>
+  <div class="scroll"><table>
+    <tr><th>phase</th><th>builds</th><th>done when</th></tr>
+    <tr><td class="k">0 · gates</td><td>throwaway code on windows and macos, each a pass or fail: a 10-bit hevc hardware frame on screen with no cpu copy. present timestamps, with 59.94 on 60 checked from outside the app. a 10-bit ramp read back with the right values. cold start split into stages, after a reboot and warm. a renderer overwriting a file we have open. browsing a share with zero opens logged, and which of list, stat and open changes ctime. the ffmpeg build for each system is part of this.<br><b>measured alongside:</b> hap q and hap r at 8K60, including a one-chunk file. whether ffmpeg's demuxer hands over hap r and hap hdr packets at all; if not, hap needs its own mov reader. notchlc's time for one lone frame step. telling a windows touchpad from a wheel. signing a throwaway binary here and notarizing one on tec-mba.<br><b>the nas gate runs only on a scratch folder you name, with your ok.</b></td><td>each gate has a yes or a no. the stack is kept or changed on that, before anything else is written.</td></tr>
+    <tr><td class="k">1 · one clip</td><td>windows, one ordinary window with the control row always showing, no tabs. one file from the command line or a drop. hap, prores, h.264, hevc. play, step, scrub, zoom and pan with the pixel position and values, the readout with source timecode, the metadata panel, a plain screenshot. the reference clips and their tests.</td><td>the zoom menu of fig. 05, the panel of fig. 07 and the pixels of fig. 08 work in a signed build you install.</td></tr>
+    <tr><td class="k">2 · the window</td><td>borderless, the hover controls, tabs, drop, single instance, fullscreen. speed, audio, j k l and reverse. loop modes and loop analysis with the seam difference. the view menu: guides with a tile size, channels, mirror, flip, rotate. screenshot options and markup. reload on change. the key table. notchlc. then the same on macos.</td><td>figs 01 to 03, 05, 06, 09 to 13, 15 to 23, 25 and 26, on both.</td></tr>
+    <tr><td class="k">3 · the browser</td><td>columns, grid, posters and hover previews, the metadata column, card flags, folder playing with the mixed-shape rule, neighbor pre-open, timebar preview, look-only network folders.</td><td>figs 04, 14 and 27 to 29.</td></tr>
+    <tr><td class="k">4 · sequences</td><td>exr, dpx, png and jpeg sequences with gap detection and a typed frame rate. then tiff and tga.</td><td>fig. 24.</td></tr>
+    <tr><td class="k">5 · release</td><td>linux, installers, license notices.</td><td>a download for each system.</td></tr>
+  </table></div>
+  <ul class="plain">
+    <li><b>done means checked where you use it:</b> every phase ends with a build you install on your own machine. the readme exists from phase 0 and changes with the code.</li>
+    <li><b>every build is signed,</b> windows on this machine and macos on tec-mba, as you said the other tridant apps are. owlette's repo has a windows signing script and a mac notarizing script that look like the ones to reuse. i have not run them; phase 0 confirms both.</li>
+    <li><b>tests land with each phase:</b> the referees in section 05, timecode and loop arithmetic as unit tests, and the ui flows driven by scripted input on the real window, compared by screenshot.</li>
+    <li><b>repo:</b> tridant-io/eyepiece, private. not created yet: it waits for your go (section 10).</li>
+  </ul>
+  <details>
+    <summary>what is saved between runs <small>one small text file in the os settings folder</small></summary>
+    <div class="scroll"><table>
+      <tr><th>saved</th><th>not saved, on purpose</th></tr>
+      <tr><td>frames or timecode · frame numbers from 0 or 1 · loop mode for single files and for folders · loop analysis seconds · volume and mute · guides, tile size and guide color · chroma filter · the three screenshot switches · last browser folder and window size · screenshot folder</td><td>speed (always starts at 1×) · zoom, pan, mirror, flip and rotate (belong to a tab) · markup · which tabs were open</td></tr>
+    </table></div>
+  </details>
+</section>
+
+<section id="decide">
+  <div class="sh"><span class="tab">10</span><h2>Settled, and still open</h2></div>
+  <div class="scroll"><table>
+    <tr><th>settled 2026-11-23</th><th>as</th></tr>
+    <tr><td>name</td><td>eyepiece. a trademark register search is still owed before anything public.</td></tr>
+    <tr><td>stack</td><td>rust, one small native renderer per system. phase 0 can still overturn it.</td></tr>
+    <tr><td>keys</td><td>yours stand. ctrl + O, F11, home and end are aliases.</td></tr>
+    <tr><td>gestures</td><td>as tabled in section 03.</td></tr>
+    <tr><td>chrome color</td><td>neutral gray around the picture. no orange on the tab strip or the bar; orange only on sliders, switches and the focused field inside menus. one dark theme.</td></tr>
+    <tr><td>extras</td><td>eleven in v1 (section 07). the rest wait.</td></tr>
+    <tr><td>release</td><td>private repo. signed builds from the first one: windows on this machine, macos signed and notarized on tec-mba. windows, then macos, then linux.</td></tr>
+  </table></div>
+  <div class="dec">
+    <div><h3>network folders: look-only until you say otherwise</h3><p>the one decision you did not answer. hover scrub and the metadata column work on local folders at once, and on a network folder only after you ask (fig. 29). proving that browsing opens nothing needs a share that logs opens: a scratch folder on your nas with logging on, or a samba share on a dev machine.</p><p class="rec">look-only by default, and a samba share on a dev machine for the test, so nothing on the nas is touched.</p></div>
+    <div><h3>the go-ahead</h3><p>nothing exists yet. on your word i create the private repo tridant-io/eyepiece and start phase 0: the six gates on windows, then on the mac. no player code is written before the gates have answers.</p><p class="rec">say go.</p></div>
+    <div><h3>four readings to confirm</h3><p>this machine has reached tec-mba over ssh before, so i will drive the mac gates and builds that way. "select a part of the video" is read as zoom to it and save the view; there is no crop tool. marks vanish when the tab closes. amber fault marks stay on cards and on the metadata button, since amber is a warning and not decoration.</p><p class="rec">tell me if any of the four is wrong.</p></div>
+    <div><h3>small things i picked this round</h3><p><kbd>E</kbd> for markup; <kbd>H</kbd> <kbd>V</kbd> <kbd>Q</kbd> for mirror, flip, rotate. guides in cyan. the screenshot caption sits under the picture and covers no pixel. marks last until the tab closes and are saved nowhere but the image.</p><p class="rec">keep them unless one grates.</p></div>
+  </div>
+</section>
+
+<section id="brief">
+  <div class="sh"><span class="tab">A</span><h2>Your brief, line by line</h2></div>
+  <details>
+    <summary>fifty-five asks and where each one landed <small>changed, partial and unproven items are marked</small></summary>
+    <div class="scroll"><table>
+      <tr><th>you asked for</th><th>where</th><th></th></tr>
+      <tr><td>a simple name that fits tridant</td><td>section 01</td><td><span class="pill ok">settled: eyepiece</span></td></tr>
+      <tr><td>better than vlc, potplayer and loopeek</td><td>section 07, comparison</td><td><span class="pill warn">claimed, unbuilt</span></td></tr>
+      <tr><td>rust or c++</td><td>section 05</td><td><span class="pill ok">settled: rust</span></td></tr>
+      <tr><td>extremely performant; opens a file nearly instantly</td><td>section 05 targets, phase 0</td><td><span class="pill warn">unmeasured</span></td></tr>
+      <tr><td>lightweight</td><td>section 05: 60 MB installed, 300 MB paused on 4K</td><td><span class="pill warn">unmeasured</span></td></tr>
+      <tr><td>hap, notchlc, prores, hevc, h.264</td><td>section 05, decode table</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>image sequences</td><td>section 05, fig. 24, phase 4</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>mac, windows, linux</td><td>section 09: windows, then macos, then linux</td><td><span class="pill warn">linux unproven until phase 5</span></td></tr>
+      <tr><td>for the tridant-io org</td><td>section 09: repo created on approval</td><td><span class="pill ok">held</span></td></tr>
+      <tr><td>frame-by-frame arrows</td><td>fig. 03, section 03</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>a control layer that is not over the top</td><td>fig. 03: one row, twelve controls; fig. 16 when narrow</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>tabs</td><td>figs 01, 03; overflow in the undrawn list</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>play / pause</td><td>fig. 03, space</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>playlist: a folder played back to back</td><td>fig. 14, section 04. name order, this folder only</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>loop one, all, off</td><td>fig. 13. kept per tab; folders start on all</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>loop analysis: last 3 s into first 3 s</td><td>fig. 13</td><td><span class="pill warn">changed: a hold on black on the way back</span></td></tr>
+      <tr><td>adjustable speed</td><td>fig. 06</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>audio</td><td>section 05: first two channels, pitch kept 0.5× to 2×</td><td><span class="pill warn">partly: no multichannel routing</span></td></tr>
+      <tr><td>screenshots</td><td>fig. 18</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>no fancy effects</td><td>section 07, refused list</td><td><span class="pill ok">held</span></td></tr>
+      <tr><td>metadata: container, codec, resolution, fps</td><td>fig. 07</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>length in frames and seconds, exact for all</td><td>section 05, sources table</td><td><span class="pill warn">mkv counts in the background</span></td></tr>
+      <tr><td>audio channels and codec</td><td>fig. 07</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>alpha, bit depth, color space</td><td>fig. 07, section 05</td><td><span class="pill warn">labeled where a file cannot say</span></td></tr>
+      <tr><td>starts as a file browser, finder column style</td><td>figs 27, 28</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>a grid of videos when a folder holds video</td><td>figs 27, 28</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>drag and drop, one or many</td><td>fig. 17: always a new tab</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>fullscreen; P toggles, esc leaves</td><td>section 04</td><td><span class="pill warn">described, not drawn</span></td></tr>
+      <tr><td>video first: nothing visible until hover</td><td>figs 02, 03</td><td><span class="pill warn">changed: edges only once zoomed</span></td></tr>
+      <tr><td>opens on downloads, with the os's own shortcuts</td><td>fig. 27</td><td><span class="pill warn">mac favorites unconfirmed</span></td></tr>
+      <tr><td>scroll scrubs</td><td>section 03</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>shift + scroll or pinch zooms about the pointer, window size kept, level shown</td><td>fig. 08</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>two-finger drag pans; click-drag pans</td><td>section 03</td><td><span class="pill warn">changed: only when zoomed</span></td></tr>
+      <tr><td>double-click: fit, then back to the last zoom</td><td>section 03</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>pixel-perfect playback</td><td>section 05, "exact" stage by stage</td><td><span class="pill warn">not in a window on a scaled mac desktop</span></td></tr>
+      <tr><td>grid overlay, center lines, circle</td><td>fig. 10</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>research what else installers and qc need</td><td>section 07</td><td><span class="pill ok">settled: eleven in v1</span></td></tr>
+      <tr><td>F / G, shift + F / G, O, N, [ ], 0 1 2</td><td>section 03, live in fig. 01</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>no window header; window shaped by the video</td><td>section 04, figs 15, 16</td><td><span class="pill warn">changed: 640 × 360 minimum</span></td></tr>
+      <tr><td>mixed shapes: biggest wins, letterbox the rest</td><td>fig. 14</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>cache any folder we view, if worth it</td><td>section 06</td><td><span class="pill warn">local yes, network on request</span></td></tr>
+      <tr><td>speed is priority one</td><td>section 05, phase 0</td><td><span class="pill warn">unmeasured</span></td></tr>
+      <tr><td>cards scrub on hover</td><td>fig. 28</td><td><span class="pill warn">local; network after you ask</span></td></tr>
+      <tr><td>timebar full width, small, easy to hit, with a preview if performant</td><td>fig. 04, section 06</td><td><span class="pill ok">hybrid, with fallback</span></td></tr>
+      <tr><td>frame / timecode toggle on click, saved with loop settings</td><td>fig. 01: click the readout; section 09</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>bar shows time and total, play, volume with click-to-mute, fullscreen, loop, zoom and speed menus</td><td>figs 03, 05, 06</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>metadata column in the browser when a video is selected</td><td>fig. 28</td><td><span class="pill warn">local; network after you ask</span></td></tr>
+      <tr><td>metadata button: hover to read, click to pin, click to close</td><td>fig. 07</td><td><span class="pill warn">changed: pinned, it moves to a corner and stands alone</span></td></tr>
+      <tr><td>design first, every state, adversarial review</td><td>this page; section 08; eleven states listed, not drawn</td><td><span class="pill warn">29 drawn, 11 listed</span></td></tr>
+      <tr><td>from your notes: 0.25 and 0.5 on the speed buttons; "color" and "center"</td><td>fig. 06 and throughout</td><td><span class="pill ok">done</span></td></tr>
+      <tr><td>the frame counter as an overlay when stepping by key</td><td>fig. 09</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>no orange on the selected tab; orange only inside menus</td><td>fig. 03</td><td><span class="pill ok">changed: bright filled tab, white playhead</span></td></tr>
+      <tr><td>j k l shuttle and reverse; reload with a toast; flip, mirror, rotate</td><td>figs 11, 12, 22</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>screenshots that can carry the frame counter and the grid</td><td>figs 18, 20</td><td><span class="pill ok">designed</span></td></tr>
+      <tr><td>markup: circle, rectangle, pen and text, saved as an image</td><td>figs 19, 20</td><td><span class="pill ok">designed</span></td></tr>
+    </table></div>
+  </details>
+</section>
+
+</div>
+<script>
+(() => {
+'use strict';
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => [...(r || document).querySelectorAll(s)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const pad = (n, w) => String(n).padStart(w || 2, '0');
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem('tmp-plan-c') || '{}') || {}; } catch (e) { return {}; } },
+  set(o) { try { localStorage.setItem('tmp-plan-c', JSON.stringify(o)); } catch (e) {} }
+};
+
+/* ---- stand-in footage: a mapping chart painted per frame. meta rows: [key, html, 1 = fault in this file, 2 = the format cannot say] ---- */
+const CLIPS = [
+  { name: 'wall_main_v012.mov', w: 1920, h: 1080, fps: [60, 1], n: 1800, tint: '#c58bff', seam: true, seamD: '0.4%',
+    meta: [['file', 'wall_main_v012.mov <span>· 2.41 GB</span>'], ['path', 'D:\\delivery_2026-11-20\\wall'], ['container', 'QuickTime <span>.mov</span>'], 0,
+      ['codec', 'HAP Q <span>· HapY · 8 chunks</span>'], ['size', '1920 × 1080 <span>· square pixels</span>'], ['frame rate', '60 <span>· 60/1 · constant</span>'],
+      ['frames', '1,800 <span>· numbered 0 to 1799 · all key frames</span>'], ['duration', '30.000 s'], ['bit depth', '8-bit <span>· BC3 scaled YCoCg</span>'],
+      ['alpha', 'none'], ['color', 'not tagged, as usual for hap. shown as sRGB, full range', 2], ['scan', 'progressive'], 0,
+      ['audio', 'none'], ['timecode', 'none in file <span>· counting from 00:00:00:00</span>'], 0,
+      ['playback', 'gpu blocks, no cpu expansion <span>· display 60.00 Hz · 0 repeated · 0 dropped</span>']] },
+  { name: 'ribbon_L3_v007.mov', w: 3840, h: 480, fps: [60000, 1001], n: 1439, tint: '#5b93ff', seam: false, per: 1000, tc0: 215784, seamD: '31%',
+    meta: [['file', 'ribbon_L3_v007.mov <span>· 3.02 GB</span>'], ['path', 'D:\\delivery_2026-11-20\\wall'], ['container', 'QuickTime <span>.mov</span>'], 0,
+      ['codec', 'NotchLC <span>· nclc</span>'], ['size', '3840 × 480 <span>· square pixels</span>'], ['frame rate', '59.94 <span>· 60000/1001 · constant</span>'],
+      ['frames', '1,439 <span>· numbered 0 to 1438 · all key frames</span>'], ['duration', '24.007 s'], ['bit depth', '12-bit luma <span>· 8-bit chroma · "10-bit equivalent"</span>'],
+      ['alpha', 'none'], ['color', 'not carried by notchlc. the decoder assumes BT.709, sRGB curve, full range', 2], ['scan', 'progressive'], 0,
+      ['audio', 'PCM 24-bit <span>· 48 kHz · 2 ch stereo</span>'], ['audio length', '23.940 s. 4 frames shorter than picture', 1], ['timecode', '01:00:00;00 <span>· drop-frame · tmcd track</span>'], 0,
+      ['playback', 'software, 14 threads <span>· display 60.00 Hz, clip 59.94: one frame repeats every 16.7 s</span>']] },
+  { name: 'totem_A_v003.mov', w: 1080, h: 1920, fps: [30, 1], n: 900, tint: '#e2b13c', seam: true, seamD: '0.6%',
+    meta: [['file', 'totem_A_v003.mov <span>· 1.87 GB</span>'], ['path', 'D:\\delivery_2026-11-20\\wall'], ['container', 'QuickTime <span>.mov</span>'], 0,
+      ['codec', 'Apple ProRes 4444 <span>· ap4h</span>'], ['size', '1080 × 1920 <span>· square pixels</span>'], ['frame rate', '30 <span>· 30/1 · constant</span>'],
+      ['frames', '900 <span>· numbered 0 to 899 · all key frames</span>'], ['duration', '30.000 s'], ['bit depth', '12-bit <span>· 4:4:4 · nominal for this profile</span>'],
+      ['alpha', 'yes <span>· 16-bit in file, shown at 12-bit on this system</span>'], ['alpha type', 'straight or premultiplied is not signaled. shown as straight', 2], ['color', 'BT.709 <span>· tagged 1-1-1 in container and stream</span>'], ['range', 'not stated in file. shown as video range', 2], ['scan', 'progressive'], 0,
+      ['audio', 'none'], ['timecode', '00:00:00:00 <span>· tmcd track</span>'], 0,
+      ['playback', 'software, 14 threads <span>· display 60.00 Hz · each frame held 2 refreshes</span>']] },
+  { name: 'wall_main_v011.mov', w: 1920, h: 1080, fps: [60, 1], n: 1800, tint: '#39b68f', seam: true, seamD: '0.4%', meta: null }
+];
+CLIPS[3].meta = CLIPS[0].meta.map(r => r && r[0] === 'file' ? ['file', 'wall_main_v011.mov <span>· 2.39 GB</span>'] : r);
+const G = 120, GUIDE = '#3df0ff';
+const KEYS = [['space', 'play / pause'], ['F  G', 'previous / next frame'], ['shift F  G', 'first / last frame'], ['J  K  L', 'reverse · stop · forward'], ['wheel', 'scrub'], ['shift wheel', 'zoom at the pointer'],
+  ['0  1  2', 'fit · 1:1 · 2×'], ['double-click', 'fit ↔ last zoom'], ['alt arrows', 'pan'], ['O', 'open'], ['N', 'new tab'], ['[  ]', 'switch tabs'], ['pg up  pg dn', 'previous / next clip'],
+  ['R', 'loop off · one · all'], ['A', 'loop analysis'], ['-  =', 'slower / faster'], ['T', 'frames ↔ timecode'], ['I', 'pin metadata'], ['D  C', 'grid · center lines'], ['H  V  Q', 'mirror · flip · rotate'],
+  ['S', 'screenshot'], ['E', 'markup'], ['M  ↑ ↓', 'mute · volume'], ['P', 'fullscreen'], ['right-click', 'every command'], ['?', 'this table'], ['esc', 'leave fullscreen, close']];
+
+function base(c) {
+  if (c._b) return c._b;
+  const cv = document.createElement('canvas'); cv.width = c.w; cv.height = c.h;
+  const x = cv.getContext('2d');
+  x.fillStyle = '#1c1c1c'; x.fillRect(0, 0, c.w, c.h);
+  x.fillStyle = 'rgba(255,255,255,.17)';
+  for (let i = G; i < c.w; i += G) x.fillRect(i, 0, 1, c.h);
+  for (let j = G; j < c.h; j += G) x.fillRect(0, j, c.w, 1);
+  const cx = c.w / 2, cy = c.h / 2, r = Math.min(c.w, c.h) / 2 - 1;
+  const bars = ['#fff', '#ff0', '#0ff', '#0f0', '#f0f', '#f00', '#00f', '#000'];
+  const bw = Math.round(r * 1.12 / 8), bh = Math.round(r * 0.2), bx = Math.round(cx - bw * 4), by = Math.round(cy - r * 0.58);
+  bars.forEach((b, i) => { x.fillStyle = b; x.fillRect(bx + i * bw, by, bw, bh); });
+  const gy = Math.round(cy + r * 0.38), gr = x.createLinearGradient(bx, 0, bx + bw * 8, 0);
+  gr.addColorStop(0, '#000'); gr.addColorStop(1, '#fff'); x.fillStyle = gr; x.fillRect(bx, gy, bw * 8, bh);
+  const px = G * 2, py = c.h - G * 3, id = x.createImageData(G, G);
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) { const v = (i + j) & 1 ? 255 : 0, o = (j * G + i) * 4; id.data[o] = id.data[o + 1] = id.data[o + 2] = v; id.data[o + 3] = 255; }
+  if (py >= 0) x.putImageData(id, px, py);
+  x.strokeStyle = 'rgba(255,255,255,.4)'; x.lineWidth = 1; x.beginPath(); x.moveTo(0, 0); x.lineTo(c.w, c.h); x.moveTo(c.w, 0); x.lineTo(0, c.h); x.stroke();
+  x.strokeStyle = 'rgba(255,255,255,.9)'; x.lineWidth = 2;
+  x.beginPath(); x.arc(cx, cy, r, 0, 6.2832); x.stroke(); x.beginPath(); x.arc(cx, cy, r / 2, 0, 6.2832); x.stroke();
+  x.fillStyle = 'rgba(255,255,255,.9)'; x.fillRect(0, cy - 1, c.w, 2); x.fillRect(cx - 1, 0, 2, c.h);
+  x.fillStyle = '#fff'; x.fillRect(0, 0, c.w, 1); x.fillRect(0, c.h - 1, c.w, 1); x.fillRect(0, 0, 1, c.h); x.fillRect(c.w - 1, 0, 1, c.h);
+  return (c._b = cv);
+}
+function frame(c, f) {
+  if (!c._c) { c._c = document.createElement('canvas'); c._c.width = c.w; c._c.height = c.h; c._f = -1; }
+  if (c._f === f) return c._c;
+  const x = c._c.getContext('2d', { willReadFrequently: true }); x.drawImage(base(c), 0, 0);
+  const p = c.seam ? f / c.n : (f % c.per) / c.per;
+  const cx = c.w / 2, cy = c.h / 2, r = Math.min(c.w, c.h) / 2 - 1;
+  x.fillStyle = c.tint; x.fillRect(Math.round(p * c.w), 0, Math.max(6, Math.round(c.w / 300)), c.h);
+  const a = p * Math.PI * 8 - Math.PI / 2;
+  x.strokeStyle = c.tint; x.lineWidth = Math.max(4, r / 40); x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx + Math.cos(a) * r * 0.46, cy + Math.sin(a) * r * 0.46); x.stroke();
+  const fs = Math.max(22, Math.round(Math.min(c.w, c.h) * 0.05));
+  x.font = '600 ' + fs + 'px ui-monospace,Menlo,Consolas,monospace'; x.textBaseline = 'top';
+  const s = c.name + '  F ' + pad(f, 6), tw = x.measureText(s).width;
+  const lx = c.w - tw - 52, ly = c.h - fs - 46;   // bottom right, clear of the player's own chips
+  x.fillStyle = 'rgba(0,0,0,.78)'; x.fillRect(lx, ly, tw + 28, fs + 22);
+  x.fillStyle = '#fff'; x.fillText(s, lx + 14, ly + 11);
+  c._f = f; return c._c;
+}
+/* the frame after mirror, flip and rotate */
+function ofr(c, f, o) {
+  const src = frame(c, f); if (!o || (!o.m && !o.v && !o.r)) return src;
+  const W = o.r % 2 ? c.h : c.w, H = o.r % 2 ? c.w : c.h; if (!c._o) c._o = document.createElement('canvas');
+  const cv = c._o; if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const x = cv.getContext('2d', { willReadFrequently: true }); x.setTransform(1, 0, 0, 1, 0, 0); x.translate(W / 2, H / 2); x.rotate(o.r * Math.PI / 2); x.scale(o.m ? -1 : 1, o.v ? -1 : 1); x.drawImage(src, -c.w / 2, -c.h / 2);
+  return cv;
+}
+function thumb(cv, ci, f) {
+  const c = CLIPS[ci], r = cv.getBoundingClientRect();
+  const q = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.max(40, Math.round((cv.clientWidth || r.width || 160) * q)), H = Math.max(22, Math.round((cv.clientHeight || r.height || 90) * q));
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const x = cv.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
+  const s = Math.min(W / c.w, H / c.h), dw = c.w * s, dh = c.h * s;
+  x.imageSmoothingQuality = 'high'; x.drawImage(frame(c, f), (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+function tcode(f, fps) {
+  const nom = Math.round(fps[0] / fps[1]), df = fps[1] === 1001 && (nom === 30 || nom === 60);
+  let n = f;
+  if (df) { const drop = nom === 60 ? 4 : 2, p10 = nom * 600 - drop * 9, p1 = nom * 60 - drop, d = Math.floor(n / p10), m = n % p10; n += drop * 9 * d + (m > drop ? drop * Math.floor((m - drop) / p1) : 0); }
+  return pad(Math.floor(n / (nom * 3600))) + ':' + pad(Math.floor(n / (nom * 60)) % 60) + ':' + pad(Math.floor(n / nom) % 60) + (df ? ';' : ':') + pad(n % nom);
+}
+const rate = c => c.fps[1] === 1 ? String(c.fps[0]) : (c.fps[0] / c.fps[1]).toFixed(2);
+function metaHTML(ci) {
+  return CLIPS[ci].meta.map(r => r ? '<dt>' + r[0] + '</dt><dd' + (r[2] === 1 ? ' class="flag"' : r[2] === 2 ? ' class="note"' : '') + '>' + r[1] + '</dd>' : '<i class="sep"></i>').join('');
+}
+/* markup: marks live in video pixels, so they stay on the picture through zoom and pan */
+function drawMarks(ctx, marks, X, Y, u) {
+  (marks || []).forEach(m => { ctx.strokeStyle = m.c; ctx.fillStyle = m.c; ctx.lineWidth = 2.5 * u; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (m.t === 'rect') ctx.strokeRect(X(Math.min(m.x0, m.x1)), Y(Math.min(m.y0, m.y1)), Math.abs(X(m.x1) - X(m.x0)), Math.abs(Y(m.y1) - Y(m.y0)));
+    else if (m.t === 'ell') { ctx.beginPath(); ctx.ellipse((X(m.x0) + X(m.x1)) / 2, (Y(m.y0) + Y(m.y1)) / 2, Math.abs(X(m.x1) - X(m.x0)) / 2, Math.abs(Y(m.y1) - Y(m.y0)) / 2, 0, 0, 6.2832); ctx.stroke(); }
+    else if (m.t === 'pen') { ctx.beginPath(); m.pts.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1]))); ctx.stroke(); }
+    else if (m.t === 'text') { ctx.font = '600 ' + (13 * u) + 'px Archivo,system-ui,sans-serif'; ctx.textBaseline = 'top'; const w = ctx.measureText(m.s).width;
+      ctx.fillStyle = 'rgba(0,0,0,.8)'; ctx.fillRect(X(m.x) - 5 * u, Y(m.y) - 5 * u, w + 10 * u, 23 * u); ctx.fillStyle = m.c; ctx.fillText(m.s, X(m.x), Y(m.y)); } });
+}
+function drawGuides(ctx, w, h, X, Y, lw, gw, gh, grid, center) {
+  ctx.fillStyle = GUIDE; ctx.strokeStyle = GUIDE; ctx.lineWidth = lw;
+  if (grid) { ctx.globalAlpha = 0.75; for (let i = 0; i <= w; i += gw) ctx.fillRect(Math.min(Math.round(X(i)), Math.round(X(w)) - lw), Math.round(Y(0)), lw, Math.round(Y(h)) - Math.round(Y(0))); for (let j = 0; j <= h; j += gh) ctx.fillRect(Math.round(X(0)), Math.min(Math.round(Y(j)), Math.round(Y(h)) - lw), Math.round(X(w)) - Math.round(X(0)), lw); ctx.globalAlpha = 1; }
+  if (center) { ctx.fillRect(Math.round(X(w / 2)) - (lw >> 1), Math.round(Y(0)), lw, Math.round(Y(h)) - Math.round(Y(0))); ctx.fillRect(Math.round(X(0)), Math.round(Y(h / 2)) - (lw >> 1), Math.round(X(w)) - Math.round(X(0)), lw);
+    ctx.beginPath(); ctx.arc(X(w / 2), Y(h / 2), Math.abs(X(Math.min(w, h) / 2) - X(0)) - lw / 2, 0, 6.2832); ctx.stroke(); }
+}
+/* what a screenshot with everything switched on looks like */
+function renderOut(cv, o) {
+  const c = CLIPS[o.clip], sc = o.width / c.w, W = o.width, H = Math.round(c.h * sc), cap = 62;
+  cv.width = W; cv.height = H + cap; const x = cv.getContext('2d');
+  x.imageSmoothingQuality = 'high'; x.drawImage(frame(c, o.f), 0, 0, W, H);
+  const X = v => v * sc, Y = v => v * sc;
+  drawGuides(x, c.w, c.h, X, Y, 2, 240, 240, true, true); drawMarks(x, o.marks, X, Y, 2.1);
+  x.fillStyle = '#111'; x.fillRect(0, H, W, cap); x.fillStyle = '#e8e8e8'; x.font = '500 23px "IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace'; x.textBaseline = 'middle';
+  x.fillText(c.name + '   F ' + pad(o.f, 6) + '   TC ' + tcode(o.f + (c.tc0 || 0), c.fps) + '   ' + c.w + ' × ' + c.h + '   ' + rate(c) + ' fps', 20, H + cap / 2 + 1);
+}
+
+const I = {
+  prev: '<svg viewBox="0 0 16 16"><path d="M5 3.5v9M11.5 3.5 6.8 8l4.7 4.5"/></svg>',
+  next: '<svg viewBox="0 0 16 16"><path d="M11 3.5v9M4.5 3.5 9.2 8l-4.7 4.5"/></svg>',
+  play: '<svg viewBox="0 0 16 16"><path class="f" d="M5 3v10l8-5z"/></svg>',
+  pause: '<svg viewBox="0 0 16 16"><path class="f" d="M4.5 3h2.6v10H4.5zM8.9 3h2.6v10H8.9z"/></svg>',
+  loop: '<svg viewBox="0 0 16 16"><path d="M3 7.5V7a2.5 2.5 0 0 1 2.5-2.5H13M11 2.5l2 2-2 2M13 8.5V9a2.5 2.5 0 0 1-2.5 2.5H3M5 13.5l-2-2 2-2"/></svg>',
+  guides: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11"/><path d="M8 2.5v11M2.5 8h11"/><circle cx="8" cy="8" r="2.7"/></svg>',
+  info: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.7"/><path d="M8 7.3v3.6M8 5v.3"/></svg>',
+  shot: '<svg viewBox="0 0 16 16"><path d="M2.5 5.5h2.2l1-1.5h4.6l1 1.5h2.2v7h-11z"/><circle cx="8" cy="8.9" r="2.2"/></svg>',
+  vol: '<svg viewBox="0 0 16 16"><path d="M2.5 6.3h2.2L8 3.7v8.6L4.7 9.7H2.5z"/><path d="M10.4 6.2a2.6 2.6 0 0 1 0 3.6M12 4.6a5 5 0 0 1 0 6.8"/></svg>',
+  mute: '<svg viewBox="0 0 16 16"><path d="M2.5 6.3h2.2L8 3.7v8.6L4.7 9.7H2.5z"/><path d="m10.6 6.3 3.2 3.4M13.8 6.3l-3.2 3.4"/></svg>',
+  full: '<svg viewBox="0 0 16 16"><path d="M2.8 6V2.8H6M10 2.8h3.2V6M13.2 10v3.2H10M6 13.2H2.8V10"/></svg>',
+  x: '<svg viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></svg>',
+  rect: '<svg viewBox="0 0 16 16"><rect x="3" y="4.5" width="10" height="7"/></svg>',
+  ell: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5"/></svg>',
+  pen: '<svg viewBox="0 0 16 16"><path d="M3 13l.8-3L11 2.8 13.2 5 6 12.2z"/></svg>',
+  text: '<svg viewBox="0 0 16 16"><path d="M4 4.5h8M8 4.5v8"/></svg>',
+  undo: '<svg viewBox="0 0 16 16"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h5.5a3.2 3.2 0 0 1 0 6.4H6.5"/></svg>'
+};
+const INKS = ['#ff3b30', '#ffd60a', '#32d3ff', '#ffffff'];
+const ZL = [0.125, 0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64];
+const SL = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8];
+let UID = 0;
+
+function mount(wrap, opt) {
+  const live = !!opt.live, u = 'pl' + (++UID), saved = live ? store.get() : {};
+  const S = Object.assign({ tab: 0, playing: false, sh: 0, chrome: false, pop: null, pin: false, tc: !!saved.tc, seamSec: saved.seamSec || 3, mute: false, vol: 0.8,
+    grid: !!saved.grid, center: !!saved.center, gw: saved.gw || 240, gh: saved.gh || 240, hover: null, toast: '', msg: null, flash: '', ban: '', gaps: null, counting: false,
+    solo: '', chip: true, ptr: null, blank: false, markup: false, tool: 'rect', ink: INKS[0], burn: !!saved.burn, withGuides: !!saved.withGuides, withMarks: saved.withMarks !== false }, opt.state || {});
+  const mk = (title, items, loop) => ({ title, items, i: 0, loop, speed: 1, seam: false, p: 0, ch: 'rgb', o: { m: false, v: false, r: 0 },
+    v: items.map(ci => ({ f: 0, zoom: null, cx: CLIPS[ci].w / 2, cy: CLIPS[ci].h / 2, last: null, marks: {} })) });
+  const T = opt.single != null ? [mk('', [opt.single], 'one')] : [mk('wall', [0, 1, 2], saved.loopAll || 'all'), mk('', [3], saved.loopOne || 'one')];
+  const tabO = () => T[S.tab], clip = () => CLIPS[tabO().items[tabO().i]], view = () => tabO().v[tabO().i];
+  if (opt.item) tabO().i = opt.item;
+  Object.assign(view(), opt.view || {});
+  ['loop', 'speed', 'seam', 'p', 'ch'].forEach(k => { if (opt.state && k in opt.state) tabO()[k] = opt.state[k]; });
+  if (opt.o) Object.assign(tabO().o, opt.o);
+  if (opt.marks) view().marks[view().f] = opt.marks;
+
+  const root = document.createElement('div');
+  root.className = 'pl fit' + (live ? ' live' : ''); if (live) root.tabIndex = 0;
+  root.setAttribute('role', 'group'); root.setAttribute('aria-label', live ? 'player prototype' : 'player mock');
+  root.innerHTML =
+    '<canvas class="pl-cv"></canvas>' +
+    '<div class="pl-top"><div class="pl-tabs"></div><button class="pl-plus" data-a="newtab" aria-label="new tab">+</button><span class="pl-grow"></span><div class="pl-win" aria-hidden="true"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div></div>' +
+    '<div class="pl-chips"><span class="pl-ban"></span><span class="pl-chip" data-c="seam"></span><span class="pl-chip" data-c="speed"></span><span class="pl-chip" data-c="view"></span><span class="pl-grow"></span><span class="pl-chip" data-c="zoom"></span></div>' +
+    '<div class="pl-mk" role="toolbar" aria-label="markup"><button class="pl-ib" data-tool="rect" aria-label="rectangle">' + I.rect + '</button><button class="pl-ib" data-tool="ell" aria-label="circle">' + I.ell + '</button><button class="pl-ib" data-tool="pen" aria-label="pen">' + I.pen + '</button><button class="pl-ib" data-tool="text" aria-label="text">' + I.text + '</button><i class="sp"></i>' +
+      INKS.map(c => '<span class="sw" data-ink="' + c + '"><i style="background:' + c + '"></i></span>').join('') + '<i class="sp"></i><button class="pl-ib" data-a="undo" aria-label="undo">' + I.undo + '</button><button class="pl-ib" data-a="clearm" aria-label="clear this frame">' + I.x + '</button><i class="sp"></i><button class="pl-tb" data-a="savem">save image</button><button class="pl-tb" data-a="donem">done</button></div>' +
+    '<input class="pl-mtxt" id="' + u + '-mt" aria-label="markup text" placeholder="type, then enter">' +
+    '<div class="pl-flash"></div><div class="pl-prev"><canvas width="320" height="180"></canvas><span></span></div>' +
+    '<div class="pop" data-pop="zoom"><h6>zoom<span><kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd></span></h6><div class="seg" data-seg="zoom"><button data-z="fit">fit</button><button data-z="1">1:1</button><button data-z="2">2×</button><button data-z="4">4×</button><button data-z="8">8×</button></div>' +
+      '<div class="pop-r"><input type="range" id="' + u + '-zr" min="0" max="1000" aria-label="zoom"><label class="fld"><input id="' + u + '-zf" inputmode="decimal" aria-label="zoom percent"><span>%</span></label></div><p>100% is one video pixel on one display pixel. from there up, pixels are drawn as squares with no smoothing.</p></div>' +
+    '<div class="pop" data-pop="speed"><h6>speed<span><kbd>-</kbd> <kbd>=</kbd></span></h6><div class="seg" data-seg="speed"><button data-s="0.25">0.25×</button><button data-s="0.5">0.5×</button><button data-s="1">1×</button><button data-s="2">2×</button><button data-s="4">4×</button></div>' +
+      '<div class="pop-r"><input type="range" id="' + u + '-sr" min="0" max="1000" aria-label="speed"><label class="fld"><input id="' + u + '-sf" inputmode="decimal" aria-label="speed multiplier"><span>×</span></label></div></div>' +
+    '<div class="pop" data-pop="loop"><h6>loop<span><kbd>R</kbd></span></h6><div class="seg" data-seg="loop"><button data-l="off">off</button><button data-l="one">one</button><button data-l="all">all</button></div>' +
+      '<div class="tog" data-t="seam"><i></i><span>loop analysis</span><kbd>A</kbd><span class="pl-grow"></span><label class="fld"><input id="' + u + '-ss" inputmode="decimal" aria-label="seconds each side of the seam"><span>s</span></label></div><p>plays the end into the start, over and over. the pause on black is the trip back, so the seam is the only cut you see.</p></div>' +
+    '<div class="pop" data-pop="guides"><h6>view</h6>' +
+      '<div class="tog" data-t="grid"><i></i><span>grid</span><kbd>D</kbd><span class="pl-grow"></span><span class="two"><label class="fld sm"><input id="' + u + '-gw" inputmode="numeric" aria-label="grid tile width in pixels"></label><em>×</em><label class="fld sm"><input id="' + u + '-gh" inputmode="numeric" aria-label="grid tile height in pixels"><span>px</span></label></span></div>' +
+      '<div class="tog" data-t="center"><i></i><span>center lines and circle</span><span class="pl-grow"></span><kbd>C</kbd></div>' +
+      '<div class="seg" data-seg="ch"><button data-ch="rgb">rgb</button><button data-ch="r">r</button><button data-ch="g">g</button><button data-ch="b">b</button><button data-ch="a">alpha</button></div>' +
+      '<div class="btns"><button data-a="mirror">mirror<kbd>H</kbd></button><button data-a="flip">flip<kbd>V</kbd></button><button data-a="rot">rotate<kbd>Q</kbd></button></div></div>' +
+    '<div class="pop shot" data-pop="shot"><h6>screenshot<span>to pictures / eyepiece</span></h6><div class="btns"><button data-a="saveframe">frame<kbd>S</kbd></button><button data-a="saveview">view<kbd>shift S</kbd></button><button data-a="copyframe">copy<kbd>ctrl C</kbd></button></div>' +
+      '<div class="tog" data-t="burn"><i></i><span>caption: name, frame, timecode</span></div><div class="tog" data-t="withGuides"><i></i><span>guides, when showing</span></div><div class="tog" data-t="withMarks"><i></i><span>markup</span></div>' +
+      '<div class="btns"><button data-a="markup">markup mode<kbd>E</kbd></button></div></div>' +
+    '<div class="pop meta" data-pop="meta"><h6>metadata<span><button data-a="copy">copy all</button></span></h6><dl class="mreg"></dl></div>' +
+    '<div class="pop list" data-pop="list"><h6>this tab plays<span></span></h6><div class="pl-items"></div></div>' +
+    '<div class="pl-toast"></div><div class="pl-msg"><div><strong></strong><span></span></div></div>' +
+    '<div class="pl-bot"><div class="pl-row">' +
+      '<button class="pl-ib" data-a="prev" aria-label="previous frame">' + I.prev + '</button><button class="pl-ib" data-a="play" aria-label="play or pause"></button><button class="pl-ib" data-a="next" aria-label="next frame">' + I.next + '</button>' +
+      '<button class="pl-tb pl-read" data-a="read" aria-label="switch between frames and timecode"></button><span class="pl-grow"></span>' +
+      '<button class="pl-tb" data-a="loop" aria-label="loop">' + I.loop + '<b></b></button><button class="pl-tb" data-a="speed" aria-label="speed"><b></b></button><button class="pl-tb" data-a="zoom" aria-label="zoom"><b></b></button>' +
+      '<button class="pl-ib" data-a="guides" aria-label="view: guides, channels, orientation">' + I.guides + '</button><button class="pl-ib" data-a="meta" aria-label="metadata">' + I.info + '</button><button class="pl-ib" data-a="shot" aria-label="screenshot and markup">' + I.shot + '</button>' +
+      '<span class="pl-volw"><input type="range" class="pl-vr" id="' + u + '-vr" min="0" max="100" aria-label="volume"><button class="pl-ib" data-a="vol" aria-label="mute"></button></span><button class="pl-ib" data-a="full" aria-label="fullscreen">' + I.full + '</button>' +
+    '</div><div class="pl-time"><div class="pl-track"><i class="pl-fill"></i><span class="pl-gaps"></span><span class="pl-marks"></span><i class="pl-seamtick"></i><i class="pl-ghost"></i><i class="pl-head"></i></div></div></div>';
+  wrap.appendChild(root);
+  const cv = $('.pl-cv', root), ctx = cv.getContext('2d'), E = a => $('[data-a="' + a + '"]', root), P = n => $('[data-pop="' + n + '"]', root), IN = id => $('#' + u + id, root);
+  const elTabs = $('.pl-tabs', root), elTime = $('.pl-time', root), elPrev = $('.pl-prev', root), elToast = $('.pl-toast', root), elMsg = $('.pl-msg', root), elFlash = $('.pl-flash', root), elBan = $('.pl-ban', root), elTxt = IN('-mt');
+  const L0 = opt.L || 680, H0 = opt.H || Math.round(L0 * 9 / 16);
+  let Lw = L0, Lh = H0, k = 1, q = 1, tabSig = '', metaSig = -1, listSig = '', gapSig = '', markSig = '', raf = 0, lastT = 0, acc = 0, hold = 0, idle = 0, over = false, drag = null, down = null, pen = null, scrub = false, wacc = 0,
+    metaBtn = false, metaPanel = false, metaT = 0, toastT = 0, flashT = 0, chipT = 0, pinchT = 0, midT = 0, txtAt = null;
+
+  const dim = () => { const c = clip(), r = tabO().o.r % 2; return { w: r ? c.h : c.w, h: r ? c.w : c.h }; };
+  const fitS = () => { const d = dim(); return Math.min(Lw / d.w, Lh / d.h); };
+  const scale = () => view().zoom == null ? fitS() : view().zoom;
+  const seamK = () => { const c = clip(); return clamp(Math.round(S.seamSec * c.fps[0] / c.fps[1]), 1, Math.floor(c.n / 2)); };
+  const seamF = p => { const c = clip(), kk = seamK(); return p < kk ? c.n - kk + p : p - kk; };
+  const clipLine = c => c.name + ' <i>· ' + c.w + ' × ' + c.h + ' ·</i> ' + rate(c) + ' <i>fps</i>';
+  const stamp = () => { const c = clip(), f = view().f; return S.tc ? '<i>TC</i> ' + tcode(f + (c.tc0 || 0), c.fps) : '<i>F</i> ' + pad(f, 6); };
+
+  function draw() {
+    const c = clip(), v = view(), t = tabO(), d = dim(), s = scale();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+    if (S.blank) return;
+    const hw = Lw / (2 * s), hh = Lh / (2 * s);
+    v.cx = d.w * s <= Lw + 0.5 ? d.w / 2 : clamp(v.cx, hw, d.w - hw);
+    v.cy = d.h * s <= Lh + 0.5 ? d.h / 2 : clamp(v.cy, hh, d.h - hh);
+    const X = vx => (Lw / 2 + (vx - v.cx) * s) * q, Y = vy => (Lh / 2 + (vy - v.cy) * s) * q;
+    const sx0 = Math.max(0, Math.floor(v.cx - hw)), sy0 = Math.max(0, Math.floor(v.cy - hh)), sx1 = Math.min(d.w, Math.ceil(v.cx + hw)), sy1 = Math.min(d.h, Math.ceil(v.cy + hh));
+    const x0 = Math.round(X(sx0)), x1 = Math.round(X(sx1)), y0 = Math.round(Y(sy0)), y1 = Math.round(Y(sy1));
+    ctx.imageSmoothingEnabled = s < 1; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(ofr(c, v.f, t.o), sx0, sy0, sx1 - sx0, sy1 - sy0, x0, y0, x1 - x0, y1 - y0);
+    if (t.ch === 'a') { ctx.fillStyle = '#fff'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); }
+    else if (t.ch !== 'rgb') { ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = { r: '#f00', g: '#0f0', b: '#00f' }[t.ch]; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); ctx.globalCompositeOperation = 'source-over'; }
+    if (s * q >= 10) { ctx.fillStyle = 'rgba(0,0,0,.42)'; for (let i = sx0; i <= sx1; i++) ctx.fillRect(Math.round(X(i)), y0, 1, y1 - y0); for (let j = sy0; j <= sy1; j++) ctx.fillRect(x0, Math.round(Y(j)), x1 - x0, 1); }
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+    drawGuides(ctx, d.w, d.h, X, Y, Math.max(1, Math.round(q)), clamp(S.gw | 0, 8, 4096), clamp(S.gh | 0, 8, 4096), S.grid, S.center);
+    drawMarks(ctx, v.marks[v.f], X, Y, q); ctx.restore();
+  }
+  function zlabel() { const v = view(), s = scale(); return (v.zoom == null ? 'fit ' : '') + (s >= 1 ? Math.round(s * 100) : Math.round(s * 1000) / 10) + '%'; }
+  function place(pop, btn) { const rr = root.getBoundingClientRect(), br = btn.getBoundingClientRect(); pop.style.right = Math.max(8, Math.round((rr.right - br.right) / k) - 4) + 'px'; }
+  function update() {
+    const c = clip(), v = view(), t = tabO(), d = dim(), s = scale(), kk = seamK(), narrow = Lw < 760;
+    const zoomed = d.w * s > Lw + 0.5 || d.h * s > Lh + 0.5, metaOn = S.pin || metaBtn || metaPanel || S.pop === 'meta';
+    root.classList.toggle('is-chrome', S.chrome || (!!S.pop && S.pop !== 'meta') || (metaOn && !S.pin));
+    root.classList.toggle('is-zoomed', zoomed); root.classList.toggle('is-seam', t.seam); root.classList.toggle('is-hover', S.hover != null); root.classList.toggle('is-markup', S.markup);
+    const sig = S.solo + '|' + S.tab + '|' + T.map(x => x.i).join(',');
+    if (sig !== tabSig) { tabSig = sig; elTabs.innerHTML = S.solo ? '<div class="pl-tab on"><span>' + S.solo + '</span><i class="pl-x">' + I.x + '</i></div>' : T.map((x, i) => { const cc = CLIPS[x.items[x.i]];
+      const lab = x.items.length > 1 ? '<em>' + x.title + ' /</em><i class="pl-nav" data-item="-1">‹</i><b class="pl-cnt" data-a="list">' + (x.i + 1) + ' of ' + x.items.length + '</b><i class="pl-nav" data-item="1">›</i> ' + cc.name : cc.name;
+      return '<div class="pl-tab' + (i === S.tab ? ' on' : '') + '" data-tab="' + i + '"><span>' + lab + '</span><i class="pl-x">' + I.x + '</i></div>'; }).join(''); }
+    const ci = t.items[t.i]; if (ci !== metaSig) { metaSig = ci; $('.mreg', P('meta')).innerHTML = metaHTML(ci); }
+    E('play').innerHTML = S.playing ? I.pause : I.play;
+    const dead = S.msg && S.msg.kind === 'err';
+    const cur = dead ? '——' : S.tc ? tcode(v.f + (c.tc0 || 0), c.fps) : pad(v.f, 6), tot = dead ? '——' : S.counting ? 'counting…' : S.tc ? tcode(c.n, c.fps) : pad(c.n, 6);
+    E('read').innerHTML = '<small>' + (S.tc ? 'TC' : 'F') + '</small> ' + cur + (narrow && S.tc ? '' : ' <i>/ ' + tot + '</i>');
+    $('b', E('loop')).textContent = t.seam ? (narrow ? 'analysis' : 'analysis ' + S.seamSec.toFixed(1) + 's') : (narrow ? t.loop : 'loop ' + t.loop);
+    $('b', E('speed')).textContent = (Math.round(t.speed * 100) / 100) + '×';
+    $('b', E('zoom')).textContent = zlabel();
+    const shut = S.playing && S.sh && S.sh !== 1, silent = S.mute || shut || t.speed < 0.5 || t.speed > 2;
+    E('vol').innerHTML = silent ? I.mute : I.vol;
+    const turned = t.o.m || t.o.v || t.o.r || t.ch !== 'rgb';
+    E('guides').classList.toggle('act', S.grid || S.center || !!turned); E('meta').classList.toggle('act', S.pin); E('shot').classList.toggle('act', S.markup);
+    E('meta').classList.toggle('flagged', c.meta.some(r => r && r[2] === 1));
+    ['loop', 'speed', 'zoom', 'guides', 'shot'].forEach(n => { const on = S.pop === n; P(n).classList.toggle('show', on); E(n).classList.toggle('on', on); if (on) place(P(n), E(n)); });
+    P('meta').classList.toggle('show', metaOn); P('meta').classList.toggle('pinned', S.pin); E('meta').classList.toggle('on', metaOn); if (metaOn && !S.pin) place(P('meta'), E('meta'));
+    const lo = S.pop === 'list'; P('list').classList.toggle('show', lo);
+    if (lo) { const ls = S.tab + ':' + t.i; if (ls !== listSig) { listSig = ls; const c0 = CLIPS[t.items[0]];
+      $('span', $('h6', P('list'))).textContent = t.title + ' · ' + t.items.length + ' clips · name order';
+      $('.pl-items', P('list')).innerHTML = t.items.map((id, i) => { const cc = CLIPS[id]; return '<div class="li' + (i === t.i ? ' on' : '') + '" data-go="' + i + '"><b>' + cc.name + '</b><span' + (cc.w !== c0.w || cc.h !== c0.h ? ' class="w"' : '') + '>' + cc.w + ' × ' + cc.h + '</span><span' + (rate(cc) !== rate(c0) ? ' class="w"' : '') + '>' + rate(cc) + '</span><span>' + cc.n + ' f</span></div>'; }).join(''); } }
+    $$('[data-seg="zoom"] button', root).forEach(b => b.classList.toggle('on', b.dataset.z === 'fit' ? v.zoom == null : v.zoom === +b.dataset.z));
+    $$('[data-seg="speed"] button', root).forEach(b => b.classList.toggle('on', t.speed === +b.dataset.s));
+    $$('[data-seg="loop"] button', root).forEach(b => b.classList.toggle('on', !t.seam && t.loop === b.dataset.l));
+    $$('[data-seg="ch"] button', root).forEach(b => b.classList.toggle('on', t.ch === b.dataset.ch));
+    E('mirror').classList.toggle('on', t.o.m); E('flip').classList.toggle('on', t.o.v); E('rot').classList.toggle('on', !!t.o.r);
+    $$('.tog', root).forEach(b => b.classList.toggle('on', b.dataset.t === 'seam' ? t.seam : !!S[b.dataset.t]));
+    $$('[data-tool]', root).forEach(b => b.classList.toggle('on', S.tool === b.dataset.tool)); $$('[data-ink]', root).forEach(b => b.classList.toggle('on', S.ink === b.dataset.ink));
+    const act = document.activeElement, set = (id, val) => { const el = IN(id); if (act !== el) el.value = val; };
+    set('-zr', Math.round(Math.log(s / 0.125) / Math.log(512) * 1000)); set('-zf', s >= 1 ? Math.round(s * 100) : Math.round(s * 1000) / 10);
+    set('-sr', Math.round(Math.log(t.speed / 0.1) / Math.log(80) * 1000)); set('-sf', t.speed.toFixed(2)); set('-ss', S.seamSec.toFixed(1)); set('-gw', S.gw); set('-gh', S.gh); set('-vr', S.mute ? 0 : Math.round(S.vol * 100));
+    const fr = t.seam ? t.p / Math.max(1, 2 * kk - 1) : v.f / Math.max(1, c.n - 1);
+    $('.pl-fill', root).style.width = (fr * 100) + '%'; $('.pl-head', root).style.left = (fr * 100) + '%';
+    const gs = S.gaps ? S.gaps.join() : ''; if (gs !== gapSig) { gapSig = gs; $('.pl-gaps', root).innerHTML = (S.gaps || []).map(g => '<i style="left:' + (g * 100) + '%"></i>').join(''); }
+    const mf = t.seam ? [] : Object.keys(v.marks).filter(f => v.marks[f] && v.marks[f].length), ms = S.tab + ':' + t.i + ':' + mf.join(); if (ms !== markSig) { markSig = ms; $('.pl-marks', root).innerHTML = mf.map(f => '<i style="left:' + (f / Math.max(1, c.n - 1) * 100) + '%"></i>').join(''); }
+    const chip = n => $('[data-c="' + n + '"]', root), zc = chip('zoom'), sc = chip('seam'), pc0 = chip('speed'), vc = chip('view');
+    let xy = ''; if (S.ptr && v.zoom != null) { const vx = Math.floor(v.cx + (S.ptr.x - Lw / 2) / s), vy = Math.floor(v.cy + (S.ptr.y - Lh / 2) / s);
+      if (vx >= 0 && vy >= 0 && vx < d.w && vy < d.h) { let px = ''; try { const pd = ofr(c, v.f, t.o).getContext('2d').getImageData(vx, vy, 1, 1).data; px = ' <em>·</em> ' + pd[0] + ' ' + pd[1] + ' ' + pd[2]; } catch (e) {} xy = ' <em>·</em> x ' + vx + ' y ' + vy + px; } }
+    zc.classList.toggle('show', v.zoom != null && S.chip); zc.innerHTML = zlabel() + (s >= 1 && Number.isInteger(s) ? ' <em>exact</em>' : ' <em>scaled</em>') + xy;
+    sc.classList.toggle('show', t.seam); sc.innerHTML = '<i>loop analysis</i> · last ' + S.seamSec.toFixed(1) + ' s <em>→</em> first ' + S.seamSec.toFixed(1) + ' s <em>· last frame to first:</em> ' + c.seamD + ' <em>of pixels change</em>';
+    pc0.classList.toggle('show', t.speed !== 1 || !!shut);
+    pc0.innerHTML = shut ? (S.sh < 0 ? '−' : '') + Math.abs(S.sh) + '× <em>' + (S.sh < 0 ? 'reverse' : 'shuttle') + ' · audio off</em>' : (Math.round(t.speed * 100) / 100) + '× <em>speed' + (t.speed < 0.5 || t.speed > 2 ? ' · audio off' : '') + '</em>';
+    const vp = []; if (t.o.m) vp.push('mirrored'); if (t.o.v) vp.push('flipped'); if (t.o.r) vp.push('rotated ' + t.o.r * 90 + '°'); if (t.ch !== 'rgb') vp.push({ r: 'red', g: 'green', b: 'blue', a: 'alpha' }[t.ch] + ' only');
+    vc.classList.toggle('show', vp.length > 0); vc.innerHTML = vp.join(' <em>·</em> ');
+    elBan.classList.toggle('show', !!S.ban); if (S.ban) elBan.innerHTML = S.ban;
+    elFlash.classList.toggle('show', !!S.flash); if (S.flash) elFlash.innerHTML = S.flash;
+    const gh = $('.pl-ghost', root);
+    if (S.hover != null) { const hf = t.seam ? seamF(Math.round(S.hover * (2 * kk - 1))) : Math.round(S.hover * (c.n - 1));
+      elPrev.style.display = 'block'; elPrev.style.left = clamp(S.hover * Lw - 82, 6, Lw - 170) + 'px';
+      const pc = $('canvas', elPrev), px = pc.getContext('2d'), ps = Math.min(320 / d.w, 180 / d.h); px.fillStyle = '#000'; px.fillRect(0, 0, 320, 180);
+      px.imageSmoothingQuality = 'high'; px.drawImage(ofr(c, hf, t.o), (320 - d.w * ps) / 2, (180 - d.h * ps) / 2, d.w * ps, d.h * ps);
+      $('span', elPrev).textContent = S.tc ? tcode(hf + (c.tc0 || 0), c.fps) : pad(hf, 6); gh.style.display = 'block'; gh.style.left = (S.hover * 100) + '%';
+    } else { elPrev.style.display = 'none'; gh.style.display = 'none'; }
+    elToast.classList.toggle('show', !!S.toast); if (S.toast) elToast.innerHTML = S.toast;
+    elMsg.className = 'pl-msg' + (S.msg ? ' show ' + S.msg.kind : '');
+    if (S.msg) { const keys = S.msg.kind === 'keys'; $('strong', elMsg).innerHTML = keys ? '' : S.msg.title; $('strong', elMsg).style.display = keys ? 'none' : '';
+      $('span', elMsg).innerHTML = keys ? '<span class="kt">' + KEYS.map(r => '<span><b>' + r[0] + '</b>' + r[1] + '</span>').join('') + '</span>' : S.msg.body; }
+  }
+  function render() { if (!S.msg || S.msg.kind !== 'err') draw(); else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#0b0b0b'; ctx.fillRect(0, 0, cv.width, cv.height); } update(); }
+  function layout() {
+    const fs = document.fullscreenElement === root;
+    if (fs) { Lw = window.innerWidth; Lh = window.innerHeight; k = 1; root.style.transform = 'none'; }
+    else { if (!wrap.clientWidth) return; Lw = L0; Lh = H0; k = wrap.clientWidth / Lw; root.style.transform = 'scale(' + k + ')'; }
+    root.style.width = Lw + 'px'; root.style.height = Lh + 'px';
+    q = Math.min(3, k * (window.devicePixelRatio || 1)); cv.width = Math.round(Lw * q); cv.height = Math.round(Lh * q); render();
+  }
+  if (tabO().seam) view().f = seamF(tabO().p);
+  wrap.style.aspectRatio = L0 + ' / ' + H0;
+  new ResizeObserver(layout).observe(wrap); layout();
+  if (!live) return;
+
+  /* ---- live behavior ---- */
+  const persist = () => store.set({ tc: S.tc, loopAll: T[0].loop, loopOne: T[1].loop, seamSec: S.seamSec, grid: S.grid, center: S.center, gw: S.gw, gh: S.gh, burn: S.burn, withGuides: S.withGuides, withMarks: S.withMarks });
+  const toast = m => { S.toast = m; clearTimeout(toastT); toastT = setTimeout(() => { S.toast = ''; update(); }, 2600); };
+  const flash = (m, ms) => { S.flash = m; clearTimeout(flashT); flashT = setTimeout(() => { S.flash = ''; update(); }, ms || 1100); };
+  const chipWake = () => { S.chip = true; clearTimeout(chipT); chipT = setTimeout(() => { S.chip = false; update(); }, 2000); };
+  function setF(f) { const c = clip(), t = tabO(), kk = seamK(); f = clamp(Math.round(f), 0, c.n - 1);
+    if (t.seam) { if (f >= c.n - kk) t.p = f - (c.n - kk); else if (f < kk) t.p = kk + f; else { t.p = 0; f = seamF(0); } } view().f = f; }
+  function step(d) { const c = clip(), v = view(), t = tabO();
+    if (t.seam) { const m = 2 * seamK(); if (S.playing && d > 0 && t.p + d >= m) { t.p = 0; v.f = seamF(0); hold = performance.now() + 320; return; } t.p = ((t.p + d) % m + m) % m; v.f = seamF(t.p); return; }
+    let f = v.f + d;
+    if (f > c.n - 1) { if (!S.playing) f = c.n - 1; else if (t.loop === 'one') f %= c.n; else if (t.items.length > 1 && (t.loop === 'all' || t.i < t.items.length - 1)) { item(1, true); return; } else if (t.loop === 'all') f %= c.n; else { f = c.n - 1; S.playing = false; S.sh = 0; } }
+    if (f < 0) { if (S.playing && t.loop !== 'off') f = ((f % c.n) + c.n) % c.n; else { f = 0; if (S.playing) { S.playing = false; S.sh = 0; } } }
+    v.f = f; }
+  function tick(now) { if (!S.playing) { raf = 0; return; }
+    if (now < hold) { if (!S.blank) { S.blank = true; render(); } lastT = now; raf = requestAnimationFrame(tick); return; }
+    if (S.blank) { S.blank = false; render(); }
+    const c = clip(); acc += (now - lastT) / 1000 * c.fps[0] / c.fps[1] * tabO().speed * (S.sh || 1); lastT = now; const n = acc >= 0 ? Math.floor(acc) : Math.ceil(acc); acc -= n; if (n) { step(n); render(); } raf = requestAnimationFrame(tick); }
+  function play(on) { S.playing = on; if (!on) { S.sh = 0; if (S.blank) { S.blank = false; hold = 0; } } if (on && !raf) { const c = clip(); if (!tabO().seam && (S.sh || 1) > 0 && view().f >= c.n - 1) view().f = 0; lastT = performance.now(); acc = 0; raf = requestAnimationFrame(tick); } }
+  function shuttle(dir) { const cur = S.playing ? (S.sh || 1) : 0; S.sh = cur === 0 || Math.sign(cur) !== dir ? dir : clamp(cur * 2, -8, 8); acc = 0; play(true); }
+  const same = (a, b) => a !== b && a.w === b.w && a.h === b.h && a.n === b.n;
+  function carry(oc, ov) { const nc = clip(), nv = view(); if (same(oc, nc)) { nv.f = ov.f; nv.zoom = ov.zoom; nv.cx = ov.cx; nv.cy = ov.cy; return true; } return false; }
+  function item(d, auto) { const t = tabO(); if (t.items.length < 2) return; const oc = clip(), ov = view(); t.i = (t.i + d + t.items.length) % t.items.length;
+    if (auto || !carry(oc, ov)) view().f = 0; if (t.seam) { t.p = 0; view().f = seamF(0); } flash(clipLine(clip()), 2000); }
+  function swap(i) { if (i === S.tab) return; const oc = clip(), ov = view(); S.tab = i; S.pop = null; if (!carry(oc, ov)) play(false); flash(clipLine(clip()), 2000); }
+  function setZoom(z, pt) { const v = view(), s0 = scale(), fz = fitS(); let s1 = z == null ? fz : clamp(z, 0.125, 64);
+    if (z == null && v.zoom != null) v.last = { zoom: v.zoom, cx: v.cx, cy: v.cy };
+    const ax = pt ? pt.x - Lw / 2 : 0, ay = pt ? pt.y - Lh / 2 : 0, ux = v.cx + ax / s0, uy = v.cy + ay / s0;
+    v.zoom = z == null || Math.abs(s1 - fz) < 1e-6 ? null : s1; s1 = scale(); v.cx = ux - ax / s1; v.cy = uy - ay / s1; chipWake(); }
+  function zoomStep(dir, pt) { const s = scale(), L = ZL.concat(fitS()).sort((a, b) => a - b); const n = dir > 0 ? L.find(x => x > s * 1.001) : [...L].reverse().find(x => x < s * 0.999); if (n) setZoom(Math.abs(n - fitS()) < 1e-6 ? null : n, pt); }
+  function toggleFit(pt) { const v = view(); if (v.zoom != null) setZoom(null); else if (v.last) { v.zoom = v.last.zoom; v.cx = v.last.cx; v.cy = v.last.cy; chipWake(); } else setZoom(1, pt); }
+  function seam(on) { const t = tabO(); t.seam = on; if (on) { t.p = 0; view().f = seamF(0); } }
+  function orient(fn) { const t = tabO(), v = view(); fn(t.o); const d = dim(); v.zoom = null; v.last = null; v.cx = d.w / 2; v.cy = d.h / 2; }
+  function markup(on) { S.markup = on; S.pop = null; if (on) play(false); else closeText(false); }
+  const marksHere = () => { const v = view(); return v.marks[v.f] || (v.marks[v.f] = []); };
+  const local = e => { const r = root.getBoundingClientRect(); return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k }; };
+  const toVideo = pt => { const v = view(), s = scale(); return { x: Math.round(v.cx + (pt.x - Lw / 2) / s), y: Math.round(v.cy + (pt.y - Lh / 2) / s) }; };
+  const overVideo = () => S.ptr && S.ptr.y > 34 && S.ptr.y < Lh - 52 ? S.ptr : null;
+  const frac = e => { const r = elTime.getBoundingClientRect(); return clamp((e.clientX - r.left) / r.width, 0, 1); };
+  const seekFrac = fr => { const c = clip(), t = tabO(); if (t.seam) { t.p = Math.round(fr * (2 * seamK() - 1)); view().f = seamF(t.p); } else view().f = Math.round(fr * (c.n - 1)); };
+  const hide = () => { if (!over && !S.pop) { S.chrome = false; update(); } };
+  function show() { const was = S.chrome; S.chrome = true; clearTimeout(idle); clearTimeout(midT); midT = 0; idle = setTimeout(hide, 2400); if (!was) update(); }
+  function wake(e) { const pt = local(e); S.ptr = pt;
+    if ((S.markup || root.classList.contains('is-zoomed')) && pt.y > 40 && pt.y < Lh - 60) {   // zoomed or marking up: only the top and bottom bands bring the controls up
+      if (S.chrome && !midT) midT = setTimeout(() => { midT = 0; hide(); }, 900);
+      chipWake(); update(); return; }
+    show(); }
+  const armed = () => root === document.activeElement || root.contains(document.activeElement);
+  const stepKey = d => { play(false); step(d); if (!S.chrome) flash(stamp()); };
+  function closeText(keep) { if (!txtAt) return; const s = elTxt.value.trim(); if (keep && s) marksHere().push({ t: 'text', x: txtAt.x, y: txtAt.y, s, c: S.ink }); txtAt = null; elTxt.style.display = 'none'; elTxt.value = ''; }
+
+  root.addEventListener('pointermove', wake);
+  root.addEventListener('pointerleave', () => { if (!drag && !scrub && !pen) { S.chrome = false; S.ptr = null; metaBtn = metaPanel = false; update(); } });
+  [$('.pl-top', root), $('.pl-bot', root), $('.pl-mk', root)].concat($$('.pop', root)).forEach(el => { el.addEventListener('pointerenter', () => { over = true; }); el.addEventListener('pointerleave', () => { over = false; }); });
+  cv.addEventListener('pointerdown', e => { root.focus({ preventScroll: true }); down = { x: e.clientX, y: e.clientY, pop: !!S.pop }; if (S.pop) { S.pop = null; update(); }
+    if (S.markup) { const pt = local(e), vp = toVideo(pt); closeText(true);
+      if (S.tool === 'text') { txtAt = vp; elTxt.style.left = clamp(pt.x, 6, Lw - 170) + 'px'; elTxt.style.top = clamp(pt.y, 6, Lh - 40) + 'px'; elTxt.style.display = 'block'; elTxt.style.color = S.ink; e.preventDefault(); down = null; render(); elTxt.focus(); return; }   // no default mousedown, so focus lands in the field at once
+      pen = S.tool === 'pen' ? { t: 'pen', pts: [[vp.x, vp.y]], c: S.ink } : { t: S.tool, x0: vp.x, y0: vp.y, x1: vp.x, y1: vp.y, c: S.ink }; marksHere().push(pen); cv.setPointerCapture(e.pointerId); return; }
+    if (root.classList.contains('is-zoomed')) { const v = view(); drag = { x: e.clientX, y: e.clientY, cx: v.cx, cy: v.cy }; cv.setPointerCapture(e.pointerId); root.classList.add('is-pan'); } });
+  cv.addEventListener('pointermove', e => {
+    if (pen) { const vp = toVideo(local(e)); if (pen.t === 'pen') pen.pts.push([vp.x, vp.y]); else { pen.x1 = vp.x; pen.y1 = vp.y; } draw(); return; }
+    if (!drag) return; const v = view(), s = scale(); v.cx = drag.cx - (e.clientX - drag.x) / k / s; v.cy = drag.cy - (e.clientY - drag.y) / k / s; draw(); });
+  const endDrag = e => {
+    if (pen) { const tiny = pen.t === 'pen' ? pen.pts.length < 3 : Math.abs(pen.x1 - pen.x0) + Math.abs(pen.y1 - pen.y0) < 6; if (tiny) marksHere().pop(); pen = null; down = null; render(); return; }
+    if (down && !down.pop && !S.markup && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) { if (S.chrome) { S.chrome = false; clearTimeout(idle); update(); } else show(); }   // a plain click shows or hides the controls
+    drag = null; down = null; root.classList.remove('is-pan'); };
+  cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', () => { drag = null; down = null; pen = null; root.classList.remove('is-pan'); });
+  cv.addEventListener('dblclick', e => { if (S.markup) return; toggleFit(local(e)); render(); });
+  elTxt.addEventListener('keydown', e => { if (e.key === 'Enter') { closeText(true); root.focus(); render(); } else if (e.key === 'Escape') { closeText(false); root.focus(); render(); } e.stopPropagation(); });
+  root.addEventListener('contextmenu', e => { e.preventDefault(); S.msg = S.msg ? null : { kind: 'keys' }; update(); });
+  root.addEventListener('wheel', e => {
+    if (!armed() || e.target.closest('.pop')) return; e.preventDefault();
+    const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX, padLike = e.deltaMode === 0 && Math.abs(d) < 40, pt = local(e);
+    if (e.ctrlKey) { setZoom(clamp(scale() * Math.exp(-d * 0.012), 0.125, 64), pt); clearTimeout(pinchT); pinchT = setTimeout(() => { const s = scale(); if (view().zoom != null && s > 1) { setZoom(Math.round(s), S.ptr); render(); } }, 220); }
+    else if (e.shiftKey) { wacc += padLike ? d / 40 : Math.sign(d); const n = Math.trunc(wacc); if (!n) return; wacc -= n; zoomStep(-n, pt); }
+    else if (!e.altKey && padLike && root.classList.contains('is-zoomed')) { const v = view(), s = scale(); v.cx += e.deltaX / k / s; v.cy += e.deltaY / k / s; }
+    else { wacc += padLike ? d / 24 : Math.sign(d); const n = Math.trunc(wacc); if (!n) return; wacc -= n; play(false); step(n); if (!S.chrome) flash(stamp()); }
+    render();
+  }, { passive: false });
+  elTime.addEventListener('pointermove', e => { S.hover = frac(e); if (scrub) { seekFrac(S.hover); draw(); } update(); });
+  elTime.addEventListener('pointerleave', () => { if (!scrub) { S.hover = null; update(); } });
+  elTime.addEventListener('pointerdown', e => { scrub = true; elTime.setPointerCapture(e.pointerId); seekFrac(frac(e)); render(); });
+  const endScrub = () => { scrub = false; };
+  elTime.addEventListener('pointerup', endScrub); elTime.addEventListener('pointercancel', endScrub);
+  E('meta').addEventListener('pointerenter', () => { clearTimeout(metaT); metaT = setTimeout(() => { metaBtn = true; update(); }, 350); });
+  E('meta').addEventListener('pointerleave', () => { clearTimeout(metaT); metaT = setTimeout(() => { metaBtn = false; update(); }, 180); });
+  P('meta').addEventListener('pointerenter', () => { metaPanel = true; update(); });
+  P('meta').addEventListener('pointerleave', () => { metaPanel = false; update(); });
+  root.addEventListener('click', e => {
+    const q1 = s => e.target.closest(s), nav = q1('[data-item]'), go = q1('[data-go]'), tabEl = q1('[data-tab]'), a = q1('[data-a]'), tg = q1('.tog'), sg = q1('.seg button'), tool = q1('[data-tool]'), ink = q1('[data-ink]'), t = tabO();
+    if (S.msg && S.msg.kind === 'keys') S.msg = null;
+    else if (tool) S.tool = tool.dataset.tool;
+    else if (ink) S.ink = ink.dataset.ink;
+    else if (nav) { swap(0); item(+nav.dataset.item, false); }
+    else if (go) { const oc = clip(), ov = view(); t.i = +go.dataset.go; if (!carry(oc, ov)) view().f = 0; if (t.seam) seam(true); }
+    else if (a && a.dataset.a === 'list') { swap(+tabEl.dataset.tab); S.pop = S.pop === 'list' ? null : 'list'; }
+    else if (tabEl) { if (q1('.pl-x')) toast('closes the tab <i>· ctrl + W · ctrl + shift + T brings it back</i>'); else swap(+tabEl.dataset.tab); }
+    else if (sg) { const d = sg.dataset; if (d.z) setZoom(d.z === 'fit' ? null : +d.z); if (d.s) t.speed = +d.s; if (d.l) { t.loop = d.l; t.seam = false; persist(); } if (d.ch) t.ch = d.ch; }
+    else if (tg && !q1('.fld')) { const n = tg.dataset.t; if (n === 'seam') seam(!t.seam); else { S[n] = !S[n]; persist(); } }
+    else if (a) { const n = a.dataset.a;
+      if (n === 'prev') { play(false); step(-1); } else if (n === 'next') { play(false); step(1); } else if (n === 'play') { const on = !S.playing; S.sh = 0; play(on); }
+      else if (n === 'read') { S.tc = !S.tc; persist(); } else if (n === 'vol') S.mute = !S.mute; else if (n === 'full') full();
+      else if (n === 'saveframe' || n === 'savem') shot(false); else if (n === 'saveview') shot(true); else if (n === 'copyframe') toast('frame copied <i>· the source frame</i>');
+      else if (n === 'markup') markup(true); else if (n === 'donem') markup(false); else if (n === 'undo') marksHere().pop(); else if (n === 'clearm') { view().marks[view().f] = []; }
+      else if (n === 'mirror') orient(o => { o.m = !o.m; }); else if (n === 'flip') orient(o => { o.v = !o.v; }); else if (n === 'rot') orient(o => { o.r = (o.r + 1) % 4; });
+      else if (n === 'newtab') toast('a new tab opens on the browser <i>· fig. 27</i>');
+      else if (n === 'copy') { const txt = CLIPS[t.items[t.i]].meta.filter(Boolean).map(r => r[0] + ': ' + r[1].replace(/<[^>]+>/g, '')).join('\n'); try { navigator.clipboard.writeText(txt).catch(() => {}); } catch (err) {} toast('metadata copied as text'); }
+      else if (n === 'meta') { S.pin = !S.pin; if (!S.pin) { metaBtn = metaPanel = false; } }
+      else if (['loop', 'speed', 'zoom', 'guides', 'shot'].includes(n)) S.pop = S.pop === n ? null : n; }
+    else return;
+    render();
+  });
+  const num = (id, fn) => { const el = IN(id); el.addEventListener('change', () => { const v = parseFloat(el.value); if (isFinite(v)) fn(v); el.blur(); render(); }); el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); }); };
+  num('-zf', v => setZoom(clamp(v / 100, 0.125, 64))); num('-sf', v => { tabO().speed = clamp(v, 0.1, 8); }); num('-ss', v => { S.seamSec = clamp(v, 0.5, 10); persist(); if (tabO().seam) seam(true); });
+  num('-gw', v => { S.gw = clamp(Math.round(v), 8, 4096); S.grid = true; persist(); }); num('-gh', v => { S.gh = clamp(Math.round(v), 8, 4096); S.grid = true; persist(); });
+  IN('-zr').addEventListener('input', e => { setZoom(0.125 * Math.pow(512, e.target.value / 1000)); render(); });
+  IN('-sr').addEventListener('input', e => { tabO().speed = Math.round(0.1 * Math.pow(80, e.target.value / 1000) * 100) / 100; update(); });
+  IN('-vr').addEventListener('input', e => { S.vol = e.target.value / 100; S.mute = S.vol === 0; update(); });
+  function shot(asShown) { const c = clip(), v = view(), extra = [];
+    if (S.burn) extra.push('caption'); if (S.withGuides && (S.grid || S.center)) extra.push('guides'); if (S.withMarks && (v.marks[v.f] || []).length) extra.push('markup');
+    toast('saved to pictures / eyepiece <i>· ' + c.name.replace(/\.\w+$/, '') + '.f' + pad(v.f, 6) + (asShown ? '.view' : '') + '.png · ' + (asShown ? 'as shown' : c.w + ' × ' + c.h) + (extra.length ? ' · with ' + extra.join(', ') : '') + '</i>'); }
+  function full() { if (document.fullscreenElement) document.exitFullscreen(); else if (root.requestFullscreen) root.requestFullscreen().catch(() => toast('fullscreen is blocked in this view')); }
+  document.addEventListener('fullscreenchange', () => { layout(); if (document.fullscreenElement === root) flash(zlabel() + ' <i>· 1 for 1:1</i>', 2000); });
+  root.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.target.blur(); root.focus(); } return; }
+    if (S.msg && S.msg.kind === 'keys') { S.msg = null; update(); if (e.key === 'Escape' || e.key === '?') { e.preventDefault(); return; } }
+    const sh = e.shiftKey, c = clip(), t = tabO(), kx = e.key.toLowerCase();
+    if (e.altKey && kx.startsWith('arrow')) { const v = view(), s = scale(), dx = kx === 'arrowleft' ? -1 : kx === 'arrowright' ? 1 : 0, dy = kx === 'arrowup' ? -1 : kx === 'arrowdown' ? 1 : 0; v.cx += dx * Lw / s / 8; v.cy += dy * Lh / s / 8; e.preventDefault(); chipWake(); render(); return; }
+    if (e.ctrlKey && kx === 'z' && S.markup) { marksHere().pop(); e.preventDefault(); render(); return; }
+    if (e.metaKey || e.altKey || (e.ctrlKey && kx !== 'c')) return;
+    let ok = true;
+    switch (kx) {
+      case ' ': { const on = !S.playing; S.sh = 0; play(on); break; }
+      case 'f': if (sh) { play(false); setF(0); } else stepKey(-1); break;
+      case 'g': if (sh) { play(false); setF(c.n - 1); } else stepKey(1); break;
+      case 'arrowleft': stepKey(sh ? -10 : -1); break;
+      case 'arrowright': stepKey(sh ? 10 : 1); break;
+      case 'j': shuttle(-1); break; case 'l': shuttle(1); break; case 'k': play(false); break;
+      case 'arrowup': S.vol = clamp(S.vol + 0.1, 0, 1); S.mute = false; flash('volume ' + Math.round(S.vol * 100) + '%'); break;
+      case 'arrowdown': S.vol = clamp(S.vol - 0.1, 0, 1); flash('volume ' + Math.round(S.vol * 100) + '%'); break;
+      case 'home': play(false); setF(0); break; case 'end': play(false); setF(c.n - 1); break;
+      case '0': setZoom(null); break; case '1': setZoom(1, overVideo()); break; case '2': setZoom(2, overVideo()); break;
+      case 'p': if (sh) toast('fullscreen on the next display'); else full(); break;
+      case 'f11': full(); break;
+      case 'escape': if (S.markup) markup(false); else if (S.pop || S.pin) { S.pop = null; S.pin = false; } else if (!document.fullscreenElement) root.blur(); break;
+      case 'o': toast('the browser opens over this tab <i>· fig. 28 · esc comes back</i>'); break;
+      case 'n': toast('a new tab opens on the browser <i>· fig. 27</i>'); break;
+      case '[': case '{': swap((S.tab + T.length - 1) % T.length); break;
+      case ']': case '}': swap((S.tab + 1) % T.length); break;
+      case 'pageup': item(-1, false); break; case 'pagedown': item(1, false); break;
+      case 't': S.tc = !S.tc; persist(); break;
+      case 'r': t.seam = false; t.loop = { off: 'one', one: 'all', all: 'off' }[t.loop]; persist(); if (!S.chrome) flash('loop ' + t.loop); break;
+      case 'a': seam(!t.seam); break;
+      case 'd': S.grid = !S.grid; persist(); break;
+      case 'c': if (e.ctrlKey) toast('frame copied <i>· ' + c.w + ' × ' + c.h + ' · the source frame</i>'); else { S.center = !S.center; persist(); } break;
+      case 'h': orient(o => { o.m = !o.m; }); break; case 'v': orient(o => { o.v = !o.v; }); break; case 'q': orient(o => { o.r = (o.r + (sh ? 3 : 1)) % 4; }); break;
+      case 'e': markup(!S.markup); break;
+      case 'i': S.pin = !S.pin; break;
+      case 's': shot(sh); break; case 'm': S.mute = !S.mute; flash(S.mute ? 'muted' : 'sound on'); break;
+      case '-': case '_': t.speed = [...SL].reverse().find(x => x < t.speed - 1e-6) || SL[0]; break;
+      case '=': case '+': t.speed = SL.find(x => x > t.speed + 1e-6) || SL[SL.length - 1]; break;
+      case 'backspace': t.speed = 1; break;
+      case '?': case '/': S.msg = { kind: 'keys' }; break;
+      default: ok = false;
+    }
+    if (ok) { e.preventDefault(); render(); }
+  });
+}
+
+/* ---- boot ---- */
+function fitAll() {
+  $$('.fitw[data-w]').forEach(w => { const W = +w.dataset.w, H = +w.dataset.h, f = w.firstElementChild; w.style.aspectRatio = W + ' / ' + H; f.style.width = W + 'px'; f.style.height = H + 'px'; if (w.clientWidth) f.style.transform = 'scale(' + (w.clientWidth / W) + ')'; });
+}
+function thumbs() { $$('canvas[data-th]').forEach(cv => { const p = cv.dataset.th.split(':'); thumb(cv, +p[0], +p[1]); }); }
+function boot() {
+  $$('[data-meta]').forEach(el => { el.innerHTML = metaHTML(+el.dataset.meta); });
+  fitAll(); thumbs();
+  $$('canvas[data-out]').forEach(cv => renderOut(cv, JSON.parse(cv.dataset.out)));
+  $$('.plw').forEach(w => { const live = w.dataset.live, o = JSON.parse(live || w.dataset.fig || '{}'); o.live = !!live; mount(w, o); });
+  $$('.card[data-clip]').forEach(card => {
+    const ci = +card.dataset.clip, c = CLIPS[ci], cv = $('canvas', card), ln = $('.ln', card), ft = $('.ft', card), home = cv.dataset.th.split(':')[1] | 0;
+    card.addEventListener('pointermove', e => { const r = $('.th', card).getBoundingClientRect(), fr = clamp((e.clientX - r.left) / r.width, 0, 1), f = Math.round(Math.round(fr * 23) / 23 * (c.n - 1));   // the strip holds 24 frames; the label names the one shown
+      card.classList.add('scrub'); ln.style.left = (fr * 100) + '%'; ft.style.display = ''; ft.textContent = pad(f, 6); thumb(cv, ci, f); });
+    card.addEventListener('pointerleave', () => { if (card.dataset.hold) { ln.style.left = (card.dataset.hold * 100) + '%'; ft.textContent = pad(home, 6); } else card.classList.remove('scrub'); thumb(cv, ci, home); });
+  });
+  let rt = 0; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { fitAll(); thumbs(); }, 120); });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
