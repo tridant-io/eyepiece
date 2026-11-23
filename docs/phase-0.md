@@ -9,7 +9,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | name | what | notes |
 |---|---|---|
 | dev pc | windows 11 pro, 20 logical cores, nvidia rtx 2080 ti (driver 610.88), samsung 990 pro nvme, one display at 3840 × 2160 measured at 59.9964 Hz | a parsec virtual display adapter is also installed. touchdesigner and a browser were open during the runs. |
-| tec-mba | macbook air, apple m2, 16 GB, macos 26.6. 12.5 GB free on a volume that is 97% full | not reached yet. ssh as `admin` was refused, and owlette's hoot can read its state but cannot run a command or copy a file there (asked 2026-11-23) |
+| tec-mba | macbook air, apple m2, 16 GB, macos 26.6. 12.5 GB free on a volume that is 97% full | not reached yet. ssh as `admin` was refused. through owlette's hoot this pc may read the mac's state and start or stop the processes owlette already manages there; adding one to launch was refused at this pc's grant (2026-11-23) |
 
 ## the gates
 
@@ -20,7 +20,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | 3 | does 10-bit survive to the swapchain? | a 1024-step ramp drawn into a 10-bit back buffer reads back with every code value exact. | **pass** 2026-11-23 | not run |
 | 4 | how long is a cold start, stage by stage? | measured, not judged: process start, window visible, gpu ready, file open, first frame decoded, first present. twenty warm runs (p50, p95) and one run after a reboot. target for warm: 250 ms on a local hap or prores file. | **measured** 2026-11-23: 220 to 310 ms warm. target missed. after-reboot run owed | not run |
 | 5 | can a render overwrite a file we have open? | with our handle open, another process can overwrite in place, rename a new file over it, and delete and recreate it. we notice each change from size and modified time. | **pass** 2026-11-23 | not run |
-| 6 | does browsing a share open nothing? | on a scratch share that logs opens, listing a folder and reading names, sizes and dates logs zero opens. recorded alongside: which of list, stat and open changes ctime. never run against the owner's nas. | not run | not run |
+| 6 | does browsing a share open nothing? | on a scratch share that logs opens, listing a folder and reading names, sizes and dates logs zero opens. recorded alongside: which of list, stat and open changes ctime. never run against the owner's nas. | **pass** 2026-11-23, against samba 4.23.8 | not run |
 
 ## measured alongside
 
@@ -138,14 +138,15 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | cold launch to first frame in 250 ms | 220 to 310 ms for hap, about 300 for prores and 275 for hevc. the hardware device alone is 155 to 250 ms. the second-launch hand-off matters more than planned, because it skips exactly that. |
 | the display is the clock for silent clips; audio is the clock otherwise | holds, with one rule added: choose the frame by counting refreshes from the os's statistics, never by reading the wall clock at the call. |
 | one frame step is one refresh for hap, prores and notchlc | true for hap. prores needs a slice-threaded stepping decoder and decoded neighbors. notchlc is unmeasured. |
+| on a network folder, use the folder listing and nothing else (adr 0004) | holds, and the line is exact. the listing sends one open, of the folder, and no read. asking for one file's details by path (`std::fs::metadata`) opened a file even straight after a listing. so names, sizes and dates come from the listing's own entries, never from a call per file. |
 | rust with a native direct3d 11 renderer (adr 0001, 0002) | holds on windows. zero-copy hardware frames, present statistics and 10-bit output all work through the windows crate with no surprises. nothing measured so far argues for c++. macos is untested. |
 
 ## what is blocked, and on whom
 
 | what | needs |
 |---|---|
-| every gate on macos | a shell on tec-mba. hoot has no command or file tools there, so the owner has to authorize this pc's ssh key on the mac (one line in its terminal) and say which user. |
-| gate 6 | the owner's ok to install samba inside this pc's wsl ubuntu for a scratch share that logs opens. look-only itself is agreed (adr 0004). |
+| every gate on macos | a shell on tec-mba. two routes are shut: ssh as `admin` was refused, and adding a run-once process through owlette was refused because this pc's hoot grant is tier 2 and that call is tier 3. the owner chooses: raise this pc's grant in owlette, or paste one line into the mac's terminal. |
+| gate 6 on macos | the same shell on tec-mba. the mac's own smb client has to be measured; the scratch share can be reused. |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
 | touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
@@ -164,6 +165,29 @@ the owner said: look-only is fine; render the missing clips from a second touchd
 
 **notchlc 4K60.** `decode_speed notchlc_4k60_td.mov`: decoded as yuva444p12le. straight through on all cores, 100 frames a second (1.67 times real time). one lone step costs 201 ms with the playback decoder and 76 ms with a stepping decoder, because notchlc decodes one frame on one core. so a notchlc step is about five refreshes unless the neighbors are decoded ahead.
 
-**tec-mba.** owlette lists it online (apple m2, 16 GB, macos 26.6). asked what it can do there, hoot answered: read system state, start and stop owlette-managed processes, take a screenshot. no command execution, no file transfer. so no macos gate can run through it. the mac also has only 12.5 GB free.
+**tec-mba.** owlette lists it online (apple m2, 16 GB, macos 26.6). asked what it can do there from this pc, hoot answered: read system state, start and stop owlette-managed processes, take a screenshot. no command execution, no file transfer. the mac also has only 12.5 GB free. (what happened when the owner said to go through owlette anyway is in the next entry.)
 
 **a side effect to know about.** the scripted touchdesigner setup (embody's bootstrap) treats the enclosing git repo as its project: it appended a block to this repo's `.gitignore` and created a `.gitattributes`. both were undone at once (the first restored from git, the second moved aside into the ignored `spike/media/td-render`). next time, make the throwaway project outside any repo.
+
+### 2026-11-23, evening: gate 6, and the mac through owlette
+
+**gate 6 on windows: pass.** `spike\gate6.ps1` brings up a scratch samba share (4.23.8) in its own small wsl distro, makes one folder of 20 files per mode that the windows client (11 pro 23H2) has never seen, runs `gate6_browse` on each, and counts what the server logged. two counts per run: the smb2 requests the server received, by name, and the files its audit module saw a client ask to open.
+
+| mode | open requests | list requests | read requests | files opened | file times changed |
+|---|---|---|---|---|---|
+| open (the control: open each file, read a byte) | 22 | 2 | 20 | 20 | access time |
+| list (the folder listing alone) | 1 | 2 | 0 | 0 | none |
+| stat (`std::fs::metadata` per path, after listing) | 2 | 2 | 0 | 1 | none |
+| attrs (`GetFileAttributesExW` per path, after listing) | 1 | 2 | 0 | 0 | none |
+| list again, under a minute later | 1 | 0 | 0 | 0 | none |
+
+- a listing costs one open, and it is the folder (list and read-attributes access). no file is opened and nothing is read. three runs agreed.
+- stat opened one file of the 20 (attributes only, access 0x100080); windows answered for the other 19 from what the listing had just told it. attrs opened none. both lean on windows' short-lived copy of the listing, so neither is a rule to build on. the listing's own entries already carry size and dates.
+- the second listing never asked the server to list: windows answered from its own copy. samba grants the client a lease on the folder and i take that to be why; not checked. the lease is meant to be withdrawn when the folder changes; not tested either.
+- the audit log also shows one `openat` per file while the server answers a listing. that is samba reading each entry's details itself, not a request from the client: the request log has no open for those files, and no file time moves.
+- the change time moved in no mode, including the control. reading changed the access time only. so this does not reproduce the owner's nas resetting change times on bulk reads; that is something their nas does beyond a plain samba.
+- limits: one server, one client, 20 small files. whether a file is opened is decided by the client, and this is the client the player runs on. macos has its own smb client and is not measured.
+
+the share is not the wsl ubuntu the owner agreed to: that distro does not start (its disk file is gone). it runs in a separate throwaway distro, `eyepiece-gate6` (alpine 3.24.4, 76 MB under `%LOCALAPPDATA%\eyepiece-gate6-wsl`), stopped when the script ends. `wsl --unregister eyepiece-gate6` removes it and its disk; left for the owner to say. the script's first-run branch (download and import) was done by hand with the same commands, not through the script.
+
+**tec-mba through owlette: refused, and left refused.** the owner said to put this pc's ssh key on the mac through owlette rather than at the mac's keyboard. that takes a run-once process added to the mac's owlette list. `add_process` answered: "this call changes what the machine launches, so it is tier 3, and this machine's grant is tier 2." nothing was added and nothing ran on the mac. the grant is the owner's setting (owlette admin panel, hoot, this pc's "how far"), so it was not worked around.

@@ -25,6 +25,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File spike\setup.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File spike\media.ps1 -Big
 # then any gate, for example
 powershell -NoProfile -ExecutionPolicy Bypass -File spike\gate.ps1 gate1_zerocopy spike\media\hevc10_4k_5994.mp4
+# gate 6 is its own script: it brings up a scratch samba share in a small wsl distro (eyepiece-gate6) and reads the share's log
+powershell -NoProfile -ExecutionPolicy Bypass -File spike\gate6.ps1
 ```
 
 the gates are `gate1_zerocopy`, `gate2_present`, `gate3_ramp`, `gate4_coldstart`, `gate5_share`, `gate6_browse`, and the measurements `hap_demux`, `hap_speed`, `hap_play`, `decode_speed`, `devtime`. a gate ends with `PASS` or `FAIL`; a measurement only prints numbers. what each one found is in `docs/phase-0.md`.
