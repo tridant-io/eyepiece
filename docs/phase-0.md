@@ -9,7 +9,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | name | what | notes |
 |---|---|---|
 | dev pc | windows 11 pro, 20 logical cores, nvidia rtx 2080 ti (driver 610.88), samsung 990 pro nvme, one display at 3840 × 2160 measured at 59.9964 Hz | a parsec virtual display adapter is also installed. touchdesigner and a browser were open during the runs. |
-| tec-mba | macbook air, apple m2, 16 GB, macos 26.6. 12.5 GB free on a volume that is 97% full | not reached yet. ssh as `admin` was refused. through owlette's hoot this pc may read the mac's state and start or stop the processes owlette already manages there; adding one to launch was refused at this pc's grant (2026-11-23) |
+| tec-mba | macbook air, apple m2, 16 GB, macos 26.6, built-in display 2880 × 1864. rust 1.98.1 and apple's command line tools (no full xcode); no ffmpeg installed. 18 GB free on a volume that is 96% full | reached over ssh 2026-11-23. it is also a ci runner for another project and may be in use over parsec |
 
 ## the gates
 
@@ -145,12 +145,12 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| every gate on macos | a shell on tec-mba. two routes are shut: ssh as `admin` was refused, and adding a run-once process through owlette was refused because this pc's hoot grant is tier 2 and that call is tier 3. the owner chooses one: add the run-once process themselves in the owlette dashboard (starting it is then within this pc's grant), raise this pc's grant, or paste one line into the mac's terminal. |
-| gate 6 on macos | the same shell on tec-mba. the mac's own smb client has to be measured; the scratch share can be reused. |
+| every gate on macos | nobody. the mac is reachable over ssh; the macos gate programs (metal, videotoolbox) are being written. |
+| gate 6 on macos | nobody. the mac's own smb client has to be measured against the scratch share. |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
 | touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
-| signing on macos | the same shell on tec-mba. |
+| signing on macos | a run, as a job in the mac's own login session (its keychains are locked over ssh). the mac's only signing identity is a personal one, "Developer ID Application: Dylan Roscover", where windows signs as "Tridant, Inc.": the owner says which name the mac build ships under. |
 
 ### 2026-11-23, later the same day: the owner's answers, and what they unblocked
 
@@ -191,3 +191,7 @@ the owner said: look-only is fine; render the missing clips from a second touchd
 the share is not the wsl ubuntu the owner agreed to: that distro does not start (its disk file is gone). it runs in a separate throwaway distro, `eyepiece-gate6` (alpine 3.24.4, 76 MB under `%LOCALAPPDATA%\eyepiece-gate6-wsl`), stopped when the script ends. `wsl --unregister eyepiece-gate6` removes it and its disk; left for the owner to say. the script's first-run branch (download and import) was done by hand with the same commands, not through the script.
 
 **tec-mba through owlette: refused, and left refused.** the owner said to put this pc's ssh key on the mac through owlette rather than at the mac's keyboard. that takes a run-once process added to the mac's owlette list. `add_process` answered: "this call changes what the machine launches, so it is tier 3, and this machine's grant is tier 2." nothing was added and nothing ran on the mac. the grant is the owner's setting (owlette admin panel, hoot, this pc's "how far"), so it was not worked around. the owner can add that process themselves in the dashboard; starting one that exists is within this pc's grant. that route is untested on macos.
+
+### 2026-11-23, night: correction. tec-mba was reachable all along
+
+ssh works as user `rosco` with this pc's key, as other projects on this pc have used it for months. the "refused" in the entries above was my wrong user name (`admin`), and i had not looked at those projects' notes. the owlette detour was never needed: its refusal stands as a fact about this pc's grant, not as a block, and nothing was added to the mac. through owlette this pc can read the mac's state and manage its listed processes but has no shell there, so builds and gate runs go over ssh.
