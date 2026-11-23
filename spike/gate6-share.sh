@@ -31,9 +31,11 @@ EOF
   pgrep smbd >/dev/null || smbd -D
   smbd --version
   ;;
-fresh) # $2 = run name. one folder per mode, same contents, never seen by the windows client before.
-  for m in open list stat attrs; do
-    d="/srv/gate6/$2-$m"
+fresh) # $2 = run name, then the mode names. one folder per mode, same contents, never seen by the client before.
+  run=$2
+  shift 2
+  for m in "$@"; do
+    d="/srv/gate6/$run-$m"
     mkdir "$d"
     i=1
     while [ $i -le 20 ]; do

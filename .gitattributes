@@ -1,0 +1,2 @@
+# shell scripts run on the mac and inside wsl: keep unix line ends whatever the checkout does
+*.sh text eol=lf

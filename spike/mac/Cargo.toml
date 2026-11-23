@@ -1,0 +1,12 @@
+[package]
+name = "spike-mac"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "throwaway phase 0 gate programs for macos. not the player."
+
+[dependencies]
+spike = { path = ".." }
+
+[profile.release]
+opt-level = 3
