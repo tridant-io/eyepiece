@@ -12,7 +12,7 @@ $env:PATH = (Join-Path $PSScriptRoot 'third_party\ffmpeg\bin') + ';' + $env:PATH
 if (-not (Test-Path $exe)) { throw 'build it first: spike\gate.ps1 gate6_browse list .' }
 
 if (-not (@(wsl.exe -l -q) | Where-Object { $_.Trim() -eq $distro })) {
-    New-Item -ItemType Directory $store | Out-Null
+    New-Item -ItemType Directory $store -Force | Out-Null
     $tar = Join-Path $store 'alpine-minirootfs.tar.gz'
     Invoke-WebRequest 'https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.4-x86_64.tar.gz' -OutFile $tar
     if ((Get-FileHash $tar -Algorithm SHA256).Hash -ne 'CDAA38CB8DE3537967EE5B6C9B6CD00CC962DA2B018E6EEA48696BB274923012') { throw 'the alpine download does not match its checksum' }

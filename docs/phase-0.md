@@ -145,7 +145,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| every gate on macos | a shell on tec-mba. two routes are shut: ssh as `admin` was refused, and adding a run-once process through owlette was refused because this pc's hoot grant is tier 2 and that call is tier 3. the owner chooses: raise this pc's grant in owlette, or paste one line into the mac's terminal. |
+| every gate on macos | a shell on tec-mba. two routes are shut: ssh as `admin` was refused, and adding a run-once process through owlette was refused because this pc's hoot grant is tier 2 and that call is tier 3. the owner chooses one: add the run-once process themselves in the owlette dashboard (starting it is then within this pc's grant), raise this pc's grant, or paste one line into the mac's terminal. |
 | gate 6 on macos | the same shell on tec-mba. the mac's own smb client has to be measured; the scratch share can be reused. |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
@@ -181,13 +181,13 @@ the owner said: look-only is fine; render the missing clips from a second touchd
 | attrs (`GetFileAttributesExW` per path, after listing) | 1 | 2 | 0 | 0 | none |
 | list again, under a minute later | 1 | 0 | 0 | 0 | none |
 
-- a listing costs one open, and it is the folder (list and read-attributes access). no file is opened and nothing is read. three runs agreed.
+- a listing costs one open, and it is the folder (list and read-attributes access). no file is opened and nothing is read. five runs agreed, the last on a writable share.
 - stat opened one file of the 20 (attributes only, access 0x100080); windows answered for the other 19 from what the listing had just told it. attrs opened none. both lean on windows' short-lived copy of the listing, so neither is a rule to build on. the listing's own entries already carry size and dates.
 - the second listing never asked the server to list: windows answered from its own copy. samba grants the client a lease on the folder and i take that to be why; not checked. the lease is meant to be withdrawn when the folder changes; not tested either.
 - the audit log also shows one `openat` per file while the server answers a listing. that is samba reading each entry's details itself, not a request from the client: the request log has no open for those files, and no file time moves.
-- the change time moved in no mode, including the control. reading changed the access time only. so this does not reproduce the owner's nas resetting change times on bulk reads; that is something their nas does beyond a plain samba.
+- the change time moved in no mode, including the control, on a read-only share and again on a writable one. reading changed the access time only. so this does not reproduce the owner's nas resetting change times on bulk reads; why the nas does that is not known.
 - limits: one server, one client, 20 small files. whether a file is opened is decided by the client, and this is the client the player runs on. macos has its own smb client and is not measured.
 
 the share is not the wsl ubuntu the owner agreed to: that distro does not start (its disk file is gone). it runs in a separate throwaway distro, `eyepiece-gate6` (alpine 3.24.4, 76 MB under `%LOCALAPPDATA%\eyepiece-gate6-wsl`), stopped when the script ends. `wsl --unregister eyepiece-gate6` removes it and its disk; left for the owner to say. the script's first-run branch (download and import) was done by hand with the same commands, not through the script.
 
-**tec-mba through owlette: refused, and left refused.** the owner said to put this pc's ssh key on the mac through owlette rather than at the mac's keyboard. that takes a run-once process added to the mac's owlette list. `add_process` answered: "this call changes what the machine launches, so it is tier 3, and this machine's grant is tier 2." nothing was added and nothing ran on the mac. the grant is the owner's setting (owlette admin panel, hoot, this pc's "how far"), so it was not worked around.
+**tec-mba through owlette: refused, and left refused.** the owner said to put this pc's ssh key on the mac through owlette rather than at the mac's keyboard. that takes a run-once process added to the mac's owlette list. `add_process` answered: "this call changes what the machine launches, so it is tier 3, and this machine's grant is tier 2." nothing was added and nothing ran on the mac. the grant is the owner's setting (owlette admin panel, hoot, this pc's "how far"), so it was not worked around. the owner can add that process themselves in the dashboard; starting one that exists is within this pc's grant. that route is untested on macos.

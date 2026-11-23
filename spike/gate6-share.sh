@@ -25,7 +25,7 @@ setup) # $2 = the share password. safe to run again.
   full_audit:syslog = false
 [gate6]
   path = /srv/gate6
-  read only = yes
+  read only = no
   valid users = gate6
 EOF
   pgrep smbd >/dev/null || smbd -D
