@@ -9,4 +9,4 @@ So on a network path the browser uses the folder listing and nothing else. It op
 - Hover scrub, posters and the metadata column do not work on a network folder until asked for.
 - Code must not call anything that opens a file to learn about it. On Windows `std::fs::metadata` does; use the directory listing's data.
 - A test browses a share that logs opens and fails if any are logged. It never runs against the owner's NAS, only a scratch share.
-- The owner has not yet said yes to this one in words (it was the recommended default when they said go). If they want network folders cached too, this record is replaced, not edited.
+- The owner agreed to this on 2026-11-23 ("look only is fine").

@@ -9,7 +9,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | name | what | notes |
 |---|---|---|
 | dev pc | windows 11 pro, 20 logical cores, nvidia rtx 2080 ti (driver 610.88), samsung 990 pro nvme, one display at 3840 × 2160 measured at 59.9964 Hz | a parsec virtual display adapter is also installed. touchdesigner and a browser were open during the runs. |
-| tec-mba | macbook air | not reached yet: ssh as `admin` was refused on 2026-11-23 |
+| tec-mba | macbook air, apple m2, 16 GB, macos 26.6. 12.5 GB free on a volume that is 97% full | not reached yet. ssh as `admin` was refused, and owlette's hoot can read its state but cannot run a command or copy a file there (asked 2026-11-23) |
 
 ## the gates
 
@@ -26,12 +26,12 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | why it matters | windows | macos |
 |---|---|---|---|
-| does ffmpeg's demuxer hand over hap r and hap hdr packets? | if not, hap needs its own mov sample reader (adr 0003) | **yes** 2026-11-23 | n/a |
+| does ffmpeg's demuxer hand over hap r and hap hdr packets? | if not, hap needs its own mov sample reader (adr 0003) | **yes** 2026-11-23, on real hap r and hap hdr files too | n/a |
 | hap q at 8K60, including a one-chunk file: disk MB/s, snappy ms per frame by thread count, upload ms | the hap lane's real ceiling | **measured** 2026-11-23: 4K60 solid, 8K60 at the edge | not run |
-| notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | not run: no notchlc clip yet. touchdesigner is installed here and can probably write one; not tried | not run |
+| notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | **measured** 2026-11-23: 76 ms | not run |
 | prores 4444 xq at 4K60 in software | no hardware prores decode on windows | **measured** 2026-11-23: 30 to 37 fps on worst-case content | n/a |
-| can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | not run: a touchpad is attached to this pc, but the probe is not written and needs someone at the pad | n/a |
-| sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | not run: waits for the owner | not run |
+| can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | not run: this pc has no touchpad (the hid entry is its logitech receiver). needs another windows machine | n/a |
+| sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | **pass** 2026-11-23 | not run |
 
 ## log
 
@@ -144,10 +144,26 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| every gate on macos | a way into tec-mba. ssh as `admin` with this machine's key was refused. |
-| gate 6 | a scratch share that logs opens. the owner has not said where. |
-| gate 4 after a reboot | the owner to reboot and run one command. |
+| every gate on macos | a shell on tec-mba. hoot has no command or file tools there, so the owner has to authorize this pc's ssh key on the mac (one line in its terminal) and say which user. |
+| gate 6 | the owner's ok to install samba inside this pc's wsl ubuntu for a scratch share that logs opens. look-only itself is agreed (adr 0004). |
+| gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
-| notchlc step time, and a real hap r or hap hdr file | clips from the owner, or their ok to render them from a second touchdesigner instance (three 2025 builds are installed; ffmpeg cannot encode either). |
-| touchpad against wheel | a small probe, not written yet, and someone to use the touchpad attached to this pc. |
-| signing | the owner's word to sign a throwaway binary with their signing setup. |
+| touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
+| signing on macos | the same shell on tec-mba. |
+
+### 2026-11-23, later the same day: the owner's answers, and what they unblocked
+
+the owner said: look-only is fine; render the missing clips from a second touchdesigner instance; sign a throwaway binary; no reboot yet; this pc has no touchpad; reach tec-mba through owlette.
+
+**signing on windows: pass.** owlette's `scripts/sign.ps1` signed a throwaway copy of a gate binary through azure artifact signing (profile `tridantpublic`) and signtool verified it: signer "Tridant, Inc.", rfc 3161 timestamp, status valid. the same script will sign eyepiece builds unchanged.
+
+**real hap r and hap hdr files.** rendered at 4K60 from touchdesigner 2025.33230 (a second instance, closed afterwards), 120 frames each, with a notchlc and a hap q clip.
+- ffmpeg reports both as codec "none" (tags Hap7 and HapH) and still delivers 120 of 120 packets, each a valid hap section: bc7 for hap r, bc6h unsigned for hap hdr. the earlier caveat about retagged clips is closed.
+- our lane handles them as it does hap q: about 1.5 ms a frame from ram, and 60 frames a second from the file for 12 s with 0 missed refreshes on each.
+- not checked: that the picture is right. ffmpeg has no decoder to compare with, so that needs the reference decoder.
+
+**notchlc 4K60.** `decode_speed notchlc_4k60_td.mov`: decoded as yuva444p12le. straight through on all cores, 100 frames a second (1.67 times real time). one lone step costs 201 ms with the playback decoder and 76 ms with a stepping decoder, because notchlc decodes one frame on one core. so a notchlc step is about five refreshes unless the neighbors are decoded ahead.
+
+**tec-mba.** owlette lists it online (apple m2, 16 GB, macos 26.6). asked what it can do there, hoot answered: read system state, start and stop owlette-managed processes, take a screenshot. no command execution, no file transfer. so no macos gate can run through it. the mac also has only 12.5 GB free.
+
+**a side effect to know about.** the scripted touchdesigner setup (embody's bootstrap) treats the enclosing git repo as its project: it appended a block to this repo's `.gitignore` and created a `.gitattributes`. both were undone at once (the first restored from git, the second moved aside into the ignored `spike/media/td-render`). next time, make the throwaway project outside any repo.
