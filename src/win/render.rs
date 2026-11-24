@@ -562,7 +562,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Key(..) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
@@ -1240,6 +1240,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 let for_browser = browsing && !mods.ctrl && !mods.alt && !matches!(key, Key::BracketLeft | Key::BracketRight);
                 command = !(ui.typing() || for_browser);
             }
+            // any key takes the table of keys away and then does what it does; esc and ? only take it away
+            let table_up = matches!(event, Event::Key { .. }) && ui.hide_keys();
             match event {
                 Event::Close => return,
                 Event::Resize { w, h } => {
@@ -1267,6 +1269,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Toast(said) => toast = say(said),
                 // what was read in the background is taken up below, with everything else
                 Event::Wake => {}
+                Event::Key { key: Key::Escape | Key::Slash, .. } if table_up => {}
                 // a field being typed into takes the keys; escape closes it and its menu
                 Event::Key { key, mods } if ui.typing() => {
                     ui.key(key, mods);
@@ -1305,6 +1308,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // its character, which must still reach the browser
                 Event::Char(_) if command => command = false,
                 Event::Char(c) if browsing => ui.browser_char(c),
+                // ? (or the slash alone) shows the table of keys over the clip
+                Event::Key { key: Key::Slash, mods } if !mods.ctrl && !mods.alt => ui.show_keys(),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis
                 Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::Up | Key::Down | Key::PageUp | Key::PageDown) => match key {
@@ -1470,6 +1475,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::Minimize => window::minimize(window),
                 Action::ToggleMaximize => window::toggle_maximize(window),
                 Action::Close => window::close(window),
+                // a command chosen in the right-click menu goes the way its key does
+                Action::Key(key, mods) => {
+                    let _ = wake.send(Event::Key { key: *key, mods: *mods });
+                }
                 // the rest are for the clip on screen
                 clip => {
                     if let Some(v) = tabs.view() {

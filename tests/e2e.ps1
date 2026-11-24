@@ -21,6 +21,26 @@ public static class EyepieceE2e {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 '@
+# what the window shows, asked of the window itself (PrintWindow: its own picture, not the screen's)
+Add-Type -ReferencedAssemblies System.Drawing @'
+using System; using System.Drawing; using System.Runtime.InteropServices;
+public static class EyepiecePicture {
+  [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Rect r);
+  [StructLayout(LayoutKind.Sequential)] struct Rect { public int L, T, R, B; }
+  // pixels of bright text (every channel over 200) in a part of the window's picture area
+  public static int Bright(IntPtr h, int x0, int y0, int x1, int y1) {
+    Rect c; GetClientRect(h, out c);
+    using (var bmp = new Bitmap(c.R, c.B)) {
+      using (var g = Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 3); g.ReleaseHdc(dc); }
+      int n = 0;
+      for (int y = Math.Max(0, y0); y < Math.Min(c.B, y1); y++)
+        for (int x = Math.Max(0, x0); x < Math.Min(c.R, x1); x++) { var p = bmp.GetPixel(x, y); if (Math.Min(p.R, Math.Min(p.G, p.B)) > 200) n++; }
+      return n;
+    }
+  }
+}
+'@
 # the controls are driven by posted input, not the real pointer and keyboard: the player is told, so it listens only
 # to pointer messages that carry the tests' mark (0x8000) and to keys with no scan code, and takes what is held with
 # a key (1 shift, 2 alt, 4 control) from the message. a person using the machine meanwhile does not disturb it
@@ -64,6 +84,18 @@ function DoubleClick-At([double]$x, [double]$y) {
     [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 350
     foreach ($i in 1, 2) { [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]0x8001, $at); Start-Sleep -Milliseconds 40; [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 40 }
     Start-Sleep -Milliseconds 200
+}
+# a right click: the pointer goes there, the right button goes down and up
+function RightClick-At([double]$x, [double]$y) {
+    $at = Get-Place $x $y
+    [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 350
+    [void][EyepieceE2e]::PostMessage($script:h, 0x204, [IntPtr]0x8002, $at); Start-Sleep -Milliseconds 60
+    [void][EyepieceE2e]::PostMessage($script:h, 0x205, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 200
+}
+# bright text between two corners of the window, in the design's pixels as Get-Place takes them
+function Get-Bright([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
+    $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
+    [EyepiecePicture]::Bright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16))
 }
 function Get-Height { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.B / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 function Get-Width { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.R / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
@@ -169,6 +201,52 @@ Send-Key 0x56; Send-Key 0x51 3; Assert-Frame 'three more quarters and it is upri
 Click-At -151 -32; Click-At -314 -126; Assert-Title 'the view menu''s r choice shows red alone' ' . red only$'
 Click-At -362 -126; Click-At -347 -86; Assert-Title 'rgb again, and the mirror button' ' . mirrored$'
 Click-At -347 -86; Send-Key 0x1B; Assert-Frame 'the mirror button again' 0 3
+
+# the keys (fig. 21). a button's tooltip names what it does and its key, a moment after the pointer rests on it, in a
+# chip over the bar: for the play button from its left edge, in the black beside the picture
+$tip = 8, -90, 90, -58
+Move-Pointer 300 150; Start-Sleep -Milliseconds 900
+$before = Get-Bright @tip
+Move-Pointer 55 -32; Start-Sleep -Milliseconds 900
+Confirm-That 'resting on the play button brings its tooltip' ($before -eq 0 -and (Get-Bright @tip) -gt 0) "bright pixels: $before before, $(Get-Bright @tip) after"
+Click-At -256 -32; Move-Pointer 55 -32; Start-Sleep -Milliseconds 900
+Confirm-That 'no tooltip while a menu is open' ((Get-Bright @tip) -eq 0) "bright pixels: $(Get-Bright @tip)"
+Send-Key 0x1B
+# ? (shift + slash) lays the table over the clip: bright keys in the black beside the picture
+$band = 20, 60, 130, 250
+Move-Pointer 300 150; Start-Sleep -Milliseconds 300
+$before = Get-Bright @band
+Send-Key 0xBF 1 1
+Confirm-That '? shows the table of keys' ($before -eq 0 -and (Get-Bright @band) -gt 0) "bright pixels: $before before, $(Get-Bright @band) with it"
+Send-Key 0x1B
+Confirm-That 'esc takes it away' ((Get-Bright @band) -eq 0) "bright pixels: $(Get-Bright @band)"
+Assert-Frame 'and leaves the player as it was' 0 3
+# esc takes the table away before it leaves fullscreen
+Send-Key 0x50; Start-Sleep -Milliseconds 500; Send-Key 0xBF 1 1; Send-Key 0x1B; Start-Sleep -Milliseconds 300
+Confirm-That 'esc over the table in fullscreen takes the table away and stays fullscreen' (-not (Test-Framed)) "framed: $(Test-Framed)"
+Send-Key 0x1B; Start-Sleep -Milliseconds 500
+Confirm-That 'and the next esc leaves fullscreen' (Test-Framed) "framed: $(Test-Framed)"
+# a click takes it away and does nothing else: the next-frame button is clicked twice and steps once
+Send-Key 0xBF 1 1; Click-At 87 -32
+Assert-Frame 'a click takes the table away and does nothing else' 0 3
+Click-At 87 -32; Assert-Frame 'the next click is the button''s' 1 3
+Send-Key 0x24
+# a right click on the picture opens every command, at the pointer; choosing a row does what its key does. the menu
+# is too tall for any window here and scrolls: in a 900 x 700 window, at the end of its list, the mirror row's middle
+# is 387 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges)
+[void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
+RightClick-At 120 100
+Confirm-That 'a right click opens the menu and chooses nothing' (Test-Framed) "framed: $(Test-Framed)"
+Assert-Frame 'and the picture is as it was' 0 3
+Move-Pointer 200 200
+foreach ($i in 1..40) { [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536 + 0x8000), [IntPtr]0); Start-Sleep -Milliseconds 20 }
+Start-Sleep -Milliseconds 1000
+Assert-Frame 'the wheel over the menu turns its list and does not scrub' 0 3
+Click-At 200 -387; Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
+Confirm-That 'and nothing else: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
+Send-Key 0x48; Assert-Frame 'H shows it as the file has it again' 0 3
+RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -387
+Assert-Frame 'esc closes the menu: a click where the row was chooses nothing' 0 3
 
 # fullscreen: the frame goes and the picture area is a whole display; escape puts the window back
 $before = Get-Width

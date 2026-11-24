@@ -4,6 +4,7 @@
 
 mod browser;
 mod icons;
+mod keys;
 mod menus;
 mod widgets;
 
@@ -69,6 +70,8 @@ const CHIP_IDLE: f64 = 2.0;
 /// left both the button and the panel
 const FACTS_IN: f64 = 0.35;
 const FACTS_OUT: f64 = 0.18;
+/// a button's tooltip comes this long after the pointer comes onto it
+const TIP_IN: f64 = 0.5;
 
 const MONO: &str = "mono";
 const MONO_MEDIUM: &str = "mono-medium";
@@ -232,6 +235,8 @@ pub enum Action {
     Minimize,
     ToggleMaximize,
     Close,
+    /// a key, as if it were pressed: a command chosen in the right-click menu
+    Key(Key, Mods),
 }
 
 /// what one pass over the controls produced.
@@ -295,6 +300,14 @@ pub struct Ui {
     /// the frame under the pointer on the timebar, and the picture last had for the timebar with the frame it is of
     time_hover: Option<usize>,
     time_picture: Option<(usize, egui::TextureHandle)>,
+    /// the table of keys is up; the right-click menu is open, from where it was asked for, and was drawn there last
+    keys: bool,
+    commands: Option<Pos2>,
+    commands_rect: Rect,
+    /// the button the pointer is on in this pass, where it is and what its tooltip says; and the one it came onto,
+    /// and when
+    hinted: Option<(egui::Id, Rect, (String, String))>,
+    tip: Option<(egui::Id, f64)>,
     browser: browser::Browser,
 }
 
@@ -333,6 +346,11 @@ impl Ui {
             volume_rect: Rect::NOTHING,
             time_hover: None,
             time_picture: None,
+            keys: false,
+            commands: None,
+            commands_rect: Rect::NOTHING,
+            hinted: None,
+            tip: None,
             browser: browser::Browser::new(folder, pictures),
         }
     }
@@ -416,10 +434,10 @@ impl Ui {
         self.events.push(egui::Event::Text(c.to_string()));
     }
 
-    /// the wheel, when the pointer is over the metadata panel: it turns the panel's list. false when the pointer is
-    /// elsewhere and the wheel is the player's.
+    /// the wheel, when the pointer is over the metadata panel or the right-click menu: it turns their list. false when
+    /// the pointer is elsewhere and the wheel is the player's.
     pub fn wheel(&mut self, notches: i32) -> bool {
-        let over = (self.facts_pinned || self.facts_up) && self.ctx.pointer_latest_pos().is_some_and(|p| self.facts_rect.contains(p));
+        let over = self.ctx.pointer_latest_pos().is_some_and(|p| ((self.facts_pinned || self.facts_up) && self.facts_rect.contains(p)) || (self.commands.is_some() && self.commands_rect.contains(p)));
         if over {
             self.events.push(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Line,
@@ -434,7 +452,17 @@ impl Ui {
 
     /// escape: closes the open menu. false when there was nothing of ours to close.
     pub fn escape(&mut self) -> bool {
-        self.menu.take().is_some()
+        self.menu.take().is_some() | self.commands.take().is_some()
+    }
+
+    /// the table of keys comes up over the clip, in place of any menu.
+    pub fn show_keys(&mut self) {
+        (self.keys, self.menu, self.commands) = (true, None, None);
+    }
+
+    /// takes the table of keys away. false when it was not up.
+    pub fn hide_keys(&mut self) -> bool {
+        std::mem::take(&mut self.keys)
     }
 
     /// the view changed by key or wheel: the zoom chip shows again.
@@ -499,7 +527,7 @@ impl Ui {
             }
             // no clip to look at: the strip stays up, and under it the browser, or why the file did not open
             _ => {
-                (self.menu, self.shown) = (None, true);
+                (self.menu, self.shown, self.keys, self.commands) = (None, true, false, None);
                 let body = Rect::from_min_max(strip.left_bottom(), full.max);
                 match screen.error.filter(|_| !screen.browsing) {
                     Some(why) => {
@@ -516,6 +544,7 @@ impl Ui {
                 self.strip(ui, strip, screen, true, actions);
             }
         }
+        self.tooltip(ui, full, now);
         if let Some(said) = screen.toast {
             toast(ui, full, said);
         }
@@ -549,9 +578,20 @@ impl Ui {
         let held = ui.input(|i| i.pointer.any_down());
 
         // a press anywhere but on the open menu or its button closes the menu
-        if self.menu.is_some() && ui.input(|i| i.pointer.any_pressed()) && !pointer.is_some_and(|p| self.menu_rect.contains(p) || self.menu_button.contains(p)) {
+        let pressed = ui.input(|i| i.pointer.any_pressed());
+        if self.menu.is_some() && pressed && !pointer.is_some_and(|p| self.menu_rect.contains(p) || self.menu_button.contains(p)) {
             self.menu = None;
         }
+        // the right-click menu closes the same way, and a right click on the picture opens it there. a press anywhere
+        // takes the table of keys away, and does nothing else (the table takes it)
+        if self.commands.is_some() && pressed && !pointer.is_some_and(|p| self.commands_rect.contains(p)) {
+            self.commands = None;
+        }
+        let opened = picture.secondary_clicked();
+        if opened {
+            self.commands = pointer;
+        }
+        self.keys &= !pressed;
 
         // the design's rule: moving the pointer brings the controls up; they go when it rests for a while off them,
         // or leaves the window; a plain click on the picture shows or hides them at once. an open menu keeps them up
@@ -582,6 +622,11 @@ impl Ui {
         let alpha = ui.ctx().animate_bool_with_time(ui.scope_id().with("chrome"), self.shown, FADE);
 
         self.guides(ui, model);
+        // the table of keys: over the picture, and under the chips and the controls, which still say what is not as
+        // the file has it
+        if self.keys {
+            keys::table(ui, full);
+        }
         // what states the view sits under the strip when it is up, as in the design: a fault across the top, then
         // loop analysis, speed and the look from the left, and the zoom at the right
         let mut top = full.top() + 10.0 + STRIP * alpha;
@@ -598,6 +643,15 @@ impl Ui {
         if self.facts_pinned {
             let corner = Pos2::new(full.right() - 10.0, top + 34.0);
             self.facts_rect = menus::facts(ui, corner, Align2::RIGHT_TOP, 1.0, full.bottom() - corner.y - 10.0 - (bar.height() + 7.0) * alpha, model, actions);
+        }
+        // the right-click menu, whether the controls are up or not: a row chosen is its key, pressed
+        if let Some(at) = self.commands {
+            let (drawn, chosen) = keys::menu(ui, at, full, self.commands_rect, opened);
+            self.commands_rect = drawn;
+            if let Some((key, mods)) = chosen {
+                actions.push(Action::Key(key, mods));
+                self.commands = None;
+            }
         }
 
         if alpha <= 0.0 {
@@ -748,9 +802,11 @@ impl Ui {
             if up {
                 clipped.rect_filled(tab, 0.0, TAB_ON);
                 let close = Rect::from_center_size(Pos2::new(tab.right() - 8.0 - 6.0, tab.center().y), Vec2::splat(16.0));
-                if ui.interact(close, ui.scope_id().with(("tab-close", i)), Sense::click()).clicked() {
+                let mark = ui.interact(close, ui.scope_id().with(("tab-close", i)), Sense::click());
+                if mark.clicked() {
                     actions.push(Action::CloseTab(i));
                 }
+                self.hint(&mark, keys::named(Key::W, keys::CTRL));
                 icons::draw_sized(&clipped, close.center(), 12.0, Icon::Close, Color32::WHITE.gamma_multiply(0.7));
             }
             clipped.rect_filled(Rect::from_min_size(Pos2::new(tab.right() - 1.0, tab.top()), Vec2::new(1.0, tab.height())), 0.0, LINE);
@@ -766,6 +822,7 @@ impl Ui {
         if response.clicked() {
             actions.push(Action::NewTab);
         }
+        self.hint(&response, keys::named(Key::N, keys::NONE));
     }
 
     /// the bar along the bottom: one row of controls over the full-width timebar.
@@ -786,21 +843,29 @@ impl Ui {
             x += lead + w + GAP;
             r
         };
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No).clicked() {
+        let prev = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
+        if prev.clicked() {
             actions.push(Action::Step(-1));
         }
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No).clicked() {
+        self.hint(&prev, keys::named(Key::F, keys::NONE));
+        let play = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
+        if play.clicked() {
             actions.push(Action::TogglePlay);
         }
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No).clicked() {
+        self.hint(&play, keys::named(Key::Space, keys::NONE));
+        let next = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No);
+        if next.clicked() {
             actions.push(Action::Step(1));
         }
+        self.hint(&next, keys::named(Key::G, keys::NONE));
         // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
         let galley = painter.layout_job(readout(model, self.timecode, narrow));
         let rect = place(8.0, galley.size().x + 2.0 * PAD, TEXT_BUTTON);
-        if text_button(ui, rect, "readout", None, galley, false) {
+        let switch = text_button(ui, rect, "readout", None, galley, false);
+        if switch.clicked() {
             self.toggle_timecode();
         }
+        self.hint(&switch, keys::named(Key::T, keys::NONE));
 
         // from the right, in the design's order: fullscreen, sound, screenshots, metadata, the view, and the three
         // that say what they are set to: zoom, speed, loop
@@ -811,16 +876,20 @@ impl Ui {
             right -= GAP;
             r
         };
-        if icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No).clicked() {
+        let full = icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No);
+        if full.clicked() {
             actions.push(Action::Fullscreen);
         }
+        self.hint(&full, keys::named(Key::P, keys::NONE));
         // sound: the button mutes, and shows when nothing is to be heard. its slider comes out to its left while
         // the pointer is on either, or holds the slider. plain, like everything on the bar
         let button = place(ICON_BUTTON.x, ICON_BUTTON.y);
         let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
-        if icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No).clicked() {
+        let mute = icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No);
+        if mute.clicked() {
             actions.push(Action::Mute);
         }
+        self.hint(&mute, keys::line(Key::M, keys::NONE));
         let slider = ui.scope_id().with("volume");
         let over = ui.ctx().pointer_latest_pos().is_some_and(|p| self.volume_rect.contains(p)) || ui.ctx().is_being_dragged(slider);
         let out = ui.ctx().animate_bool_with_time(ui.scope_id().with("volume-out"), over, 0.12);
@@ -835,9 +904,11 @@ impl Ui {
             self.volume_rect = self.volume_rect.union(room);
         }
         let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
-        if icon_button(ui, rect, "shot", Icon::Shot, if self.menu == Some(Menu::Shot) { Lit::Open } else { Lit::No }).clicked() {
+        let shot = icon_button(ui, rect, "shot", Icon::Shot, if self.menu == Some(Menu::Shot) { Lit::Open } else { Lit::No });
+        if shot.clicked() {
             self.toggle_menu(Menu::Shot, rect);
         }
+        self.hint(&shot, keys::line(Key::S, keys::NONE));
         // metadata: a click pins the panel; resting the pointer on the button brings it up for as long as the
         // pointer stays on the button or the panel. a fault in the file puts an amber dot on the button
         let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
@@ -855,6 +926,7 @@ impl Ui {
         if info.clicked() {
             self.toggle_facts();
         }
+        self.hint(&info, keys::named(Key::I, keys::NONE));
         self.facts_button = rect;
         let on = info.hovered() || (self.facts_up && ui.ctx().pointer_latest_pos().is_some_and(|p| self.facts_rect.contains(p)));
         let (since, wait) = if on {
@@ -878,9 +950,11 @@ impl Ui {
         } else {
             Lit::No
         };
-        if icon_button(ui, rect, "view", Icon::Guides, lit).clicked() {
+        let view = icon_button(ui, rect, "view", Icon::Guides, lit);
+        if view.clicked() {
             self.toggle_menu(Menu::View, rect);
         }
+        self.hint(&view, keys::line(Key::H, keys::NONE));
         let speed = format!("{}×", (model.speed * 100.0).round() / 100.0);
         let looping = match (model.seam, model.looping) {
             (Some(_), _) if narrow => "analysis".to_string(),
@@ -889,12 +963,18 @@ impl Ui {
             (None, Loop::One) => (if narrow { "one" } else { "loop one" }).to_string(),
             (None, Loop::All) => (if narrow { "all" } else { "loop all" }).to_string(),
         };
-        for (menu, name, icon, label) in [(Menu::Zoom, "zoom", None, model.zoom_label.clone()), (Menu::Speed, "speed", None, speed), (Menu::Loop, "loop", Some(Icon::Loop), looping)] {
+        for (menu, name, icon, label, tip) in [
+            (Menu::Zoom, "zoom", None, model.zoom_label.clone(), keys::line(Key::Digit0, keys::NONE)),
+            (Menu::Speed, "speed", None, speed, keys::line(Key::Minus, keys::SHIFT)),
+            (Menu::Loop, "loop", Some(Icon::Loop), looping, keys::named(Key::R, keys::NONE)),
+        ] {
             let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
             let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
-            if text_button(ui, rect, name, icon, galley, self.menu == Some(menu)) {
+            let button = text_button(ui, rect, name, icon, galley, self.menu == Some(menu));
+            if button.clicked() {
                 self.toggle_menu(menu, rect);
             }
+            self.hint(&button, tip);
         }
 
         self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), middle + TEXT_BUTTON / 2.0), bar.max), bar.top(), model, actions);
@@ -904,6 +984,35 @@ impl Ui {
     fn toggle_menu(&mut self, menu: Menu, button: Rect) {
         self.menu = (self.menu != Some(menu)).then_some(menu);
         self.menu_button = button;
+    }
+
+    /// notes the button of the strip or the bar the pointer is on, with what its tooltip says: what it does, and its
+    /// key.
+    fn hint(&mut self, button: &egui::Response, tip: Option<(String, String)>) {
+        if button.hovered() {
+            self.hinted = tip.map(|tip| (button.id, button.rect, tip));
+        }
+    }
+
+    /// the tooltip of the button the pointer rests on: in a chip 7 over the bar or under the strip, as the menus stand,
+    /// from the button's edge on the side of the window it is on. it comes a moment after the pointer does, and never
+    /// while a menu, the metadata panel or the table of keys is up, or a button is held.
+    fn tooltip(&mut self, ui: &egui::Ui, full: Rect, now: f64) {
+        let quiet = self.menu.is_some() || self.commands.is_some() || self.keys || self.facts_up || ui.input(|i| i.pointer.any_down());
+        let Some((id, button, (does, key))) = self.hinted.take().filter(|_| !quiet) else {
+            self.tip = None;
+            return;
+        };
+        let since = self.tip.filter(|(on, _)| *on == id).map_or(now, |(_, since)| since);
+        self.tip = Some((id, since));
+        if now - since < TIP_IN {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(TIP_IN - (now - since)));
+            return;
+        }
+        let (left, low) = (button.center().x < full.center().x, button.center().y > full.center().y);
+        let corner = Pos2::new(if left { button.left() } else { button.right() }, if low { full.bottom() - (1.0 + ROW + TIME) - 7.0 } else { full.top() + STRIP + 7.0 });
+        let anchor = Align2([if left { egui::Align::Min } else { egui::Align::Max }, if low { egui::Align::Max } else { egui::Align::Min }]);
+        chip(ui, corner, anchor, &[(does, FG), (format!(" · {key}"), DIM)], 1.0);
     }
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
@@ -1091,8 +1200,8 @@ fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) 
     response
 }
 
-/// a 28-high button holding text, with an icon before it or none, lit while its menu is open. true when clicked.
-fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, galley: Arc<egui::Galley>, open: bool) -> bool {
+/// a 28-high button holding text, with an icon before it or none, lit while its menu is open.
+fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, galley: Arc<egui::Galley>, open: bool) -> egui::Response {
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
     if response.hovered() || open {
         ui.painter().rect_filled(rect, 3.0, HOVER);
@@ -1103,7 +1212,7 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, ga
         left += 16.0 + 6.0;
     }
     ui.painter().galley(Pos2::new(left, text_top(ui.painter(), font(MONO_MEDIUM, 11.5), rect.center().y)), galley, FG);
-    response.clicked()
+    response
 }
 
 /// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and the total in dim.
@@ -1178,6 +1287,90 @@ mod tests {
             assert!(!has("→"));
         });
         out.textures_delta.clear();
+    }
+
+    /// a 64 x 64 clip standing on its first frame, fitted into a 640 x 360 window, as the controls are told of it
+    fn model() -> Model<'static> {
+        Model {
+            frame: 0,
+            frames: 3,
+            playing: false,
+            rate: Some((60, 1)),
+            fault: None,
+            gaps: &[],
+            linear: false,
+            looping: Loop::One,
+            seam: None,
+            seam_seconds: 2.0,
+            speed: 1.0,
+            shuttle: 0,
+            zoom_label: "fit 563%".to_string(),
+            zoom: 5.625,
+            zoomed: false,
+            exact: false,
+            overflows: false,
+            pixel: None,
+            value: None,
+            picture: (140.0, 0.0, 360.0, 360.0),
+            shown_size: (64, 64),
+            look: Look::default(),
+            guides: Guides { grid: false, center: false, tile: (120, 120), color: [61, 240, 255] },
+            facts: Facts::Reading,
+            decoded: "",
+            sound: false,
+            volume: 1.0,
+            muted: true,
+            shots_to: "pictures / eyepiece",
+            folder: false,
+            seam_change: None,
+        }
+    }
+
+    /// drives the controls over that clip with the pointer, a pass for each step, and gathers what they asked for
+    fn drive(ui: &mut Ui, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
+        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, browsing: false, fullscreen: false, toast: None };
+        let mut actions = Vec::new();
+        for &(x, y, button) in steps {
+            match button {
+                Some((button, down)) => ui.pointer_button(button, down, x, y),
+                None => ui.pointer_move(x, y),
+            }
+            let mut out = ui.run(&screen);
+            out.textures.clear();
+            actions.extend(out.actions);
+        }
+        actions
+    }
+
+    /// a right click on the picture opens every command where it was made; a click on a row sends that row's key and
+    /// does nothing else (the window neither moves nor fills the display), and the menu closes.
+    #[test]
+    fn a_row_of_the_right_click_menu_sends_its_key_and_nothing_else() {
+        use crate::event::Button::{Left, Right};
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        // the menu is laid out once unseen, then stands 8 in from the top, too tall for the window: its third row (next
+        // frame) is 89 to 113 down
+        let mut actions = drive(&mut ui, &[(100.0, 60.0, None), (100.0, 60.0, Some((Right, true))), (100.0, 60.0, Some((Right, false))), (100.0, 60.0, None), (100.0, 60.0, None)]);
+        assert!(ui.commands.is_some(), "the right click opened the menu");
+        actions.extend(drive(&mut ui, &[(200.0, 101.0, None), (200.0, 101.0, Some((Left, true))), (200.0, 101.0, Some((Left, false)))]));
+        assert_eq!(actions, vec![Action::Key(Key::G, keys::NONE)]);
+        assert!(ui.commands.is_none(), "the menu closes once a row is chosen");
+    }
+
+    /// the click that takes the table of keys away does nothing else; the next one does what it does.
+    #[test]
+    fn the_click_that_takes_the_table_of_keys_away_does_nothing_else() {
+        use crate::event::Button::Left;
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        // the bar's next-frame button: 30 wide from 68, 32 up from the bottom
+        let next = (83.0, 328.0);
+        drive(&mut ui, &[(next.0, next.1, None)]);
+        ui.show_keys();
+        let actions = drive(&mut ui, &[(next.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
+        assert_eq!(actions, vec![], "the click on the button only took the table away");
+        assert!(!ui.keys);
+        let actions = drive(&mut ui, &[(next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
+        assert_eq!(actions, vec![Action::Step(1)]);
     }
 
     #[test]
