@@ -1,30 +1,71 @@
 //! the menus that open over the bar, laid out as the design has them.
 
 use super::widgets::{self, ROW};
-use super::{font, Action, Menu, Model, DIM, MONO};
+use super::{font, Action, Facts, Menu, Model, Shot, DIM, MONO};
 use crate::play::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
-use egui::{Pos2, Rect};
+use egui::{Align2, Pos2, Rect};
 
 const WIDTH: f32 = 268.0;
+const SHOT_WIDTH: f32 = 308.0;
+const FACTS_WIDTH: f32 = 372.0;
 /// the ends of the speed slider (the transport holds speed to the same)
 const SLOWEST: f64 = 0.1;
 const FASTEST: f64 = 8.0;
 
 /// draws `menu` standing with its right bottom corner on `corner`. returns where it was drawn.
 pub fn show(ui: &mut egui::Ui, menu: Menu, corner: Pos2, alpha: f32, model: &Model, actions: &mut Vec<Action>) -> Rect {
-    let name = match menu {
-        Menu::Loop => "loop-menu",
-        Menu::Speed => "speed-menu",
-        Menu::Zoom => "zoom-menu",
-        Menu::View => "view-menu",
+    let (name, width) = match menu {
+        Menu::Loop => ("loop-menu", WIDTH),
+        Menu::Speed => ("speed-menu", WIDTH),
+        Menu::Zoom => ("zoom-menu", WIDTH),
+        Menu::View => ("view-menu", WIDTH),
+        Menu::Shot => ("shot-menu", SHOT_WIDTH),
     };
-    widgets::menu(ui, name, corner, WIDTH, alpha, |ui| match menu {
+    widgets::menu(ui, name, corner, Align2::RIGHT_BOTTOM, width, alpha, |ui| match menu {
         Menu::Loop => looping(ui, model, actions),
         Menu::Speed => speed(ui, model, actions),
         Menu::Zoom => zoom(ui, model, actions),
         Menu::View => view(ui, model, actions),
+        Menu::Shot => shot(ui, model, actions),
     })
+}
+
+/// the metadata panel, with the corner `pivot` names on `corner`, no taller than `room`. returns where it was drawn.
+pub fn facts(ui: &mut egui::Ui, corner: Pos2, pivot: Align2, alpha: f32, room: f32, model: &Model, actions: &mut Vec<Action>) -> Rect {
+    widgets::menu(ui, "facts", corner, pivot, FACTS_WIDTH, alpha, |ui| {
+        ui.spacing_mut().item_spacing.y = 9.0;
+        let copy = widgets::heading_button(ui, "metadata", "copy all");
+        match &model.facts {
+            Facts::Reading => widgets::note(ui, "reading the file…"),
+            Facts::Failed(why) => widgets::note(ui, why),
+            Facts::Ready(meta) => {
+                if copy {
+                    actions.push(Action::Copy(meta.text()));
+                }
+                // the heading and the menu's own edges take 60 of the room. both limits are given: a panel is as tall
+                // as it was last drawn, and a list that grew (the facts arriving) would otherwise stay that short
+                let most = (room - 60.0).max(40.0);
+                egui::ScrollArea::vertical().max_height(most).min_scrolled_height(most).show(ui, |ui| {
+                    widgets::rows(ui, &meta.groups);
+                    if !model.decoded.is_empty() {
+                        widgets::rows(ui, &[Vec::new(), vec![crate::media::meta::Row { label: "decode", value: model.decoded.to_string(), tone: crate::media::meta::Tone::Plain }]]);
+                    }
+                });
+            }
+        }
+    })
+}
+
+fn shot(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
+    widgets::heading_note(ui, "screenshot", &format!("to {}", model.shots_to));
+    match widgets::buttons(ui, "shots", &[("frame", "S", false), ("view", "shift S", false), ("copy", "ctrl C", false)]) {
+        Some(0) => actions.push(Action::Shot(Shot::Frame)),
+        Some(1) => actions.push(Action::Shot(Shot::View)),
+        Some(_) => actions.push(Action::Shot(Shot::Copy)),
+        None => {}
+    }
+    widgets::note(ui, "frame is the file's own frame at full size, 16 bits a channel when the file is deeper than 8. view is the picture as it is shown: zoom, pan and look.");
 }
 
 /// a slider and a field side by side. returns where the slider was moved to (0 to 1), and what was typed.

@@ -9,14 +9,16 @@ use crate::media::clip::{Clip, Lane};
 use crate::media::color;
 use crate::media::dec::{Layout, Picture};
 use crate::media::hap::Tex;
+use crate::media::meta::Meta;
 use crate::media::source::Frame;
 use crate::media::still::Samples;
 use crate::play::{Loop, Show, Transport};
 use crate::settings::{self, Settings};
-use crate::ui::{Action, Model, Screen, Ui};
+use crate::shot;
+use crate::ui::{Action, Facts, Model, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
 use std::path::Path;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct3D11::{ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11Texture2D};
@@ -305,6 +307,31 @@ impl View {
         gpu.draw(&self.ps, &views, self.framing.rect((gpu.w as f32, gpu.h as f32)), (shown.0 as f32, shown.1 as f32), Constants { to_source, to_source_add, channel, ..self.constants });
     }
 
+    /// the frame in the painter, drawn `w` x `h` into a picture of our own and read back (`Gpu::read_pixels`): the
+    /// file's own frame as it is stored, whatever the window shows.
+    fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
+        let views = self.views()?;
+        let size = (self.clip.width as f32, self.clip.height as f32);
+        let _lock = gpu.locked();
+        gpu.read_pixels(w, h, |gpu| gpu.draw(&self.ps, &views, (0.0, 0.0, w as f32, h as f32), size, self.constants)).ok()
+    }
+
+    /// the window's picture as it is shown, zoom, pan and look included, without the controls.
+    fn read_view(&self, gpu: &Gpu) -> Option<Vec<u16>> {
+        self.views()?;
+        let _lock = gpu.locked();
+        gpu.read_pixels(gpu.w, gpu.h, |gpu| self.draw(gpu)).ok()
+    }
+
+    /// how the clip is decoded, in the metadata panel's words.
+    fn decoded(&self) -> &'static str {
+        match &self.painter {
+            Painter::Blocks { .. } => "blocks to the gpu as stored",
+            Painter::Surface { .. } => "hardware, drawn from the decoder's own surface",
+            Painter::Planes { .. } | Painter::Image { .. } => "software",
+        }
+    }
+
     /// bits a sample: the top of the scale pixel values are given on.
     fn depth(&self) -> u32 {
         match &self.painter {
@@ -400,8 +427,11 @@ impl View {
     }
 
     /// what the controls show. the pixel is the file's pixel under the pointer, when the zoom chip is to name it.
-    fn model(&self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings) -> Model<'_> {
+    fn model<'a>(&'a self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings, facts: Facts<'a>, shots_to: &'a str) -> Model<'a> {
         Model {
+            facts,
+            decoded: self.decoded(),
+            shots_to,
             frame: self.transport.frame(),
             frames: self.clip.timeline.frames(),
             playing: self.transport.playing(),
@@ -450,7 +480,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Browse(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
@@ -515,6 +545,29 @@ struct Tab {
     error: Option<String>,
     /// the browser is laid over what the tab holds
     browsing: bool,
+    /// the file's facts for the metadata panel, read in the background: on their way, here, or why not
+    facts: Option<Loaded<Meta>>,
+}
+
+/// something read in the background: on its way, here, or not to be had
+enum Loaded<T> {
+    Reading(Receiver<Result<T, String>>),
+    Ready(T),
+    Failed(String),
+}
+
+impl<T> Loaded<T> {
+    /// takes what has arrived, if anything has.
+    fn poll(&mut self) {
+        if let Loaded::Reading(arriving) = self {
+            match arriving.try_recv() {
+                Ok(Ok(it)) => *self = Loaded::Ready(it),
+                Ok(Err(why)) => *self = Loaded::Failed(why),
+                Err(TryRecvError::Disconnected) => *self = Loaded::Failed("the reader stopped".into()),
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+    }
 }
 
 /// a tab that was closed: its file, the frame it was on and how the picture sat, for bringing it back
@@ -522,11 +575,18 @@ type Closed = (String, usize, Framing, Look);
 
 impl Tab {
     fn empty() -> Tab {
-        Tab { path: None, view: None, error: None, browsing: false }
+        Tab { path: None, view: None, error: None, browsing: false, facts: None }
     }
 
     /// a tab for a file: its clip, or why there is none.
-    fn open(gpu: &Gpu, path: String, clip: Result<Clip, String>, hz: f64, settings: &Settings) -> Tab {
+    fn open(gpu: &Gpu, path: String, clip: Result<Clip, String>, hz: f64, settings: &Settings, wake: &Sender<Event>) -> Tab {
+        // the facts are read apart from the clip: they stay available for a file that does not play
+        let (reader, arriving) = mpsc::channel();
+        let (file, wake) = (path.clone(), wake.clone());
+        std::thread::spawn(move || {
+            let _ = reader.send(Meta::read(&file));
+            let _ = wake.send(Event::Wake);
+        });
         let view = clip.and_then(|clip| View::new(gpu, clip, hz)).map(|mut view| {
             view.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
             view
@@ -535,7 +595,7 @@ impl Tab {
             Ok(view) => (Some(view), None),
             Err(why) => (None, Some(why)),
         };
-        Tab { path: Some(path), view, error, browsing: false }
+        Tab { path: Some(path), view, error, browsing: false, facts: Some(Loaded::Reading(arriving)) }
     }
 
     /// what the strip calls it.
@@ -563,6 +623,8 @@ struct Tabs {
     all: Vec<Tab>,
     up: usize,
     closed: Vec<Closed>,
+    /// the display's refresh rate, which every clip opened is paced to
+    hz: f64,
 }
 
 impl Tabs {
@@ -608,9 +670,9 @@ impl Tabs {
     /// opens a file. from the browser it takes the place of what the tab that is up holds; dropped on the window or
     /// handed over by another launch it gets a tab of its own, and never replaces what is being looked at. the
     /// window grows to a bigger clip and never shrinks.
-    fn open(&mut self, gpu: &Gpu, window: Handle, path: String, hz: f64, settings: &Settings, replace: bool) {
+    fn open(&mut self, gpu: &Gpu, window: Handle, path: String, settings: &Settings, wake: &Sender<Event>, replace: bool) {
         let clip = Clip::open(&path);
-        let tab = Tab::open(gpu, path, clip, hz, settings);
+        let tab = Tab::open(gpu, path, clip, self.hz, settings, wake);
         if let Some(view) = &tab.view {
             window::fit(window, window::client_for((view.clip.width, view.clip.height)));
         }
@@ -640,17 +702,56 @@ impl Tabs {
     }
 
     /// brings back the tab closed last, on its frame, zoom and pan.
-    fn reopen(&mut self, gpu: &Gpu, window: Handle, hz: f64, settings: &Settings) {
+    fn reopen(&mut self, gpu: &Gpu, window: Handle, settings: &Settings, wake: &Sender<Event>) {
         let Some((path, frame, framing, look)) = self.closed.pop() else { return };
         if !self.tab().is_empty() {
             self.new_tab();
         }
-        self.open(gpu, window, path, hz, settings, true);
+        self.open(gpu, window, path, settings, wake, true);
         if let Some(v) = &mut self.tab().view {
             v.transport.go(frame as i64);
             (v.framing, v.look) = (framing, look);
         }
     }
+}
+
+/// takes a screenshot of the clip on screen: the file's frame at full size, the view as shown, or the frame to the
+/// clipboard. files are written in the background, and a toast says what was written.
+fn shoot(v: &View, gpu: &Gpu, what: Shot, settings: &Settings, wake: &Sender<Event>) {
+    let (w, h) = (v.clip.width as u32, v.clip.height as u32);
+    let (pixels, size, stem) = match what {
+        Shot::Frame | Shot::Copy => (v.read(gpu, w, h), (w, h), shot::stem(&v.clip.name, v.transport.frame())),
+        Shot::View => (v.read_view(gpu), (gpu.w, gpu.h), shot::stem(&v.clip.name, v.transport.frame()) + ".view"),
+    };
+    let Some(pixels) = pixels else {
+        let _ = wake.send(Event::Toast("there is no picture to save".into()));
+        return;
+    };
+    if what == Shot::Copy {
+        let said = if window::copy_picture(size.0, size.1, &pixels) { format!("frame copied · {} × {}, 8 bits a channel", size.0, size.1) } else { "the clipboard could not be had".to_string() };
+        let _ = wake.send(Event::Toast(said));
+        return;
+    }
+    let (deep, folder, wake) = (v.depth() > 8, shots_folder(settings), wake.clone());
+    let detail = if what == Shot::View { "as shown".to_string() } else { format!("{} × {}", size.0, size.1) };
+    std::thread::spawn(move || {
+        let said = match shot::save(&pixels, size.0, size.1, deep, &folder, &stem) {
+            Ok(file) => format!("saved to {} · {} · {detail}", shots_to(&folder), file.file_name().map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned())),
+            Err(why) => format!("not saved · {why}"),
+        };
+        let _ = wake.send(Event::Toast(said));
+    });
+}
+
+/// where screenshots go: the folder the settings name, or pictures / eyepiece.
+fn shots_folder(settings: &Settings) -> std::path::PathBuf {
+    settings.screenshot_folder.clone().unwrap_or_else(shot::folder)
+}
+
+/// a folder as the controls name it: its last two parts, "pictures / eyepiece".
+fn shots_to(folder: &Path) -> String {
+    let parts: Vec<String> = folder.components().rev().take(2).map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
+    parts.into_iter().rev().collect::<Vec<_>>().join(" / ")
 }
 
 /// the guides as the settings have them.
@@ -665,15 +766,15 @@ fn over_picture(pointer: Option<(f32, f32)>, window: (f32, f32), scale: f32) -> 
 
 /// runs the player until its window closes. what is kept between runs is read first and written back after.
 /// `first` is the file given at the start, with its clip already opened or the reason it did not.
-pub fn run(window: Handle, events: Receiver<Event>, first: Option<(String, Result<Clip, String>)>) {
+pub fn run(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>) {
     let mut settings = Settings::load();
-    play(window, events, first, &mut settings);
+    play(window, events, wake, first, &mut settings);
     if let Err(e) = settings.save() {
         eprintln!("eyepiece: the settings were not saved: {e}");
     }
 }
 
-fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<Clip, String>)>, settings: &mut Settings) {
+fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>, settings: &mut Settings) {
     let (w, h) = window::client_size(window);
     // declared before the tabs on purpose: a clip, and with it any decoder writing to this device, goes first
     let mut gpu = match Gpu::new(window.0, w, h) {
@@ -689,10 +790,13 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
     // when the controls want another look with nothing new from the window: they are due to fade
     let mut ui_due: Option<Instant> = None;
     let first = match first {
-        Some((path, clip)) => Tab::open(&gpu, path, clip, hz, settings),
+        Some((path, clip)) => Tab::open(&gpu, path, clip, hz, settings, &wake),
         None => Tab::empty(),
     };
-    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new() };
+    // what just happened, said in the window until then; and where screenshots go, as the menu names it
+    let mut toast: Option<(String, Instant)> = None;
+    let shots_label = shots_to(&shots_folder(settings));
+    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz };
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
     // the picture area fills a display; the pointer is shown (it hides in fullscreen while the controls are away)
@@ -754,7 +858,10 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
                     pointer = None;
                     ui.pointer_leave();
                 }
-                Event::Open(path) => tabs.open(&gpu, window, path, hz, settings, false),
+                Event::Open(path) => tabs.open(&gpu, window, path, settings, &wake, false),
+                Event::Toast(said) => toast = Some((said, Instant::now() + Duration::from_millis(2600))),
+                // what was read in the background is taken up below, with everything else
+                Event::Wake => {}
                 // a field being typed into takes the keys; escape closes it and its menu
                 Event::Key { key, mods } if ui.typing() => {
                     ui.key(key, mods);
@@ -769,7 +876,13 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
                     tabs.select((tabs.up + if key == Key::BracketLeft { count - 1 } else { 1 }) % count);
                 }
                 Event::Key { key: Key::W, mods } if mods.ctrl => tabs.close(tabs.up),
-                Event::Key { key: Key::T, mods } if mods.ctrl && mods.shift => tabs.reopen(&gpu, window, hz, settings),
+                Event::Key { key: Key::T, mods } if mods.ctrl && mods.shift => tabs.reopen(&gpu, window, settings, &wake),
+                // control + C copies the frame
+                Event::Key { key: Key::C, mods } if mods.ctrl && !browsing => {
+                    if let Some(v) = tabs.view() {
+                        shoot(v, &gpu, Shot::Copy, settings, &wake);
+                    }
+                }
                 // escape leaves fullscreen first; then it is the browser's, which goes back to the clip, or closes a menu
                 Event::Key { key: Key::Escape, .. } => {
                     if fullscreen {
@@ -787,8 +900,15 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
                 Event::Char(c) if browsing => ui.browser_char(c),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis
-                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A) => match key {
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I) => match key {
                     Key::N => tabs.new_tab(),
+                    // a screenshot: the file's frame at full size; with shift, the view as shown
+                    Key::S => {
+                        if let Some(v) = tabs.view() {
+                            shoot(v, &gpu, if mods.shift { Shot::View } else { Shot::Frame }, settings, &wake);
+                        }
+                    }
+                    Key::I => ui.toggle_facts(),
                     Key::O => {
                         let tab = tabs.tab();
                         tab.browsing = true;
@@ -826,6 +946,8 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
                         ui.char(c);
                     }
                 }
+                // over the metadata panel the wheel turns its list
+                Event::Wheel { notches, .. } if ui.wheel(notches) => {}
                 // with shift, one stop of zoom a notch, about the pointer: away from the user is in
                 Event::Wheel { notches, mods } if mods.shift => {
                     if let Some(v) = tabs.view() {
@@ -849,15 +971,27 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
         let size = (gpu.w as f32, gpu.h as f32);
         // the pixel the zoom chip names: the file's pixel under the pointer, while a zoom is set
         let pixel_of = |v: &View| over_picture(pointer, size, scale).filter(|_| v.framing.zoomed()).and_then(|p| v.framing.pixel_at(p, size)).map(|shown| v.look.source_pixel(shown, v.size()));
+        if let Some(facts) = &mut tabs.tab().facts {
+            facts.poll();
+        }
+        if toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+            toast = None;
+        }
         let out = {
             let tab = &tabs.all[tabs.up];
+            let facts = match &tab.facts {
+                Some(Loaded::Ready(meta)) => Facts::Ready(meta),
+                Some(Loaded::Failed(why)) => Facts::Failed(why),
+                Some(Loaded::Reading(_)) | None => Facts::Reading,
+            };
             let screen = Screen {
                 tabs: tabs.all.iter().map(Tab::name).collect(),
                 current: tabs.up,
-                clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings)),
+                clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings, facts, &shots_label)),
                 error: tab.error.as_deref(),
                 browsing: tab.browsing(),
                 fullscreen,
+                toast: toast.as_ref().map(|(said, _)| said.as_str()),
             };
             ui.run(&screen)
         };
@@ -870,7 +1004,16 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
                 Action::NewTab => tabs.new_tab(),
                 Action::SelectTab(to) => tabs.select(*to),
                 Action::CloseTab(at) => tabs.close(*at),
-                Action::Open(path) => tabs.open(&gpu, window, path.to_string_lossy().into_owned(), hz, settings, true),
+                Action::Open(path) => tabs.open(&gpu, window, path.to_string_lossy().into_owned(), settings, &wake, true),
+                Action::Shot(what) => {
+                    if let Some(v) = tabs.view() {
+                        shoot(v, &gpu, *what, settings, &wake);
+                    }
+                }
+                Action::Copy(text) => {
+                    let said = if window::copy_text(text) { "metadata copied" } else { "the clipboard could not be had" };
+                    toast = Some((said.to_string(), Instant::now() + Duration::from_millis(2600)));
+                }
                 Action::Browse(on) => tabs.tab().browsing = *on,
                 Action::Guides(to) => (settings.grid, settings.center, settings.tile) = (to.grid, to.center, to.tile),
                 Action::Fullscreen => {
@@ -904,6 +1047,10 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<C
             Some(wait) if wait.is_zero() => again = true,
             Some(wait) => ui_due = Some(Instant::now() + wait),
             None => {}
+        }
+        // a toast is taken away when its time is up, even if nothing else happens
+        if let Some((_, until)) = &toast {
+            ui_due = Some(ui_due.map_or(*until, |due| due.min(*until)));
         }
         // fullscreen with the controls away is the frame and nothing else: no pointer either
         if pointer_shown != (!fullscreen || out.shown) {

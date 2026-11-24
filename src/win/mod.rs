@@ -27,8 +27,10 @@ pub fn run(first: Option<String>) -> Result<(), String> {
         _ => (1180, 720),
     };
     let (tx, rx) = mpsc::channel();
+    // the render thread's way to wake itself: what it has read or written in the background says when it is done
+    let wake = tx.clone();
     let handle = window::create(client, tx).map_err(|e| e.to_string())?;
-    let render = std::thread::Builder::new().name("render".into()).spawn(move || render::run(handle, rx, first)).map_err(|e| e.to_string())?;
+    let render = std::thread::Builder::new().name("render".into()).spawn(move || render::run(handle, rx, wake, first)).map_err(|e| e.to_string())?;
     window::run();
     let _ = render.join();
     Ok(())

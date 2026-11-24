@@ -8,6 +8,7 @@ mod menus;
 mod widgets;
 
 use crate::event::{Key, Mods};
+use crate::media::meta::Meta;
 use crate::play::Loop;
 use crate::view::{Guides, Look};
 use egui::text::{LayoutJob, TextFormat};
@@ -62,6 +63,10 @@ const FADE: f32 = 0.14;
 const IDLE: f64 = 2.4;
 /// the zoom chip goes this long after the pointer rests
 const CHIP_IDLE: f64 = 2.0;
+/// the metadata panel comes up this long after the pointer comes onto its button, and goes this long after it has
+/// left both the button and the panel
+const FACTS_IN: f64 = 0.35;
+const FACTS_OUT: f64 = 0.18;
 
 const MONO: &str = "mono";
 const MONO_MEDIUM: &str = "mono-medium";
@@ -111,6 +116,25 @@ pub struct Screen<'a> {
     /// the browser is up: in a tab with nothing in it, or laid over the clip
     pub browsing: bool,
     pub fullscreen: bool,
+    /// what just happened, said low in the middle of the window for a moment
+    pub toast: Option<&'a str>,
+}
+
+/// the facts for the metadata panel, which are read in the background.
+pub enum Facts<'a> {
+    Reading,
+    Ready(&'a Meta),
+    Failed(&'a str),
+}
+
+/// which picture a screenshot takes, or the frame to the clipboard
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shot {
+    /// the file's own frame, at full size
+    Frame,
+    /// the picture as the window shows it
+    View,
+    Copy,
 }
 
 /// the clip on screen, as the controls show it.
@@ -151,6 +175,11 @@ pub struct Model<'a> {
     pub shown_size: (usize, usize),
     pub look: Look,
     pub guides: Guides,
+    pub facts: Facts<'a>,
+    /// how the clip is decoded, in the panel's words
+    pub decoded: &'a str,
+    /// where screenshots go, as the menu names it
+    pub shots_to: &'a str,
 }
 
 /// what the user asked for through the controls.
@@ -179,6 +208,9 @@ pub enum Action {
     Open(PathBuf),
     /// lay the browser over the clip, or take it away
     Browse(bool),
+    Shot(Shot),
+    /// this text to the clipboard
+    Copy(String),
     Fullscreen,
     /// the window: move it with the pointer, whose button is down; minimize; maximize or put back; close
     MoveWindow,
@@ -208,6 +240,7 @@ enum Menu {
     Speed,
     Zoom,
     View,
+    Shot,
 }
 
 pub struct Ui {
@@ -232,6 +265,14 @@ pub struct Ui {
     menu: Option<Menu>,
     menu_rect: Rect,
     menu_button: Rect,
+    /// the metadata panel: pinned open; or up while the pointer is on its button or on it. when the pointer came
+    /// onto the button, when it left button and panel, and where the two were drawn
+    facts_pinned: bool,
+    facts_up: bool,
+    facts_since: Option<f64>,
+    facts_left: Option<f64>,
+    facts_rect: Rect,
+    facts_button: Rect,
     browser: browser::Browser,
 }
 
@@ -261,6 +302,12 @@ impl Ui {
             menu: None,
             menu_rect: Rect::NOTHING,
             menu_button: Rect::NOTHING,
+            facts_pinned: false,
+            facts_up: false,
+            facts_since: None,
+            facts_left: None,
+            facts_rect: Rect::NOTHING,
+            facts_button: Rect::NOTHING,
             browser: browser::Browser::new(folder),
         }
     }
@@ -340,6 +387,22 @@ impl Ui {
         self.events.push(egui::Event::Text(c.to_string()));
     }
 
+    /// the wheel, when the pointer is over the metadata panel: it turns the panel's list. false when the pointer is
+    /// elsewhere and the wheel is the player's.
+    pub fn wheel(&mut self, notches: i32) -> bool {
+        let over = (self.facts_pinned || self.facts_up) && self.ctx.pointer_latest_pos().is_some_and(|p| self.facts_rect.contains(p));
+        if over {
+            self.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: Vec2::new(0.0, notches as f32),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        over
+    }
+
     /// escape: closes the open menu. false when there was nothing of ours to close.
     pub fn escape(&mut self) -> bool {
         self.menu.take().is_some()
@@ -348,6 +411,11 @@ impl Ui {
     /// the view changed by key or wheel: the zoom chip shows again.
     pub fn view_changed(&mut self) {
         self.view_changed = true;
+    }
+
+    /// pins the metadata panel open, or lets it go.
+    pub fn toggle_facts(&mut self) {
+        self.facts_pinned = !self.facts_pinned;
     }
 
     /// the readout counts in timecode, or back in frames.
@@ -401,6 +469,9 @@ impl Ui {
                 self.strip(ui, strip, screen, true, actions);
             }
         }
+        if let Some(said) = screen.toast {
+            toast(ui, full, said);
+        }
     }
 
     /// a clip is up: the picture takes the pointer, and the controls come and go over it.
@@ -427,7 +498,7 @@ impl Ui {
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
         let pointer = ui.ctx().pointer_latest_pos();
-        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)));
+        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)));
         let held = ui.input(|i| i.pointer.any_down());
 
         // a press anywhere but on the open menu or its button closes the menu
@@ -476,13 +547,23 @@ impl Ui {
             left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0).right() + 8.0;
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
+        // the metadata panel, pinned: at the right under the chips, whether the controls are up or not
+        if self.facts_pinned {
+            let corner = Pos2::new(full.right() - 10.0, top + 34.0);
+            self.facts_rect = menus::facts(ui, corner, Align2::RIGHT_TOP, 1.0, full.bottom() - corner.y - 10.0 - (bar.height() + 7.0) * alpha, model, actions);
+        }
 
         if alpha <= 0.0 {
             return;
         }
         ui.set_opacity(alpha);
         self.strip(ui, strip, screen, false, actions);
-        self.bar(ui, bar, model, actions);
+        self.bar(ui, bar, model, now, actions);
+        if self.facts_up && !self.facts_pinned {
+            // as a menu: standing over its button
+            let corner = Pos2::new((self.facts_button.right() + 4.0).min(bar.right() - 8.0), bar.top() - 7.0);
+            self.facts_rect = menus::facts(ui, corner, Align2::RIGHT_BOTTOM, alpha, corner.y - full.top() - 10.0, model, actions);
+        }
         if let Some(menu) = self.menu {
             // the design stands a menu 7 above the bar, its right edge 4 past its button's, and 8 in from the window's
             let corner = Pos2::new((self.menu_button.right() + 4.0).min(bar.right() - 8.0), bar.top() - 7.0);
@@ -641,7 +722,7 @@ impl Ui {
     }
 
     /// the bar along the bottom: one row of controls over the full-width timebar.
-    fn bar(&mut self, ui: &mut egui::Ui, bar: Rect, model: &Model, actions: &mut Vec<Action>) {
+    fn bar(&mut self, ui: &mut egui::Ui, bar: Rect, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
         painter.rect_filled(bar, 0.0, BAR);
         painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width(), 1.0)), 0.0, LINE);
@@ -658,13 +739,13 @@ impl Ui {
             x += lead + w + GAP;
             r
         };
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No) {
+        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No).clicked() {
             actions.push(Action::Step(-1));
         }
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No) {
+        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No).clicked() {
             actions.push(Action::TogglePlay);
         }
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No) {
+        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No).clicked() {
             actions.push(Action::Step(1));
         }
         // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
@@ -674,8 +755,8 @@ impl Ui {
             self.toggle_timecode();
         }
 
-        // from the right, in the design's order (those not built yet leave no gap): fullscreen, the view, and the
-        // three that say what they are set to: zoom, speed, loop
+        // from the right, in the design's order (volume, not built yet, leaves no gap): fullscreen, screenshots,
+        // metadata, the view, and the three that say what they are set to: zoom, speed, loop
         let mut right = bar.right() - PAD;
         let mut place = |w: f32, h: f32| {
             right -= w;
@@ -683,8 +764,43 @@ impl Ui {
             right -= GAP;
             r
         };
-        if icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No) {
+        if icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No).clicked() {
             actions.push(Action::Fullscreen);
+        }
+        let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
+        if icon_button(ui, rect, "shot", Icon::Shot, if self.menu == Some(Menu::Shot) { Lit::Open } else { Lit::No }).clicked() {
+            self.toggle_menu(Menu::Shot, rect);
+        }
+        // metadata: a click pins the panel; resting the pointer on the button brings it up for as long as the
+        // pointer stays on the button or the panel. a fault in the file puts an amber dot on the button
+        let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
+        let lit = if self.facts_pinned {
+            Lit::Active
+        } else if self.facts_up {
+            Lit::Open
+        } else {
+            Lit::No
+        };
+        let info = icon_button(ui, rect, "info", Icon::Info, lit);
+        if matches!(&model.facts, Facts::Ready(meta) if meta.faults() > 0) {
+            painter.circle_filled(Pos2::new(rect.right() - 7.5, rect.top() + 7.5), 2.5, AMBER);
+        }
+        if info.clicked() {
+            self.toggle_facts();
+        }
+        self.facts_button = rect;
+        let on = info.hovered() || (self.facts_up && ui.ctx().pointer_latest_pos().is_some_and(|p| self.facts_rect.contains(p)));
+        let (since, wait) = if on {
+            self.facts_left = None;
+            (*self.facts_since.get_or_insert(now), FACTS_IN)
+        } else {
+            self.facts_since = None;
+            (*self.facts_left.get_or_insert(now), FACTS_OUT)
+        };
+        if now - since >= wait {
+            self.facts_up = on;
+        } else if on != self.facts_up {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(wait - (now - since)));
         }
         let turned = model.look != Look::default() || model.guides.grid || model.guides.center;
         let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
@@ -695,7 +811,7 @@ impl Ui {
         } else {
             Lit::No
         };
-        if icon_button(ui, rect, "view", Icon::Guides, lit) {
+        if icon_button(ui, rect, "view", Icon::Guides, lit).clicked() {
             self.toggle_menu(Menu::View, rect);
         }
         let speed = format!("{}×", (model.speed * 100.0).round() / 100.0);
@@ -785,6 +901,23 @@ fn cut_middle(painter: &egui::Painter, name: &str, font_id: FontId, color: Color
     painter.layout_no_wrap(cut, font_id, color)
 }
 
+/// what just happened, low in the middle of the window and over everything: what was done in bright, the rest of
+/// it, after the first dot, in dim.
+fn toast(ui: &egui::Ui, full: Rect, said: &str) {
+    let (done, rest) = said.split_once(" · ").map_or((said, ""), |(done, rest)| (done, rest));
+    let mut job = LayoutJob::default();
+    job.append(done, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color: FG, ..Default::default() });
+    if !rest.is_empty() {
+        job.append(&format!(" · {rest}"), 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color: DIM, ..Default::default() });
+    }
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
+    let galley = painter.layout_job(job);
+    let rect = Align2::CENTER_BOTTOM.anchor_size(Pos2::new(full.center().x, full.bottom() - 64.0), galley.size() + Vec2::new(24.0, 18.0));
+    painter.rect_filled(rect, 0.0, SOLID);
+    painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
+    painter.galley(Pos2::new(rect.left() + 12.0, text_top(&painter, font(MONO_MEDIUM, 11.5), rect.center().y)), galley, FG);
+}
+
 /// a tab whose file did not open: its name and why, in the middle.
 fn message(ui: &egui::Ui, area: Rect, title: &str, why: &str) {
     let painter = ui.painter().with_clip_rect(area);
@@ -843,8 +976,8 @@ enum Lit {
     Active,
 }
 
-/// a 30 x 28 button holding one icon. true when clicked.
-fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) -> bool {
+/// a 30 x 28 button holding one icon.
+fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) -> egui::Response {
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
     if response.is_pointer_button_down_on() || lit == Lit::Active {
         ui.painter().rect_filled(rect, 3.0, PRESSED);
@@ -852,7 +985,7 @@ fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) 
         ui.painter().rect_filled(rect, 3.0, HOVER);
     }
     icons::draw(ui.painter(), rect, icon, FG);
-    response.clicked()
+    response
 }
 
 /// a 28-high button holding text, with an icon before it or none, lit while its menu is open. true when clicked.

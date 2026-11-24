@@ -10,7 +10,9 @@ use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use windows::core::{w, Result, BOOL, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
@@ -230,6 +232,55 @@ pub fn set_fullscreen(window: Handle, on: bool, next_display: bool) {
 /// shows or hides the pointer while it is over the picture.
 pub fn show_pointer(window: Handle, shown: bool) {
     post_with(window, WM_POINTER, shown as usize);
+}
+
+/// puts one thing on the clipboard, in one of the system's formats. false when the clipboard could not be had.
+fn to_clipboard(format: u32, bytes: &[u8]) -> bool {
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return false;
+        }
+        let put = || -> Option<()> {
+            EmptyClipboard().ok()?;
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).ok()?;
+            let at = GlobalLock(memory) as *mut u8;
+            if at.is_null() {
+                return None;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), at, bytes.len());
+            let _ = GlobalUnlock(memory);
+            // the clipboard owns the memory from here
+            SetClipboardData(format, Some(HANDLE(memory.0))).ok().map(|_| ())
+        };
+        let done = put().is_some();
+        let _ = CloseClipboard();
+        done
+    }
+}
+
+/// puts text on the clipboard.
+pub fn copy_text(text: &str) -> bool {
+    const UNICODE_TEXT: u32 = 13;
+    let wide: Vec<u8> = text.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect();
+    to_clipboard(UNICODE_TEXT, &wide)
+}
+
+/// puts a picture on the clipboard, 8 bits a channel. `pixels` is red, green, blue, alpha, 16 bits each, row by row
+/// from the top.
+pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
+    const DIB: u32 = 8;
+    // a 40-byte header, then rows from the bottom up, blue first
+    let mut dib = Vec::with_capacity(40 + pixels.len());
+    for field in [40, width, height, 1 | 32 << 16, 0, width * height * 4, 0, 0, 0, 0] {
+        dib.extend_from_slice(&field.to_le_bytes());
+    }
+    for row in pixels.chunks_exact(width as usize * 4).rev() {
+        for p in row.chunks_exact(4) {
+            let narrow = |v: u16| ((v as u32 * 255 + 32767) / 65535) as u8;
+            dib.extend_from_slice(&[narrow(p[2]), narrow(p[1]), narrow(p[0]), 255]);
+        }
+    }
+    to_clipboard(DIB, &dib)
 }
 
 /// the rate the desktop is composed at, in Hz, as the system reports it. 60 if it will not say.

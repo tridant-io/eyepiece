@@ -1,7 +1,8 @@
 //! what the menus are made of, drawn to the design: a heading with its keys, a row of choices, a slider, a field, a
 //! switch. the accent color lives here and nowhere else: on sliders, switches and the field being typed into.
 
-use super::{font, text_top, ACCENT, DIM, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID, TRACK};
+use super::{font, text_top, ACCENT, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS, SOLID, TRACK};
+use crate::media::meta::{Row, Tone};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, Pos2, Rect, Sense, Vec2};
 
@@ -10,14 +11,14 @@ const ON_CHOSEN: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 /// a row that holds a field
 pub const ROW: f32 = 26.0;
 
-/// a menu `width` wide, standing with its right bottom corner on `right_bottom`. returns where it was drawn.
-pub fn menu(ui: &egui::Ui, name: &str, right_bottom: Pos2, width: f32, alpha: f32, add: impl FnOnce(&mut egui::Ui)) -> Rect {
+/// a menu `width` wide, with the corner `pivot` names on `corner`. returns where it was drawn.
+pub fn menu(ui: &egui::Ui, name: &str, corner: Pos2, pivot: Align2, width: f32, alpha: f32, add: impl FnOnce(&mut egui::Ui)) -> Rect {
     let frame = egui::Frame::new()
         .fill(SOLID)
         .stroke((1.0, LINE))
         .inner_margin(12.0)
         .shadow(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(128) });
-    let area = egui::Area::new(egui::Id::unique(name)).order(egui::Order::Foreground).fixed_pos(right_bottom).pivot(Align2::RIGHT_BOTTOM);
+    let area = egui::Area::new(egui::Id::unique(name)).order(egui::Order::Foreground).fixed_pos(corner).pivot(pivot);
     let shown = area.show(ui.ctx(), |ui| {
         ui.set_opacity(alpha);
         frame.show(ui, |ui| {
@@ -57,6 +58,64 @@ pub fn heading(ui: &mut egui::Ui, text: &str, keys: &[&str]) {
     let mut right = rect.right();
     for key in keys.iter().rev() {
         right = key_cap(ui, Pos2::new(right, rect.center().y), key, false, DIM).left() - 5.0;
+    }
+}
+
+/// a section's name with a few dim words at its right.
+pub fn heading_note(ui: &mut egui::Ui, text: &str, note: &str) {
+    heading(ui, text, &[]);
+    let rect = ui.min_rect();
+    let last = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 16.0), rect.max);
+    let galley = ui.painter().layout_no_wrap(note.to_string(), font(MONO_MEDIUM, 10.0), DIM);
+    ui.painter().galley(Pos2::new(last.right() - galley.size().x, text_top(ui.painter(), font(MONO_MEDIUM, 10.0), last.center().y)), galley, DIM);
+}
+
+/// a section's name with a small outlined button at its right. true when the button is clicked.
+pub fn heading_button(ui: &mut egui::Ui, text: &str, button: &str) -> bool {
+    heading(ui, text, &[]);
+    let rect = ui.min_rect();
+    let last = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 16.0), rect.max);
+    let galley = ui.painter().layout_no_wrap(button.to_string(), font(MONO_MEDIUM, 10.0), FG);
+    let frame = Rect::from_min_max(Pos2::new(last.right() - galley.size().x - 14.0, last.center().y - 9.0), Pos2::new(last.right(), last.center().y + 9.0));
+    let response = ui.interact(frame, ui.scope_id().with((text, button)), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(frame, 0.0, HOVER);
+    }
+    ui.painter().rect_stroke(frame, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
+    ui.painter().galley(Pos2::new(frame.left() + 7.0, text_top(ui.painter(), font(MONO_MEDIUM, 10.0), frame.center().y)), galley, FG);
+    response.clicked()
+}
+
+/// the metadata's rows: a dim name and its value, which wraps, with a rule between groups. amber with a mark is a
+/// fault in the file; dim is what the file does not say, with the assumption in use.
+pub fn rows(ui: &mut egui::Ui, groups: &[Vec<Row>]) {
+    const NAME: f32 = 86.0;
+    ui.spacing_mut().item_spacing.y = 5.0;
+    let line = |text: &str, color: Color32, width: f32| {
+        let mut job = LayoutJob::default();
+        job.wrap.max_width = width;
+        // long paths have no spaces to break at
+        job.wrap.break_anywhere = !text.contains(' ');
+        job.append(text, 0.0, TextFormat { font_id: font(MONO, 11.5), color, line_height: Some(11.5 * 1.35), ..Default::default() });
+        job
+    };
+    for (i, group) in groups.iter().enumerate() {
+        if i > 0 {
+            let rule = row(ui, 5.0);
+            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(rule.left(), rule.top() + 2.0), Vec2::new(rule.width(), 1.0)), 0.0, LINE);
+        }
+        for fact in group {
+            let (value, color) = match fact.tone {
+                Tone::Plain => (fact.value.clone(), FG),
+                Tone::Fault => (format!("! {}", fact.value), AMBER),
+                Tone::Assumed => (fact.value.clone(), DIM),
+            };
+            let name = ui.painter().layout_job(line(fact.label, DIM, NAME));
+            let value = ui.painter().layout_job(line(&value, color, ui.available_width() - NAME - 10.0));
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), name.size().y.max(value.size().y)), Sense::hover());
+            ui.painter().galley(rect.min, name, DIM);
+            ui.painter().galley(Pos2::new(rect.left() + NAME + 10.0, rect.top()), value, color);
+        }
     }
 }
 

@@ -11,6 +11,8 @@ pub enum Icon {
     Pause,
     Loop,
     Guides,
+    Info,
+    Shot,
     Full,
     Close,
 }
@@ -72,6 +74,15 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
             painter.line_segment([p(8.0, 2.5), p(8.0, 13.5)], stroke);
             painter.line_segment([p(2.5, 8.0), p(13.5, 8.0)], stroke);
             painter.circle_stroke(p(8.0, 8.0), 2.7 * unit, stroke);
+        }
+        Icon::Info => {
+            painter.circle_stroke(p(8.0, 8.0), 5.7 * unit, stroke);
+            line(&[(8.0, 7.3), (8.0, 10.9)]);
+            line(&[(8.0, 5.0), (8.0, 5.3)]);
+        }
+        Icon::Shot => {
+            painter.add(Shape::closed_line([(2.5, 5.5), (4.7, 5.5), (5.7, 4.0), (10.3, 4.0), (11.3, 5.5), (13.5, 5.5), (13.5, 12.5), (2.5, 12.5)].iter().map(|&(x, y)| p(x, y)).collect(), stroke));
+            painter.circle_stroke(p(8.0, 8.9), 2.2 * unit, stroke);
         }
         Icon::Full => {
             line(&[(2.8, 6.0), (2.8, 2.8), (6.0, 2.8)]);

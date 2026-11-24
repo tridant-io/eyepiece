@@ -79,7 +79,11 @@ pub enum Event {
     Resize { w: u32, h: u32 },
     /// physical pixels for one of the design's pixels changed (the window moved to a display with another scale)
     Scale(f32),
-    /// a file was dropped on the window
+    /// a file was dropped on the window, or handed over by another launch
     Open(String),
+    /// work done in the background has this to say, for a moment, in the window
+    Toast(String),
+    /// work done in the background is ready to be looked at
+    Wake,
     Close,
 }

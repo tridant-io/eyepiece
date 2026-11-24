@@ -5,6 +5,7 @@ use super::clip::{self, hap_variant};
 use super::color::Matrix;
 use super::ff::{self, Input, Sample};
 use super::hap::{self, Tex};
+use super::still::{self, Samples};
 use super::timeline::Timeline;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
@@ -36,6 +37,9 @@ fn row(label: &'static str, value: impl Into<String>, tone: Tone) -> Row {
 
 impl Meta {
     pub fn read(path: &str) -> Result<Meta, String> {
+        if still::is_still(path) {
+            return still_facts(path);
+        }
         let file = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
         let mut input = Input::open(path)?;
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
@@ -167,6 +171,47 @@ impl Meta {
 }
 
 /// the stored bytes of one sample.
+/// a still, or the numbered run it is a frame of: what its own file says, and what the folder's listing says of the run.
+fn still_facts(path: &str) -> Result<Meta, String> {
+    let file = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    let image = still::decode(path)?;
+    let name = Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    let modified = file.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+    let place = vec![
+        row("file", format!("{name} · {}", size(file.len())), Tone::Plain),
+        row("modified", modified.map_or_else(|| "not known".to_string(), |d| utc(d.as_secs() as i64)), Tone::Plain),
+        row("path", std::path::absolute(path).map_or_else(|_| path.to_string(), |p| p.display().to_string()), Tone::Plain),
+    ];
+    let mut picture = vec![row("codec", image.codec, Tone::Plain), row("size", format!("{} × {}", image.width, image.height), Tone::Plain)];
+    if let Some(run) = clip::run_of(Path::new(path)) {
+        picture.push(row("sequence", format!("{} · {} frames · this file is frame {}", run.name, grouped(run.frames as u64), run.at), Tone::Plain));
+        if !run.missing.is_empty() {
+            let first: Vec<String> = run.missing.iter().take(8).map(|f| f.to_string()).collect();
+            let more = if run.missing.len() > 8 { " and more" } else { "" };
+            picture.push(row("missing", format!("{} frames have no file: {}{more}", run.missing.len(), first.join(", ")), Tone::Fault));
+        }
+        picture.push(match image.rate {
+            Some((n, d)) => row("frame rate", format!("{n}/{d} · {}", decimal(n as f64 / d as f64, 3)), Tone::Plain),
+            None => row("frame rate", "none in file. shown at 24", Tone::Assumed),
+        });
+    }
+    picture.push(row(
+        "bit depth",
+        match image.samples {
+            Samples::U8 => "8-bit".to_string(),
+            Samples::U16 => format!("{}-bit", image.bits),
+            Samples::F32 => format!("{}-bit float", image.bits),
+        },
+        Tone::Plain,
+    ));
+    picture.push(row("alpha", if image.has_alpha { "yes" } else { "none" }, Tone::Plain));
+    picture.push(match image.samples {
+        Samples::F32 => row("color", "linear light. shown through the srgb curve", Tone::Assumed),
+        _ => row("color", "not read from this kind of file yet. shown as stored", Tone::Assumed),
+    });
+    Ok(Meta { groups: vec![place, picture] })
+}
+
 fn bytes(path: &str, s: &Sample) -> Result<Vec<u8>, String> {
     let mut raw = vec![0u8; s.size];
     ff::read_at(&ff::open_shared(path)?, &mut raw, s.pos).map_err(|e| format!("{path}: {e}"))?;

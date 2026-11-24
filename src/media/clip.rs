@@ -41,12 +41,12 @@ pub enum Lane {
 }
 
 /// a numbered run of stills, as a clip needs it
-struct Run {
-    name: String,
-    frames: usize,
+pub(super) struct Run {
+    pub(super) name: String,
+    pub(super) frames: usize,
     /// the frame of the file the run was found from
-    at: usize,
-    missing: Vec<usize>,
+    pub(super) at: usize,
+    pub(super) missing: Vec<usize>,
     path_of: Box<dyn Fn(usize) -> String + Send>,
 }
 
@@ -57,7 +57,7 @@ fn file_name(path: &str) -> String {
 
 /// the numbered run in the file's folder that the file is a frame of, from the folder's listing alone: what the
 /// listing lacks is missing, and no other file is opened.
-fn run_of(file: &Path) -> Option<Run> {
+pub(super) fn run_of(file: &Path) -> Option<Run> {
     let name = file.file_name()?.to_str()?;
     let (before, n, ext) = browse::frame_number(name)?;
     // a bare name is in the folder the program runs in
