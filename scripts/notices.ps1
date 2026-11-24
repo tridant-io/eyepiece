@@ -140,7 +140,13 @@ $bare = @()
 foreach ($c in $crates) {
     $any = $false
     $kept = @(foreach ($f in Get-ChildItem -LiteralPath $c.Dir -Recurse -File) {
-        if ($f.Name -notmatch '^(licen[cs]e|copying|notice)(-(?<tag>[\w.-]+?))?(\.md|\.txt)?$') { continue }
+        if ($f.Name -notmatch '^(licen[cs]e|copying|notice)([-_](?<tag>[\w.-]+?))?(\.md|\.txt)?$') {
+            # a license file in a form this cannot read must not be left out quietly
+            if ($f.Directory.Name -match '^licen[cs]es$' -or ($f.Name -match '^(licen[cs]e|copying|notice)' -and $f.Extension -ne '.rs')) {
+                throw "$($c.Who): cannot tell which license $($f.Name) is, so notices.ps1 needs to learn its form"
+            }
+            continue
+        }
         $any = $true
         $tag = $Matches['tag']
         $label = if ($tag) { @($c.Take | Where-Object { $_.StartsWith($tag, [StringComparison]::OrdinalIgnoreCase) })[0] } else { $c.Take -join ' AND ' }
@@ -203,8 +209,8 @@ Add-Line $rule, '1. ffmpeg', '',
     "license: $ffLicense, as the build itself says. the text is ffmpeg-LICENSE.txt beside this file.",
     "version: $ffVersion, the windows build made by https://github.com/BtbN/FFmpeg-Builds,",
     "downloaded from $download",
-    "source: https://git.ffmpeg.org/ffmpeg.git at $revision. the scripts that made the build, and the source of",
-    'each library it includes, are at https://github.com/BtbN/FFmpeg-Builds.', '',
+    "source: https://git.ffmpeg.org/ffmpeg.git at $revision. the scripts that made the build are at",
+    'https://github.com/BtbN/FFmpeg-Builds.', '',
     'ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll beside it, which eyepiece loads',
     'from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build',
     "release $release, or a later one whose libraries keep the same major versions (the number in each file name), as shared",
