@@ -11,6 +11,8 @@ mod folder;
 mod markup;
 mod media;
 mod play;
+// the player needs a system's half (`sys`): macos has its renderer so far, and not yet its window
+#[cfg(windows)]
 mod player;
 mod preview;
 mod settings;
@@ -18,6 +20,8 @@ mod shot;
 mod timecode;
 mod ui;
 mod view;
+#[cfg(target_os = "macos")]
+mod mac;
 #[cfg(windows)]
 mod win;
 // the system's half of the player: its window, its device and its painters

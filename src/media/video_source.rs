@@ -98,12 +98,13 @@ impl VideoLane {
         // frames that stand alone, in software, from a decoder that keeps each frame to one core (notchlc): several at
         // once, each worker with a decoder of its own. prores shares a frame out across cores itself
         let shared = alone && !layout.hardware && !splits_frames(&input, stream);
-        // counted as four planes the size of luma: the most a software picture holds (4:4:4 with alpha, as notchlc's)
-        let frame_bytes = first.plane(0, layout.chroma_shift).0.len() * 4;
         let reopen = shared.then(|| (path.to_string(), stream));
         let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), times, next: Some(1), recent: VecDeque::new(), kept: if shared { 0 } else { kept }, hidden, reopen };
         let first = Arc::new(first);
         let source = if shared {
+            // counted as four planes the size of luma: the most a software picture holds (4:4:4 with alpha, as
+            // notchlc's). only a software picture has planes to ask: a hardware one is a surface on the gpu
+            let frame_bytes = first.plane(0, layout.chroma_shift).0.len() * 4;
             Source::start_shared(loader, source::budget(), frame_bytes, (0, first))?
         } else {
             loader.remember(0, first);

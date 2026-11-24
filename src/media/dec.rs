@@ -13,6 +13,7 @@ const SPARE_SURFACES: usize = 8;
 
 /// what a hardware decoder needs from the renderer: its device, and the one lock both sides take around device calls.
 /// ffmpeg requires that lock to be recursive.
+#[cfg(windows)]
 #[derive(Clone, Copy)]
 pub struct Hardware {
     /// the renderer's device: an ID3D11Device on windows. borrowed; the decoder takes its own reference.
@@ -22,7 +23,14 @@ pub struct Hardware {
     pub lock_ctx: *mut c_void,
 }
 // the device is free-threaded behind the lock it comes with
+#[cfg(windows)]
 unsafe impl Send for Hardware {}
+
+/// what a hardware decoder needs from the renderer. off windows, nothing: videotoolbox decodes into io surfaces,
+/// which any metal device reads.
+#[cfg(not(windows))]
+#[derive(Clone, Copy)]
+pub struct Hardware;
 
 /// how a decoded picture's samples are laid out, in the terms the renderer and the color math need.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,11 +87,11 @@ impl Picture {
             let name = || CStr::from_ptr(ffi::av_get_pix_fmt_name(samples)).to_string_lossy().into_owned();
             let (bits, chroma_shift) = match samples {
                 F::AV_PIX_FMT_NV12 | F::AV_PIX_FMT_YUV420P | F::AV_PIX_FMT_YUVJ420P => (8, (1, 1)),
-                F::AV_PIX_FMT_YUV422P | F::AV_PIX_FMT_YUVJ422P => (8, (1, 0)),
-                F::AV_PIX_FMT_YUV444P | F::AV_PIX_FMT_YUVJ444P => (8, (0, 0)),
+                F::AV_PIX_FMT_NV16 | F::AV_PIX_FMT_YUV422P | F::AV_PIX_FMT_YUVJ422P => (8, (1, 0)),
+                F::AV_PIX_FMT_NV24 | F::AV_PIX_FMT_YUV444P | F::AV_PIX_FMT_YUVJ444P => (8, (0, 0)),
                 F::AV_PIX_FMT_P010LE | F::AV_PIX_FMT_YUV420P10LE => (10, (1, 1)),
-                F::AV_PIX_FMT_YUV422P10LE => (10, (1, 0)),
-                F::AV_PIX_FMT_YUV444P10LE | F::AV_PIX_FMT_YUVA444P10LE => (10, (0, 0)),
+                F::AV_PIX_FMT_P210LE | F::AV_PIX_FMT_YUV422P10LE => (10, (1, 0)),
+                F::AV_PIX_FMT_P410LE | F::AV_PIX_FMT_YUV444P10LE | F::AV_PIX_FMT_YUVA444P10LE => (10, (0, 0)),
                 F::AV_PIX_FMT_YUV422P12LE => (12, (1, 0)),
                 F::AV_PIX_FMT_YUV444P12LE | F::AV_PIX_FMT_YUVA444P12LE => (12, (0, 0)),
                 _ => return Err(format!("pictures stored as {} do not play yet", name())),
@@ -110,9 +118,13 @@ impl Picture {
         }
     }
 
-    /// for a hardware picture: the decoder's texture array (an ID3D11Texture2D on windows) and this frame's slice.
+    /// for a hardware picture, where it is on the gpu: on windows the decoder's texture array (an ID3D11Texture2D)
+    /// and this frame's slice; on macos the frame's CVPixelBuffer, and nothing.
     pub fn surface(&self) -> (*mut c_void, u32) {
-        unsafe { ((*self.0).data[0] as *mut c_void, (*self.0).data[1] as usize as u32) }
+        unsafe {
+            let f = &*self.0;
+            if cfg!(target_os = "macos") { (f.data[3] as *mut c_void, 0) } else { (f.data[0] as *mut c_void, f.data[1] as usize as u32) }
+        }
     }
 }
 
@@ -179,7 +191,35 @@ unsafe fn attach(ctx: *mut ffi::AVCodecContext, hardware: &Hardware, kept: usize
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// on macos we take videotoolbox's output when ffmpeg offers it; its own software choice stands when it does not.
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn pick_format(ctx: *mut ffi::AVCodecContext, formats: *const ffi::AVPixelFormat) -> ffi::AVPixelFormat {
+    let mut p = formats;
+    while *p != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+        if *p == ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX {
+            return *p;
+        }
+        p = p.add(1);
+    }
+    ffi::avcodec_default_get_format(ctx, formats)
+}
+
+/// asks ffmpeg for videotoolbox, which makes its own surfaces as it needs them.
+#[cfg(target_os = "macos")]
+unsafe fn attach(ctx: *mut ffi::AVCodecContext, _hardware: &Hardware, _kept: usize) -> Result<(), String> {
+    let mut hw = ptr::null_mut();
+    let r = ffi::av_hwdevice_ctx_create(&mut hw, ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, ptr::null(), ptr::null_mut(), 0);
+    if r < 0 {
+        return Err(format!("hardware decoder: {}", err(r)));
+    }
+    (*ctx).hw_device_ctx = hw;
+    (*ctx).get_format = Some(pick_format);
+    // the system does the decoding: threads of our own would only hold frames back
+    (*ctx).thread_count = 1;
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 unsafe fn attach(_ctx: *mut ffi::AVCodecContext, _hardware: &Hardware, _kept: usize) -> Result<(), String> {
     Ok(())
 }
