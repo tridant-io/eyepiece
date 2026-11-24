@@ -281,6 +281,22 @@ mod tests {
         assert!(off(24_000) < 0.01 && off(23_999) > 0.02 && off(24_001) > 0.02, "{} {} {}", off(23_999), off(24_000), off(24_001));
     }
 
+    /// mkv's index lists none of its sound. its start is found from its first packet, so the priming stored before 0
+    /// is decoded and dropped as in the mov, and the sound is the mov's own; without that, the first 1024 samples were
+    /// lost. a seek lands within the half a millisecond that mkv's clock rounds to.
+    #[test]
+    fn sound_in_mkv_is_the_same_as_in_mov() {
+        let (mov, _) = sound("tone48_stereo.mov", 0.0, 1.0, 48_000, 2);
+        let (mkv, info) = sound("tone48_stereo.mkv", 0.0, 1.0, 48_000, 2);
+        assert_eq!((info.codec.as_str(), mkv.len()), ("aac", mov.len()));
+        assert!(mkv.iter().zip(&mov).all(|(a, b)| (a - b).abs() < 0.01));
+        let (half, _) = sound("tone48_stereo.mkv", 0.5, 1.0, 48_000, 2);
+        let off = |from: usize| half.iter().zip(&mov[from * 2..]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        let landed = (24_000 - 24..=24_000 + 24).min_by(|&a, &b| off(a).total_cmp(&off(b))).unwrap();
+        println!("{} {landed} {}", half.len() / 2, off(landed));
+        assert!(off(landed) < 0.01, "{}", off(landed));
+    }
+
     #[test]
     fn pitch_is_kept_from_half_to_double_speed() {
         for speed in [0.5, 2.0] {

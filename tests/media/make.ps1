@@ -24,6 +24,13 @@ ffmpeg -v error -y -i (Out-Clip 'h264_64.mp4') -c copy (Out-Clip 'h264_64.mkv')
 # a clip cut from a longer one without re-encoding, starting between key frames: 24 samples stored, an edit list
 # hides the first 6, 18 are shown
 ffmpeg -v error -y -ss 0.2 -i (Out-Clip 'h264_320.mp4') -c copy (Out-Clip 'h264_cut_320.mp4')
+# more containers that list no frames up front: the same clip as a fragmented mp4 (a fragment from each key frame),
+# and vp9 in webm. without an sidx, ffmpeg reads every fragment on opening; with one it stops after the first, and
+# its table holds 4 of the 12 frames. (an sidx without default_base_moof makes a file ffmpeg itself cannot decode)
+ffmpeg -v error -y -i (Out-Clip 'h264_64.mp4') -c copy -movflags frag_keyframe+empty_moov+default_base_moof+global_sidx (Out-Clip 'h264_frag_64.mp4')
+ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30' -frames:v 12 -c:v libvpx-vp9 -g 4 -pix_fmt yuv420p (Out-Clip 'vp9_64.webm')
+# frames that do not all last the same: six a 30th of a second apart, then six a 15th, with b-frames
+ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30' -frames:v 12 -vf "setpts='if(lt(N,6),N,2*N-6)/(30*TB)'" -fps_mode passthrough -c:v libx264 -g 4 -bf 2 -pix_fmt yuv420p -an (Out-Clip 'h264_vfr_64.mp4')
 
 # for the metadata panel. 12 frames at 30000/1001 (0.4004 s) with a drop-frame timecode track and two audio
 # tracks: one 0.4 s long, within a frame of the picture, and one 0.3 s long, three frames short
@@ -39,6 +46,8 @@ ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=24,format=yuva444p10le,setpar
 # channels can be told apart; pcm in mono (8-bit: 16-bit would not fit the size these clips keep to)
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:s=64x64:r=24:d=1' -f lavfi -i 'aevalsrc=0.5*sin(2*PI*440*t)|0.5*sin(2*PI*660*t):s=48000:c=stereo:d=1' -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 128k (Out-Clip 'tone48_stereo.mov')
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:s=64x64:r=24:d=1' -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=1' -c:v libx264 -pix_fmt yuv420p -c:a pcm_u8 (Out-Clip 'tone44_mono.mov')
+# the stereo one in matroska, whose index has no entries for sound
+ffmpeg -v error -y -i (Out-Clip 'tone48_stereo.mov') -c copy (Out-Clip 'tone48_stereo.mkv')
 # stills, from patterns whose numbers the tests know. no name may end in digits unless it is a frame of a sequence:
 # the tests open stills from this folder, and numbered names that share a stem fold into one sequence.
 # 8-bit: pixel (x, y) is red 16x, green 16y, blue 128; the tga adds alpha 16x + 15

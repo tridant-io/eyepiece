@@ -8,6 +8,7 @@ use super::hap::{self, Tex};
 use super::still::{self, Samples};
 use super::timeline::Timeline;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::time::UNIX_EPOCH;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,9 +45,10 @@ impl Meta {
         let mut input = Input::open(path)?;
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
         let tag = ff::fourcc(video.tag);
-        let stored = input.samples(video.index);
+        // mkv, a fragmented mp4 and frames that vary are counted by reading the whole file (`clip::stored`)
+        let (stored, shown) = clip::stored(path, &input, &video, &AtomicUsize::new(0))?;
         let (count, hidden, all_key) = (stored.len(), stored.iter().filter(|s| s.hidden).count(), stored.iter().all(|s| s.key));
-        let (samples, timeline, _) = clip::frames(&video, stored);
+        let (samples, timeline, _) = clip::frames(&video, stored, shown);
         // before `probe`, which mixes in what the decoder finds or assumes
         let container = input.color(video.index);
         let audio = input.audio();
@@ -124,7 +126,9 @@ impl Meta {
                 _ => row("range", "not stated in file. shown as video range", Tone::Assumed),
             };
             let tags = [stream[0], stream[1], stream[2]];
-            (row("codec", format!("{codec} · {tag}"), Tone::Plain), depth, row("alpha", "not read for this codec yet. shown as opaque", Tone::Assumed), vec![color_row(tags, video.height), range])
+            // mkv names a codec by an id of its own, not a four-letter tag
+            let codec = if video.tag == 0 { codec } else { format!("{codec} · {tag}") };
+            (row("codec", codec, Tone::Plain), depth, row("alpha", "not read for this codec yet. shown as opaque", Tone::Assumed), vec![color_row(tags, video.height), range])
         };
         let mut picture = vec![codec, row("size", format!("{} × {}", video.width, video.height), Tone::Plain), rate_row(&timeline), row("frames", frames, Tone::Plain), duration_row(&timeline), depth, alpha];
         picture.extend(color);
@@ -318,11 +322,12 @@ fn color_row([primaries, transfer, matrix]: [i32; 3], height: usize) -> Row {
 }
 
 fn rate_row(t: &Timeline) -> Row {
-    match t.rate() {
-        Some((n, d)) => row("frame rate", format!("{n}/{d} · {}", decimal(n as f64 / d as f64, 3)), Tone::Plain),
-        None if t.frames() == 0 => row("frame rate", "not listed up front in this kind of file", Tone::Plain),
-        None if t.frames() == 1 => row("frame rate", "still: one frame", Tone::Plain),
-        None => row("frame rate", "variable: its frames do not all last the same", Tone::Fault),
+    match (t.rate(), t.derived()) {
+        (Some((n, d)), _) => row("frame rate", format!("{n}/{d} · {}", decimal(n as f64 / d as f64, 3)), Tone::Plain),
+        (None, Some(fps)) => row("frame rate", format!("{} · derived: the file rounds its frames' times to its clock", decimal(fps, 3)), Tone::Assumed),
+        (None, None) if t.frames() == 0 => row("frame rate", "not listed up front in this kind of file", Tone::Plain),
+        (None, None) if t.frames() == 1 => row("frame rate", "still: one frame", Tone::Plain),
+        (None, None) => row("frame rate", "variable: its frames do not all last the same. each is shown for its own time", Tone::Fault),
     }
 }
 
@@ -361,7 +366,7 @@ fn container_name(format: &str, ext: &str) -> String {
 }
 
 /// `x` to at most `places` decimals, without trailing zeros.
-fn decimal(x: f64, places: usize) -> String {
+pub(super) fn decimal(x: f64, places: usize) -> String {
     let s = format!("{x:.places$}");
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
@@ -531,15 +536,25 @@ mod tests {
     }
 
     #[test]
-    fn a_file_without_a_frame_table_still_reads() {
+    fn a_file_without_a_frame_table_is_counted() {
         let m = read("h264_64.mkv");
         assert_eq!(get(&m, "container"), ("matroska · .mkv", Tone::Plain));
-        assert_eq!(get(&m, "frames").0, "not listed up front in this kind of file");
-        assert_eq!(get(&m, "frame rate").0, "not listed up front in this kind of file");
+        assert_eq!(get(&m, "frames"), ("12 · numbered 0 to 11", Tone::Plain));
+        // milliseconds cannot hold a 30th of a second: the rate is derived from the times, and says so
+        assert_eq!(get(&m, "frame rate"), ("30 · derived: the file rounds its frames' times to its clock", Tone::Assumed));
+        assert_eq!(get(&m, "codec"), ("h.264", Tone::Plain));
+        let m = read("vp9_64.webm");
+        assert_eq!(get(&m, "container"), ("webm · .webm", Tone::Plain));
+        assert_eq!((get(&m, "codec").0, get(&m, "frames").0), ("vp9", "12 · numbered 0 to 11"));
+        let m = read("h264_frag_64.mp4");
+        assert_eq!((get(&m, "frames").0, get(&m, "frame rate").0), ("12 · numbered 0 to 11", "15360/512 · 30"));
     }
 
     #[test]
     fn frames_that_do_not_all_last_the_same_are_a_fault() {
+        let m = read("h264_vfr_64.mp4");
+        assert_eq!(get(&m, "frames"), ("12 · numbered 0 to 11", Tone::Plain));
+        assert_eq!(get(&m, "frame rate"), ("variable: its frames do not all last the same. each is shown for its own time", Tone::Fault));
         let t = Timeline { time_base: (1, 1000), times: vec![0, 40, 90, 120] };
         assert_eq!(rate_row(&t).tone, Tone::Fault);
         assert_eq!(duration_row(&t).value, "4 frames · their lengths vary");

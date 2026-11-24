@@ -3,12 +3,14 @@
 use super::dec::Hardware;
 use super::ff::{self, Input, Sample, Video};
 use super::hap_source::HapLane;
+use super::meta;
 use super::seq_source::SeqLane;
 use super::still;
 use super::timeline::Timeline;
-use super::video_source::VideoLane;
+use super::video_source::{Times, VideoLane};
 use crate::browse::{self, Kind};
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 pub struct Clip {
@@ -86,7 +88,7 @@ pub struct Waiting {
     path: String,
     stream: usize,
     samples: Vec<Sample>,
-    step: i64,
+    times: Times,
     size: (usize, usize),
 }
 
@@ -111,13 +113,45 @@ pub(super) fn codec_name(video: &Video) -> Option<&'static str> {
         "hevc" => Some("hevc"),
         "prores" => Some("prores"),
         "notchlc" => Some("notchlc"),
+        "vp9" => Some("vp9"),
         _ => None,
     })
 }
 
-/// a clip's frames, from the container's own sample table: the samples in the order they are read, the times of the
-/// frames shown, and how long every frame lasts when they all last the same.
-pub(super) fn frames(video: &Video, mut samples: Vec<Sample>) -> (Vec<Sample>, Timeline, Option<i64>) {
+/// a clip's stored samples in the order they are read and, when the container's sample table cannot say them, the
+/// times its frames are shown. mov and mp4 list every sample in the moov, but a fragmented mp4 lists none or only its
+/// first there, and ffmpeg's table of the rest can stop short; mkv lists only key frames to seek to. those two, and a
+/// table whose decode times are not evenly spaced (with b-frames these do not say when frames are shown), are counted
+/// by the packet pass (`Input::count`), on a reader of its own. other containers without a table are not counted:
+/// their seeking is not by key frame.
+pub(super) fn stored(path: &str, input: &Input, video: &Video, counted: &AtomicUsize) -> Result<(Vec<Sample>, Option<Vec<i64>>), String> {
+    let samples = input.samples(video.index);
+    let format = input.format_name();
+    let (mov, mkv) = (format.starts_with("mov,"), format == "matroska,webm");
+    let whole = !mkv && (!mov || input.listed(video.index) == samples.len() as i64);
+    // hap frames stand alone, so a decode time is when the frame is shown; evenly spaced decode times are as evenly
+    // spaced as the frames shown
+    let step = |p: &[Sample]| p[1].time - p[0].time;
+    let shown_by_table = hap_variant(&ff::fourcc(video.tag)).is_some() || samples.len() < 2 || (step(&samples) > 0 && samples.windows(2).all(|p| step(p) == step(&samples)));
+    if (whole && shown_by_table) || !(mov || mkv) {
+        return Ok((samples, None));
+    }
+    let (samples, shown) = Input::open(path)?.count(video.index, counted)?;
+    Ok((samples, Some(shown)))
+}
+
+/// a clip's frames: the samples in the order they are read, the times of the frames shown, and how long every frame
+/// lasts when they all last the same. `shown` is the times the packet pass found, when it ran.
+pub(super) fn frames(video: &Video, mut samples: Vec<Sample>, shown: Option<Vec<i64>>) -> (Vec<Sample>, Timeline, Option<i64>) {
+    if let Some(times) = shown {
+        let timeline = Timeline { time_base: video.time_base, times };
+        if hap_variant(&ff::fourcc(video.tag)).is_some() {
+            samples.retain(|s| !s.hidden);
+            samples.sort_by_key(|s| s.time);
+        }
+        let step = timeline.step();
+        return (samples, timeline, step);
+    }
     if hap_variant(&ff::fourcc(video.tag)).is_some() {
         // every hap frame stands alone, so file order is free to differ from time order: time order is what plays.
         // what an edit list hides is not part of the clip
@@ -148,25 +182,30 @@ impl Clip {
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
         let tag = ff::fourcc(video.tag);
         let name = file_name(path);
-        let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, notchlc, prores, h.264 and hevc.", video.codec_name))?;
-        let (samples, timeline, step) = frames(&video, input.samples(video.index));
+        let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, notchlc, prores, h.264, hevc and vp9.", video.codec_name))?;
+        // the packet pass runs here, on the drawing thread, for now
+        let (samples, shown) = stored(path, &input, &video, &AtomicUsize::new(0))?;
+        let counted = shown.is_some();
+        let (samples, timeline, step) = frames(&video, samples, shown);
         let lane = if hap_variant(&tag).is_some() {
             Lane::Hap(HapLane::open(path, samples, video.width, video.height)?)
         } else {
-            let step = match (step, samples.len()) {
-                (Some(step), _) => step,
-                // mkv and fragmented mp4 carry no table of frames: they have to be counted by reading the file, which is not built
+            let times = match (step, samples.len()) {
+                (Some(step), _) => Times::Even(step),
+                // a container that lists no frames and is not counted (mpeg-ts, for one)
                 (None, 0) => return Err(format!("{path}: this kind of file does not list its frames up front. it does not play yet.")),
-                (None, 1) => 1,
-                (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates do not play yet.")),
+                (None, 1) => Times::Even(1),
+                (None, _) if counted => Times::Shown(timeline.times.clone()),
+                // a table of uneven decode times in a container that is not counted gives no times to show frames by
+                (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates play only from mov, mp4 and mkv.")),
             };
             let size = (video.width, video.height);
             if codec == "prores" || codec == "notchlc" {
                 // these decode in software here, so they need not wait for the graphics device: the first frame is
                 // being decoded while the device is made, which takes longer than anything else in a start
-                Lane::Video(VideoLane::open(path, video.index, samples, step, size, None)?)
+                Lane::Video(VideoLane::open(path, video.index, samples, times, size, None)?)
             } else {
-                Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, step, size })
+                Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, times, size })
             }
         };
         Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false })
@@ -190,19 +229,22 @@ impl Clip {
     /// starts decoding, for a clip that was waiting. `hardware` is the renderer's device, when there is one.
     pub fn start(&mut self, hardware: Option<Hardware>) -> Result<(), String> {
         if let Lane::Waiting(w) = &mut self.lane {
-            let lane = VideoLane::open(&w.path, w.stream, std::mem::take(&mut w.samples), w.step, w.size, hardware)?;
+            let times = std::mem::replace(&mut w.times, Times::Even(1));
+            let lane = VideoLane::open(&w.path, w.stream, std::mem::take(&mut w.samples), times, w.size, hardware)?;
             self.lane = Lane::Video(lane);
         }
         Ok(())
     }
 
-    /// the frame rate as text: the file's own ratio, the one assumed, or that it has none.
+    /// the frame rate as text: the file's own ratio, one derived from rounded times, the one assumed, or that it has
+    /// none.
     pub fn rate_text(&self) -> String {
-        let text = match self.timeline.rate() {
-            Some((n, 1)) => format!("{n} fps"),
-            Some((n, d)) => format!("{n}/{d} fps"),
-            None if self.timeline.frames() < 2 => "still".to_string(),
-            None => "variable rate".to_string(),
+        let text = match (self.timeline.rate(), self.timeline.derived()) {
+            (Some((n, 1)), _) => format!("{n} fps"),
+            (Some((n, d)), _) => format!("{n}/{d} fps"),
+            (None, Some(fps)) => format!("{} fps derived", meta::decimal(fps, 3)),
+            (None, None) if self.timeline.frames() < 2 => "still".to_string(),
+            (None, None) => "variable rate".to_string(),
         };
         if self.rate_assumed { format!("{text} assumed") } else { text }
     }
@@ -260,7 +302,7 @@ mod tests {
     /// the frames of a clip, asked for in `order`, decoded in software.
     fn frames(name: &str, order: &[usize]) -> Vec<u64> {
         let mut c = Clip::open(&media(name)).expect("open");
-        c.start(None).expect("start");
+        c.start(None).unwrap_or_else(|e| panic!("{name}: {e}"));
         let Lane::Video(video) = &c.lane else { panic!("not the video lane") };
         assert!(!video.layout.hardware);
         order
@@ -276,12 +318,36 @@ mod tests {
             .collect()
     }
 
+    /// mkv and webm list no frames up front, and a fragmented mp4's table can stop short (this one's at its first
+    /// fragment, 4 of 12): their packets are counted. mkv keeps time in milliseconds, which cannot hold a 30th of a
+    /// second, so its rate is derived from its frames' times, and says so.
+    #[test]
+    fn files_that_do_not_list_all_their_frames_are_counted() {
+        // what the header alone gives: no table in mkv, the first fragment's samples in the fragmented mp4
+        for (name, listed) in [("h264_64.mkv", 0), ("h264_frag_64.mp4", 4)] {
+            let input = Input::open(&media(name)).unwrap();
+            assert_eq!(input.samples(input.first_video().unwrap().index).len(), listed, "{name}");
+        }
+        for (name, codec, rate) in [("h264_64.mkv", "h.264", "30 fps derived"), ("vp9_64.webm", "vp9", "30 fps derived"), ("h264_frag_64.mp4", "h.264", "15360/512 fps")] {
+            let c = Clip::open(&media(name)).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), (codec, 12, rate), "{name}");
+        }
+    }
+
+    /// six frames a 30th of a second apart, then six a 15th, with b-frames: the clip opens with every frame
+    #[test]
+    fn frames_that_do_not_all_last_the_same_open() {
+        let c = Clip::open(&media("h264_vfr_64.mp4")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), ("h.264", 12, "variable rate"));
+    }
+
     /// any frame, asked for in any order, is the same picture as when the clip is decoded straight through: the proof
     /// that going back to a key frame and decoding forward lands on the right frame. the h.264 clip has frames stored
-    /// out of display order; the hevc clip has key frames with pictures that are shown before them.
+    /// out of display order; the hevc clip has key frames with pictures that are shown before them. the h.264 clip
+    /// again in mkv and as a fragmented mp4, vp9 in webm and frames of two lengths are found by their counted packets.
     #[test]
     fn any_frame_in_any_order_is_the_frame_asked_for() {
-        for (name, count) in [("h264_64.mp4", 12), ("hevc10_64.mp4", 12), ("prores_64.mov", 4)] {
+        for (name, count) in [("h264_64.mp4", 12), ("hevc10_64.mp4", 12), ("prores_64.mov", 4), ("h264_64.mkv", 12), ("h264_frag_64.mp4", 12), ("vp9_64.webm", 12), ("h264_vfr_64.mp4", 12)] {
             let straight = frames(name, &(0..count).collect::<Vec<_>>());
             let mut distinct = straight.clone();
             distinct.sort();

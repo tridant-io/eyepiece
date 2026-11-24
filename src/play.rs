@@ -2,6 +2,8 @@
 //! reading a clock (gate 2). speed, shuttle, loop modes and loop analysis follow the prototype player in
 //! `docs/design/plan.html`; each rule names the part of it that it comes from.
 
+use std::sync::Arc;
+
 /// how a silent clip's frames fall on the display's refreshes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cadence {
@@ -97,6 +99,9 @@ pub struct Transport {
     /// counts the runs of play: a new one wherever play starts, stops or is sent somewhere, and each time round the
     /// clip's end. a clip's sound starts again with each
     run: u32,
+    /// a clip whose frames do not all last the same: when each starts, in seconds from the first, then when the last
+    /// ends. play then shows each frame for its own time, and the cadence is not used
+    starts: Option<Arc<[f64]>>,
 }
 
 impl Transport {
@@ -117,7 +122,31 @@ impl Transport {
             from: 0,
             refreshes: 0,
             run: 0,
+            starts: None,
         }
+    }
+
+    /// for a clip whose frames do not all last the same (`Timeline::starts`): each is shown for its own time. `fps`
+    /// is then their average, which counts loop analysis's seconds in frames.
+    pub fn with_starts(mut self, starts: Option<Vec<f64>>) -> Transport {
+        self.starts = starts.map(Into::into);
+        self
+    }
+
+    /// where the frame on screen starts, in seconds into the clip: where its sound plays from.
+    pub fn seconds(&self) -> f64 {
+        match &self.starts {
+            Some(starts) => starts[self.frame],
+            None => self.frame as f64 / self.fps,
+        }
+    }
+
+    /// a time in seconds into the clip as a place in frames, as `follow` takes it.
+    pub fn frame_at(&self, seconds: f64) -> f64 {
+        let Some(starts) = &self.starts else { return seconds * self.fps };
+        let frame = starts.partition_point(|&s| s <= seconds).clamp(1, self.frames) - 1;
+        let length = starts[frame + 1] - starts[frame];
+        frame as f64 + if length > 0.0 { (seconds - starts[frame]) / length } else { 0.0 }
     }
 
     /// during the pause on black this is the frame the round starts again on, so it can be read meanwhile.
@@ -280,7 +309,7 @@ impl Transport {
             return;
         }
         self.refreshes += 1;
-        let moved = self.cadence.frames_after(self.refreshes) as i64;
+        let moved = self.starts.as_deref().and_then(|starts| self.timed(starts)).unwrap_or_else(|| self.cadence.frames_after(self.refreshes)) as i64;
         let to = self.from as i64 + if self.shuttle < 0 { -moved } else { moved };
         let last = self.frames as i64 - 1;
         match self.seam_frames() {
@@ -399,6 +428,53 @@ impl Transport {
     fn put(&mut self, place: usize, k: usize) {
         self.place = place;
         self.frame = if place < k { self.frames - k + place } else { place - k };
+    }
+
+    /// what `Cadence::frames_after` is to a clip of one rate, for one whose frames vary: how many frames have gone by
+    /// after `refreshes`, along the round play goes (the clip, or loop analysis's round), each shown from the refresh
+    /// nearest its start for its own time. still counted in refreshes, not read from a clock. None for a round that
+    /// takes no time.
+    fn timed(&self, starts: &[f64]) -> Option<u64> {
+        let rate = if self.shuttle != 0 { self.shuttle.unsigned_abs() as f64 } else { self.speed };
+        // the round as runs of the clip's frames, (first, how many): all of them, or the last k and then the first k
+        let runs = match self.seam_frames() {
+            Some(k) => [(self.frames - k, k), (0, k)],
+            None => [(0, self.frames), (0, 0)],
+        };
+        let len = runs[0].1 + runs[1].1;
+        // seconds from the round's start to the start of its place `p`
+        let at = |p: usize| {
+            let first = p.min(runs[0].1);
+            starts[runs[0].0 + first] - starts[runs[0].0] + starts[runs[1].0 + p - first] - starts[runs[1].0]
+        };
+        // how many places, from the first, start where `before` holds
+        let count = |before: &dyn Fn(f64) -> bool| {
+            let (mut lo, mut hi) = (0, len);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if before(at(mid)) { lo = mid + 1 } else { hi = mid }
+            }
+            lo
+        };
+        let round = at(len);
+        if round <= 0.0 {
+            return None;
+        }
+        // half a refresh more: a frame comes up on the refresh nearest its start
+        let gone = (self.refreshes as f64 + 0.5) * rate / self.hz;
+        let (from, len) = (self.from as i64, len as i64);
+        Some(if self.shuttle >= 0 {
+            let to = at(self.from) + gone;
+            let laps = (to / round).floor();
+            let place = count(&|t| t <= to - laps * round).saturating_sub(1) as i64;
+            laps as i64 * len + place - from
+        } else {
+            // backward, each frame is shown from its end back to its start
+            let to = at(self.from + 1) - gone;
+            let laps = if to > 0.0 { 0.0 } else { (-to / round).floor() + 1.0 };
+            let place = count(&|t| t < to + laps * round).saturating_sub(1) as i64;
+            laps as i64 * len + from - place
+        } as u64)
     }
 }
 
@@ -823,6 +899,58 @@ mod tests {
         assert!(new(&t));
         t.go(3);
         assert!(new(&t));
+    }
+
+    /// five frames: three of a 30th of a second, then two of a 15th, so 24 a second on average
+    fn varying() -> Transport {
+        let starts = [0.0, 1.0, 2.0, 3.0, 5.0, 7.0].map(|s| s / 30.0);
+        Transport::new(5, 24.0, 60.0).with_starts(Some(starts.to_vec()))
+    }
+
+    #[test]
+    fn frames_that_vary_are_each_shown_for_their_own_time() {
+        // on 60 Hz: two refreshes each, then four, and round the end to the first
+        let mut t = varying();
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 17), frames(&[0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1]));
+        // backward, the same lengths from the other end, and round to the last
+        t.go(4);
+        t.shuttle(-1);
+        assert_eq!(seen(&mut t, 16), frames(&[4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 1, 1, 0, 0, 4, 4]));
+        // twice as fast, half as long
+        t.go(0);
+        t.set_speed(2.0);
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 8), frames(&[0, 1, 2, 3, 3, 4, 4, 0]));
+    }
+
+    #[test]
+    fn loop_analysis_shows_each_frame_of_its_round_for_its_own_time() {
+        // half a second at the average rate is more than half the clip: the round is the last two into the first two
+        let mut t = varying();
+        t.set_seam(Some(0.5));
+        assert_eq!(t.seam_place(), Some((0, 4)));
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 13), [frames(&[3, 3, 3, 3, 4, 4, 4, 4, 0, 0, 1, 1]), vec![Show::Black]].concat());
+    }
+
+    #[test]
+    fn the_sound_of_frames_that_vary_is_found_by_their_times() {
+        let mut t = varying();
+        t.go(4);
+        assert!((t.seconds() - 5.0 / 30.0).abs() < 1e-12);
+        // halfway through frame 3, which lasts a 15th
+        assert!((t.frame_at(4.0 / 30.0) - 3.5).abs() < 1e-9);
+        // playing, the sound where the frame on screen is moves nothing
+        t.go(0);
+        t.set_playing(true);
+        (0..6).for_each(|_| t.tick());
+        assert_eq!(t.frame(), 3);
+        assert!(!t.follow(t.frame_at(0.1)));
+        // a clip of one rate counts frames at that rate
+        let mut t = Transport::new(100, 60.0, 60.0);
+        t.go(30);
+        assert_eq!((t.seconds(), t.frame_at(0.25)), (0.5, 15.0));
     }
 
     #[test]

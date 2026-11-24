@@ -42,7 +42,7 @@ unsafe impl Send for Decoder {}
 impl Decoder {
     /// the file's first sound, ready to decode, and what it is. None when the file has no sound.
     pub fn open(path: &str) -> Result<Option<(Decoder, Info)>, String> {
-        let input = Input::open(path)?;
+        let mut input = Input::open(path)?;
         let Some(stream) = input.first_audio() else { return Ok(None) };
         unsafe {
             let streams = (*input.ctx).streams;
@@ -71,8 +71,7 @@ impl Decoder {
                 return Err(format!("{path}: sound: {}", err(r)));
             }
             let time_base = (*st).time_base.num as f64 / (*st).time_base.den as f64;
-            let entry = ffi::avformat_index_get_entry(st, 0);
-            let first = if entry.is_null() { 0 } else { (*entry).timestamp };
+            let first = input.first_time(stream);
             let decoder = Decoder { input, ctx, packet: ffi::av_packet_alloc(), frame: ffi::av_frame_alloc(), stream, time_base, first, swr: ptr::null_mut(), from: (0, 0, 0), rate: 0, channels: 0, drained: false, done: false, wanted: None, drop: 0 };
             Ok(Some((decoder, info)))
         }

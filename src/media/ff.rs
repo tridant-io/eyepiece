@@ -4,6 +4,7 @@ use ffmpeg_sys_next as ffi;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::fs::File;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use ffi::AVMediaType;
 
@@ -105,8 +106,9 @@ pub struct Video {
     pub time_base: (i64, i64),
 }
 
-/// one stored sample of a stream: where it lies in the file, its decode time in the stream's units, and whether
-/// decoding can start at it.
+/// one stored sample of a stream: where it lies in the file, its decode time in the stream's units (or, from a
+/// container that gives none, such as mkv, when it is shown: what its seeking goes by), and whether decoding can start
+/// at it.
 #[derive(Clone, Copy)]
 pub struct Sample {
     pub pos: u64,
@@ -183,6 +185,75 @@ impl Input {
                     (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp, key: (*e).flags() & ffi::AVINDEX_KEYFRAME != 0, hidden: (*e).flags() & ffi::AVINDEX_DISCARD_FRAME != 0 })
                 })
                 .collect()
+        }
+    }
+
+    /// how many samples the container's header says a stream has, which for mov and mp4 is the moov's own table:
+    /// none, or only the first, for a fragmented mp4. not a frame count (adr 0003).
+    pub fn listed(&self, stream: usize) -> i64 {
+        unsafe { (**(*self.ctx).streams.add(stream)).nb_frames }
+    }
+
+    /// the packet pass: every stored sample of a stream, counted by reading the file's packets from where the reader
+    /// is to the end, for a container that lists none up front or whose times do not say when frames are shown.
+    /// nothing is decoded, but every packet of the stream is read whole. also gives the times the frames are shown,
+    /// in order, leaving out what an edit list hides. `counted` follows how many samples are counted so far.
+    pub fn count(&mut self, stream: usize, counted: &AtomicUsize) -> Result<(Vec<Sample>, Vec<i64>), String> {
+        let (mut samples, mut shown) = (Vec::new(), Vec::new());
+        unsafe {
+            for i in 0..self.streams() {
+                (**(*self.ctx).streams.add(i)).discard = if i == stream { ffi::AVDiscard::AVDISCARD_DEFAULT } else { ffi::AVDiscard::AVDISCARD_ALL };
+            }
+            let mut packet = ffi::av_packet_alloc();
+            let end = loop {
+                let r = ffi::av_read_frame(self.ctx, packet);
+                if r < 0 {
+                    break r;
+                }
+                let p = &*packet;
+                if p.stream_index as usize == stream {
+                    let hidden = p.flags & ffi::AV_PKT_FLAG_DISCARD != 0;
+                    let time = if p.dts != ffi::AV_NOPTS_VALUE { p.dts } else { p.pts };
+                    samples.push(Sample { pos: p.pos.max(0) as u64, size: p.size.max(0) as usize, time, key: p.flags & ffi::AV_PKT_FLAG_KEY != 0, hidden });
+                    if !hidden {
+                        shown.push(if p.pts != ffi::AV_NOPTS_VALUE { p.pts } else { p.dts });
+                    }
+                    counted.store(samples.len(), Ordering::Relaxed);
+                }
+                ffi::av_packet_unref(packet);
+            };
+            ffi::av_packet_free(&mut packet);
+            if end != ffi::AVERROR_EOF {
+                return Err(err(end));
+            }
+        }
+        shown.sort_unstable();
+        Ok((samples, shown))
+    }
+
+    /// when a stream's first stored sample is, in its units: from the index, or where the index has none of it (mkv's
+    /// sound) from the stream's first packet, read from where the reader is. 0 for a stream with no packet.
+    pub fn first_time(&mut self, stream: usize) -> i64 {
+        unsafe {
+            let entry = ffi::avformat_index_get_entry(*(*self.ctx).streams.add(stream), 0);
+            if !entry.is_null() {
+                return (*entry).timestamp;
+            }
+            let mut packet = ffi::av_packet_alloc();
+            let mut time = 0;
+            while ffi::av_read_frame(self.ctx, packet) >= 0 {
+                let p = &*packet;
+                let found = p.stream_index as usize == stream;
+                if found {
+                    time = if p.dts != ffi::AV_NOPTS_VALUE { p.dts } else { p.pts };
+                }
+                ffi::av_packet_unref(packet);
+                if found {
+                    break;
+                }
+            }
+            ffi::av_packet_free(&mut packet);
+            time
         }
     }
 

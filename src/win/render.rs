@@ -206,7 +206,7 @@ impl View {
         let ps = gpu.pixel_shader(&source).map_err(text)?;
         // the picture as the file has it: the look changes these two at each draw
         let constants = Constants { size: [clip.width as f32, clip.height as f32], to_source: [1.0, 0.0, 0.0, 1.0], ..constants };
-        let mut transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz);
+        let mut transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz).with_starts(clip.timeline.starts());
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new((clip.width, clip.height));
@@ -245,10 +245,9 @@ impl View {
             _ => None,
         };
         let wanted = speed.filter(|_| heard && t.playing() && t.seam().is_none()).map(|speed| (t.run(), speed));
-        let fps = self.clip.timeline.fps();
         if wanted != self.sounding {
             match wanted {
-                Some((_, speed)) => audio.play(t.frame() as f64 / fps, speed),
+                Some((_, speed)) => audio.play(t.seconds(), speed),
                 None => audio.pause(),
             }
             self.sounding = wanted;
@@ -260,7 +259,7 @@ impl View {
             return true;
         }
         if let Some(seconds) = audio.position() {
-            self.resynced += t.follow(seconds * fps) as u64;
+            self.resynced += t.follow(t.frame_at(seconds)) as u64;
         }
         false
     }

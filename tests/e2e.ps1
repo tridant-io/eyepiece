@@ -449,10 +449,26 @@ Assert-Title 'muted, it plays with its sound as its clock, and stops when asked'
 Stop-Player
 Confirm-That 'and the mute is kept' ((Get-Content -LiteralPath $settings) -contains 'mute = on') 'the settings do not say mute = on'
 
+# ---- files that do not list all their frames up front: their packets are counted on opening. mkv and webm keep
+# milliseconds, so their rate is derived; the fragmented mp4's table stops at its first fragment; and frames of two
+# lengths. each has 12 frames with a key frame every 4: steps cross them, and play runs to the end and back again
+foreach ($clip in @(@('h264_64.mkv', '30 fps derived'), @('h264_frag_64.mp4', '15360/512 fps'), @('vp9_64.webm', '30 fps derived'), @('h264_vfr_64.mp4', 'variable rate'))) {
+    $file = $clip[0]; $n = [regex]::Escape($file); $r = [regex]::Escape($clip[1])
+    Start-Player (Join-Path $media $file)
+    Assert-Title "$file opens on frame 0 of all 12, at $($clip[1])" "^$n . 0 / 12 . 64 . 64 . .* . $r$"
+    Send-Key 0x23; Assert-Title "${file}: end goes to the last frame" "^$n . 11 / 12 . .* . $r$"
+    Send-Key 0x46 6; Assert-Title "${file}: six steps back, across a key frame" "^$n . 5 / 12 . .* . $r$"
+    # with looping off, play forward stops on the last frame and backward on the first. a frame on the way that could
+    # not be shown would be counted in the title
+    Send-Key 0x24; Send-Key 0x52; Send-Key 0x20
+    Assert-Title "${file}: plays to the last frame and stops there" "^$n . 11 / 12 . .* . $r( . \d+ late)? . loop off$"
+    Send-Key 0x4A
+    Assert-Title "${file}: plays backward to the first frame and stops there" "^$n . 0 / 12 . .* . $r( . \d+ late)? . loop off$"
+    Send-Key 0x52
+    Stop-Player
+}
+
 # ---- what cannot be opened says why, and the window stays
-Start-Player (Join-Path $media 'h264_64.mkv')
-Assert-Title 'a file that lists no frames up front says so' '^eyepiece . .*h264_64\.mkv: this kind of file does not list its frames up front'
-Stop-Player
 Start-Player (Join-Path $media 'no such clip.mov')
 Assert-Title 'a missing file says so' '^eyepiece . .*no such clip\.mov'
 Stop-Player

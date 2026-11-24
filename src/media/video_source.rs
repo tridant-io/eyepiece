@@ -37,14 +37,23 @@ pub struct VideoLane {
     pub layout: Layout,
 }
 
+/// how a decoded picture's time tells which frame it is.
+#[derive(Clone)]
+pub enum Times {
+    /// every frame lasts this long, in the stream's units: frames are counted from the first picture decoded
+    Even(i64),
+    /// when each frame is shown, in order: frames that vary, or times the container rounds (mkv)
+    Shown(Vec<i64>),
+}
+
 struct VideoLoader {
     input: Input,
     decoder: Decoder,
     /// the stream's samples in decode order, as the container lists them
     samples: Vec<Sample>,
-    /// the time of the first frame shown, and the time between frames, in the stream's units
+    /// the time of the first frame shown, in the stream's units, and how a time gives a frame
     first_time: i64,
-    step: i64,
+    times: Times,
     /// the frame the decoder puts out next, when that is known
     next: Option<usize>,
     recent: VecDeque<(usize, Arc<Picture>)>,
@@ -65,9 +74,9 @@ fn splits_frames(input: &Input, stream: usize) -> bool {
 }
 
 impl VideoLane {
-    /// opens the file for decoding and decodes the first frame, which says how pictures are stored. `step` is the
-    /// time between frames in the stream's units (the file's constant frame duration).
-    pub fn open(path: &str, stream: usize, samples: Vec<Sample>, step: i64, size: (usize, usize), hardware: Option<Hardware>) -> Result<VideoLane, String> {
+    /// opens the file for decoding and decodes the first frame, which says how pictures are stored. `times` says which
+    /// frame a decoded picture is.
+    pub fn open(path: &str, stream: usize, samples: Vec<Sample>, times: Times, size: (usize, usize), hardware: Option<Hardware>) -> Result<VideoLane, String> {
         let input = Input::open(path)?;
         // when every sample is a key frame the frames stand alone: in software, decode one at a time, so a step
         // never waits behind other frames
@@ -90,7 +99,7 @@ impl VideoLane {
         // counted as four planes the size of luma: the most a software picture holds (4:4:4 with alpha, as notchlc's)
         let frame_bytes = first.plane(0, layout.chroma_shift).0.len() * 4;
         let reopen = shared.then(|| (path.to_string(), stream));
-        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), step: step.max(1), next: Some(1), recent: VecDeque::new(), kept: if shared { 0 } else { kept }, hidden, reopen };
+        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), times, next: Some(1), recent: VecDeque::new(), kept: if shared { 0 } else { kept }, hidden, reopen };
         let first = Arc::new(first);
         let source = if shared {
             Source::start_shared(loader, source::budget(), frame_bytes, (0, first))?
@@ -115,7 +124,14 @@ impl VideoLoader {
 
     /// which frame a decoded picture is, from its time.
     fn index_of(&self, time: i64) -> usize {
-        ((time - self.first_time) as f64 / self.step as f64).round().max(0.0) as usize
+        match &self.times {
+            Times::Even(step) => ((time - self.first_time) as f64 / (*step).max(1) as f64).round().max(0.0) as usize,
+            // the frame shown nearest that time
+            Times::Shown(shown) => {
+                let after = shown.partition_point(|&t| t < time).min(shown.len() - 1);
+                if after > 0 && time - shown[after - 1] < shown[after] - time { after - 1 } else { after }
+            }
+        }
     }
 
     /// the place, in decode order, of the last key frame at or before place `at`.
@@ -178,7 +194,7 @@ impl Loader for VideoLoader {
         let input = Input::open(&path).ok()?;
         let decoder = Decoder::open(&input, stream, None, true, 0).ok()?;
         let samples = self.samples.clone();
-        Some(VideoLoader { input, decoder, samples, first_time: self.first_time, step: self.step, next: None, recent: VecDeque::new(), kept: 0, hidden: self.hidden, reopen: Some((path, stream)) })
+        Some(VideoLoader { input, decoder, samples, first_time: self.first_time, times: self.times.clone(), next: None, recent: VecDeque::new(), kept: 0, hidden: self.hidden, reopen: Some((path, stream)) })
     }
 }
 
