@@ -305,8 +305,8 @@ impl Clip {
     }
 
     /// for a reader that never steps back (a card's pictures, the timebar's): its decoder, once started, keeps no
-    /// pictures behind it, so a hardware decoder's pool is that many surfaces smaller: 25 of them where the player's
-    /// own has 46 at 4K, each 25 MB at 10 bits. a clip that does not wait to start (prores, notchlc) is as it was.
+    /// pictures behind it, so a hardware decoder is asked for that many fewer surfaces: 21 fewer at 4K, each 25 MB at
+    /// 10 bits. a clip that does not wait to start (prores, notchlc) is as it was.
     pub fn keep_nothing(&mut self) {
         if let Lane::Waiting(w) = &mut self.lane {
             w.keep = false;
