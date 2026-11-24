@@ -81,6 +81,10 @@ pub enum Event {
     Scale(f32),
     /// a file was dropped on the window, or handed over by another launch
     Open(String),
+    /// the file at this path, which a tab has open, is a different one now and has stopped changing
+    Changed(String),
+    /// the file at this path, which a tab has open, is no longer there
+    Gone(String),
     /// work done in the background has this to say, for a moment, in the window
     Toast(String),
     /// work done in the background is ready to be looked at

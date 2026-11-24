@@ -283,6 +283,12 @@ pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
     to_clipboard(DIB, &dib)
 }
 
+/// the time of day on the user's clock, as hours and minutes: 14:32.
+pub fn clock() -> String {
+    let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    format!("{:02}:{:02}", now.wHour, now.wMinute)
+}
+
 /// the rate the desktop is composed at, in Hz, as the system reports it. 60 if it will not say.
 pub fn refresh_rate() -> f64 {
     let mut info = DWM_TIMING_INFO { cbSize: std::mem::size_of::<DWM_TIMING_INFO>() as u32, ..Default::default() };

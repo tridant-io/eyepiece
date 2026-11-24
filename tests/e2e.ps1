@@ -420,6 +420,18 @@ foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), $shots, $tree
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
+# ---- a render writes over the clip that is open: the new file takes its place, on the frame the old one was on.
+# the copy is the test's own; the clip written over it is another of the test clips, 24 frames where it had 3
+$render = Join-Path $env:APPDATA 'render.mov'
+Copy-Item -LiteralPath (Join-Path $media 'hapq_64.mov') -Destination $render
+Start-Player $render
+Assert-Frame 'the clip that will be written over is open' 0 3
+Send-Key 0x47 2; Assert-Frame 'on its last frame' 2 3
+Copy-Item -LiteralPath (Join-Path $media 'h264_320.mp4') -Destination $render -Force
+Assert-Title 'written over on disk, the new file is shown in its place, on the same frame' '^render\.mov . 2 / 24 . 320 . 180 . h\.264'
+Stop-Player
+Write-Host "removing $render"; Remove-Item -LiteralPath $render
+
 # ---- sound: the keys and the bar's button set how loud the player is, and that is kept. the tests' settings are
 # muted, and the clip stands still while they are not, so nothing is heard
 $settings = Join-Path $env:APPDATA 'eyepiece\settings.txt'
