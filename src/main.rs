@@ -14,6 +14,7 @@ mod play;
 mod preview;
 mod settings;
 mod shot;
+mod timecode;
 mod ui;
 mod view;
 #[cfg(windows)]

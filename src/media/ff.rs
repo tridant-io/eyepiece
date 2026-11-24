@@ -272,6 +272,16 @@ impl Input {
         unsafe { (*self.ctx).nb_streams as usize }
     }
 
+    /// frame numbers a second on a quicktime timecode track, when the file has one: the track's own count, which
+    /// need not be the picture's (59.94 pictures are often counted at 30).
+    pub fn timecode_base(&self) -> Option<u32> {
+        (0..self.streams()).find_map(|i| unsafe {
+            let st = *(*self.ctx).streams.add(i);
+            let rate = (*st).avg_frame_rate;
+            ((*(*st).codecpar).codec_tag == u32::from_le_bytes(*b"tmcd") && rate.num > 0 && rate.den > 0).then(|| (rate.num as f64 / rate.den as f64).round() as u32)
+        })
+    }
+
     /// a value from a stream's metadata, or from the container's with no stream.
     pub fn tag(&self, stream: Option<usize>, key: &str) -> Option<String> {
         let key = CString::new(key).ok()?;

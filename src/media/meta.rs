@@ -166,7 +166,7 @@ impl Meta {
             sound.push(row("audio", "none", Tone::Plain));
         }
         // ffmpeg's own read of a quicktime timecode track, for now: the design wants ours, of the tmcd track in both forms
-        let timecode = std::iter::once(Some(video.index)).chain((0..input.streams()).map(Some)).chain([None]).find_map(|s| input.tag(s, "timecode"));
+        let timecode = timecode_tag(&input, video.index);
         sound.push(match timecode {
             Some(tc) if tc.contains(';') => row("timecode", format!("{tc} · drop-frame"), Tone::Plain),
             Some(tc) => row("timecode", tc, Tone::Plain),
@@ -424,6 +424,12 @@ fn utc(secs: i64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + (month <= 2) as i64;
     format!("{year}-{month:02}-{day:02} {:02}:{:02}:{:02} utc", rest / 3600, rest / 60 % 60, rest % 60)
+}
+
+/// the file's own timecode as written, in ffmpeg's read of it: the picture's stream's, else any stream's, else the
+/// container's.
+pub fn timecode_tag(input: &Input, video: usize) -> Option<String> {
+    std::iter::once(Some(video)).chain((0..input.streams()).map(Some)).chain([None]).find_map(|s| input.tag(s, "timecode"))
 }
 
 #[cfg(test)]

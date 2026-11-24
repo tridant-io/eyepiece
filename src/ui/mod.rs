@@ -15,6 +15,7 @@ use crate::event::{Key, Mods};
 use crate::markup::{Mark, Marks};
 use crate::media::meta::Meta;
 use crate::settings::Loop;
+use crate::timecode::Timecode;
 use crate::preview::make::Pictures;
 use crate::preview::spare::Seam;
 use crate::view::{Guides, Look};
@@ -187,6 +188,10 @@ pub struct Model<'a> {
     pub playing: bool,
     /// frames a second as the file's own ratio, when it has one rate
     pub rate: Option<(i64, i64)>,
+    /// what the frames are called by the clock: the file's own timecode, or counted from 00:00:00:00
+    pub clock: Option<Timecode>,
+    /// the number the first frame gets, 0 or 1
+    pub first: usize,
     /// why the frame on screen cannot be shown, when it cannot
     pub fault: Option<&'a str>,
     /// a sequence's frames that have no file
@@ -781,7 +786,7 @@ impl Ui {
                 };
                 Some((vec![(mode.to_string(), FG)], FLASH))
             } else if !model.playing {
-                let (label, at) = stamp(model.frame, model.rate, self.timecode);
+                let (label, at) = stamp(model.frame, model.first, model.clock, self.timecode);
                 Some((vec![(format!("{label} "), DIM), (at, FG)], FLASH))
             } else {
                 None
@@ -1260,7 +1265,7 @@ impl Ui {
         // one it read last stays up meanwhile). the design's box: the picture 160 by 90 inside a margin of 2
         self.time_hover = response.hover_pos().filter(|_| model.seam.is_none()).map(|p| stop_at(p.x));
         if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
-            let galley = painter.layout_no_wrap(format!("{frame:06}"), font(MONO_MEDIUM, 10.5), FG);
+            let galley = painter.layout_no_wrap(stamp(frame, model.first, model.clock, self.timecode).1, font(MONO_MEDIUM, 10.5), FG);
             let size = match &self.time_picture {
                 Some(_) => Vec2::new(164.0, 2.0 + 90.0 + galley.size().y + 10.0),
                 None => galley.size() + Vec2::new(16.0, 10.0),
@@ -1435,8 +1440,9 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, ga
 /// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and the total in dim.
 /// on a narrow bar the timecode's total is left out.
 fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
-    let (label, at) = stamp(model.frame, model.rate, timecode);
-    let total = Some(stamp(model.frames, model.rate, timecode).1).filter(|_| label == "F" || !narrow);
+    let (label, at) = stamp(model.frame, model.first, model.clock, timecode);
+    // the total is a count and a length of time: neither starts where the clip's own numbers do
+    let total = Some(stamp(model.frames, 0, model.clock.map(|clock| Timecode { start: 0, ..clock }), timecode).1).filter(|_| label == "F" || !narrow);
     let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
     let mut job = LayoutJob::default();
     job.append(label, 0.0, text(9.5, DIM, 9.5 * 0.12));
@@ -1447,19 +1453,13 @@ fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
     job
 }
 
-/// a frame as the readout names it: "F" and its number, or "TC" and its timecode when that is asked for and the clip
-/// has a rate to count it by.
-fn stamp(frame: usize, rate: Option<(i64, i64)>, timecode: bool) -> (&'static str, String) {
-    match rate.map(|(n, d)| (n as f64 / d as f64).round() as usize).filter(|fps| *fps > 0 && timecode) {
-        Some(fps) => ("TC", self::timecode(frame, fps)),
-        None => ("F", format!("{frame:06}")),
+/// a frame as the readout names it: "F" and its number, counted from `first`, or "TC" and what the clip's clock
+/// says, when that is asked for and the clip has one.
+fn stamp(frame: usize, first: usize, clock: Option<Timecode>, timecode: bool) -> (&'static str, String) {
+    match clock.filter(|_| timecode) {
+        Some(clock) => ("TC", clock.at(frame)),
+        None => ("F", format!("{:06}", frame + first)),
     }
-}
-
-/// a frame as timecode at `fps` whole frames a second, counted from 00:00:00:00 at the first frame (the file's own
-/// timecode is not read yet).
-fn timecode(frame: usize, fps: usize) -> String {
-    format!("{:02}:{:02}:{:02}:{:02}", frame / fps / 3600, frame / fps / 60 % 60, frame / fps % 60, frame % fps)
 }
 
 /// a line of trouble with the amber edge: the one place amber is used, for a fault in the file. returns its box.
@@ -1516,7 +1516,13 @@ mod tests {
         pass(&mut ui, 1);
         pass(&mut ui, 2);
         assert!(ui.flash.is_none(), "said with the controls up");
-        assert_eq!((stamp(742, Some((60000, 1001)), false), stamp(742, Some((24, 1)), true)), (("F", "000742".to_string()), ("TC", "00:00:30:22".to_string())));
+        assert_eq!((stamp(742, 0, Some(Timecode::counted(60)), false), stamp(742, 0, Some(Timecode::counted(24)), true)), (("F", "000742".to_string()), ("TC", "00:00:30:22".to_string())));
+        // the file's own timecode, and frame numbers from 1; a clip with no one rate has no clock and is counted in frames
+        let own = Timecode::parse("01:00:00;00", 30, 30);
+        assert_eq!((stamp(1800, 0, own, true), stamp(0, 1, own, false), stamp(5, 1, None, true)), (("TC", "01:01:00;02".to_string()), ("F", "000001".to_string()), ("F", "000006".to_string())));
+        // the readout: where the clip is by its own clock, and how long it is
+        let job = readout(&Model { frame: 30, frames: 60, clock: own, ..model() }, true, false);
+        assert_eq!(job.text, "TC01:00:01;00 / 00:00:02;00");
     }
 
     /// thirty tabs at their least width in room for five: the strip scrolls to the tab that comes up, and stays
@@ -1561,6 +1567,8 @@ mod tests {
             frames: 3,
             playing: false,
             rate: Some((60, 1)),
+            clock: Some(Timecode::counted(60)),
+            first: 0,
             fault: None,
             gaps: &[],
             linear: false,

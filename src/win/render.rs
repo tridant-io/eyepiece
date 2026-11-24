@@ -541,6 +541,8 @@ impl View {
             frames: self.clip.timeline.frames(),
             playing: self.transport.playing(),
             rate: self.clip.timeline.rate(),
+            clock: self.clip.clock,
+            first: settings.first_frame,
             fault: self.fault.as_deref(),
             gaps: &self.clip.missing,
             linear: matches!(&self.clip.lane, Lane::Stills(stills) if stills.samples == Samples::F32),
@@ -643,7 +645,7 @@ impl View {
             state += &format!(" · x {x} y {y} · {r} {g} {b}");
         }
         state += tab.1;
-        format!("{} · {} / {} · {} × {} · {}{decoded} · {}{state}", c.name, self.transport.frame(), c.timeline.frames(), c.width, c.height, c.codec, c.rate_text())
+        format!("{} · {} / {} · {} × {} · {}{decoded} · {}{state}", c.name, self.transport.frame() + settings.first_frame, c.timeline.frames(), c.width, c.height, c.codec, c.rate_text())
     }
 }
 
@@ -1478,7 +1480,7 @@ fn shoot(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Sett
     }
     // a saved frame keeps the file's alpha when its frame has one; the view is saved as it is seen
     let alpha = what == Shot::Frame && v.carries_alpha() && shot::transparent(&pixels);
-    let stem = shot::stem(&v.clip.name, v.transport.frame()) + if what == Shot::View { ".view" } else { "" };
+    let stem = shot::stem(&v.clip.name, v.transport.frame() + settings.first_frame) + if what == Shot::View { ".view" } else { "" };
     let (deep, folder, wake) = (v.depth() > 8, shots_folder(settings), wake.clone());
     let mut detail = if what == Shot::View { "as shown".to_string() } else { format!("{} × {}", v.clip.width, v.clip.height) };
     if !with.is_empty() {
@@ -1511,7 +1513,7 @@ fn shot_pixels(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings:
     let extras = what != Shot::Copy;
     let guides = Some(guides(settings)).filter(|g| extras && settings.screenshot_guides && (g.grid || g.center));
     let marks = if extras && settings.screenshot_markup { marks.map_or(&[][..], |m| m.on(frame)) } else { &[] };
-    let caption = (extras && settings.screenshot_caption).then(|| ui::caption(&v.clip.name, frame, v.clip.timeline.rate(), v.size()));
+    let caption = (extras && settings.screenshot_caption).then(|| ui::caption(&v.clip.name, frame, settings.first_frame, v.clip.clock, v.clip.timeline.rate(), v.size()));
     let with: Vec<&'static str> = [(caption.is_some(), "caption"), (guides.is_some(), "guides"), (!marks.is_empty(), "markup")].into_iter().filter(|(on, _)| *on).map(|(_, name)| name).collect();
     if with.is_empty() {
         return Some((size, v.picture(gpu, size, at, |_| {})?, with));

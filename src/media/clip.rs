@@ -9,6 +9,7 @@ use super::still;
 use super::timeline::Timeline;
 use super::video_source::{Times, VideoLane};
 use crate::browse::{self, Kind};
+use crate::timecode::Timecode;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,16 @@ pub struct Clip {
     pub missing: Vec<usize>,
     /// true when the file states no rate and the timeline runs at the assumed one (a sequence: 24)
     pub rate_assumed: bool,
+    /// what the frames are called by the clock: the file's own timecode, else counted from 00:00:00:00. none for a
+    /// clip with no one rate to count by
+    pub clock: Option<Timecode>,
+}
+
+/// a clip's clock: its own timecode when the file carries one that reads (`own`: as written, and its track's frame
+/// numbers a second when the track says), else counted from nothing. none without one rate to count by.
+fn clock(timeline: &Timeline, own: Option<(String, Option<u32>)>) -> Option<Timecode> {
+    let rate = timeline.rate().map(|(n, d)| (n as f64 / d as f64).round() as u32).filter(|fps| *fps > 0)?;
+    Some(own.and_then(|(text, base)| Timecode::parse(&text, base.unwrap_or(rate), rate)).unwrap_or(Timecode::counted(rate)))
 }
 
 /// where a clip's frames come from.
@@ -255,7 +266,8 @@ impl Clip {
                 Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, times, size })
             }
         };
-        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false })
+        let clock = clock(&timeline, meta::timecode_tag(&input, video.index).map(|text| (text, input.timecode_base())));
+        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false, clock })
     }
 
     /// a still, or the numbered run of stills it is a frame of, opened on its frame. the file's own picture gives the
@@ -270,7 +282,8 @@ impl Clip {
         let (num, den) = rate.unwrap_or((24, 1));
         let timeline = Timeline::even((den, num), run.frames, 1);
         let lane = SeqLane::open(run.missing.clone(), (run.at, image), run.path_of)?;
-        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed })
+        let clock = clock(&timeline, None);
+        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed, clock })
     }
 
     /// starts decoding, for a clip that was waiting. `hardware` is the renderer's device, when there is one.
@@ -346,6 +359,18 @@ pub fn facts(path: &str) -> Result<Facts, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a file's own timecode is the clip's clock, drop-frame and counted as its track counts; a file without one is
+    /// counted from nothing at its own rate.
+    #[test]
+    fn a_clips_clock_is_the_files_own_timecode() {
+        let own = Clip::open(&media("av_tc_64.mov")).unwrap();
+        assert_eq!(own.clock, Some(Timecode { start: 107_892, base: 30, drop: true, rate: 30 }));
+        assert_eq!(Input::open(&media("av_tc_64.mov")).unwrap().timecode_base(), Some(30));
+        let none = Clip::open(&media("hap_64.mov")).unwrap();
+        assert_eq!(none.clock, Some(Timecode::counted(none.timeline.fps().round() as u32)));
+        assert_eq!(Input::open(&media("hap_64.mov")).unwrap().timecode_base(), None);
+    }
     use crate::media::dec::Picture;
     use crate::media::source::{Frame, Source};
     use crate::media::still::Samples;

@@ -4,9 +4,10 @@
 
 use super::icons::{self, Icon};
 use super::widgets::{CHOSEN, ON_CHOSEN};
-use super::{font, keys, text_top, timecode, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SOLID};
+use super::{font, keys, text_top, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SOLID};
 use crate::event::Key;
 use crate::markup::{Mark, Marks, Placing, Point, Shape, Tool, INKS};
+use crate::timecode::Timecode;
 use crate::view::Guides;
 use egui::text::LayoutJob;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
@@ -348,13 +349,13 @@ fn caption_band(painter: &egui::Painter, words: &str, at: Pos2, width: f32) -> f
     height
 }
 
-/// what the caption says (fig. 20): the clip's name, the frame, the timecode counted from the first frame as the
-/// readout counts it, the size, and the rate. a clip with no one rate has no timecode and no rate.
-pub fn caption(name: &str, frame: usize, rate: Option<(i64, i64)>, size: (usize, usize)) -> String {
-    let mut parts = vec![name.to_string(), format!("F {frame:06}")];
+/// what the caption says (fig. 20): the clip's name, the frame as the readout numbers it (from `first`), what the
+/// clip's clock says, the size, and the rate. a clip with no one rate has no timecode and no rate.
+pub fn caption(name: &str, frame: usize, first: usize, clock: Option<Timecode>, rate: Option<(i64, i64)>, size: (usize, usize)) -> String {
+    let mut parts = vec![name.to_string(), format!("F {:06}", frame + first)];
     let fps = rate.filter(|(n, d)| *n > 0 && *d > 0).map(|(n, d)| n as f64 / d as f64);
-    if let Some(fps) = fps {
-        parts.push(format!("TC {}", timecode(frame, fps.round() as usize)));
+    if let Some(clock) = clock {
+        parts.push(format!("TC {}", clock.at(frame)));
     }
     parts.push(format!("{} × {}", size.0, size.1));
     if let Some(fps) = fps {
@@ -537,9 +538,11 @@ mod tests {
 
     #[test]
     fn the_caption_says_what_fig_20_says() {
-        assert_eq!(caption("wall_main_v012.mov", 742, Some((24000, 1001)), (1920, 1080)), "wall_main_v012.mov   F 000742   TC 00:00:30:22   1920 × 1080   23.98 fps");
-        assert_eq!(caption("hapq_64.mov", 2, Some((15360, 512)), (64, 64)), "hapq_64.mov   F 000002   TC 00:00:00:02   64 × 64   30 fps");
-        assert_eq!(caption("still.exr", 0, None, (16, 16)), "still.exr   F 000000   16 × 16");
+        assert_eq!(caption("wall_main_v012.mov", 742, 0, Some(Timecode::counted(24)), Some((24000, 1001)), (1920, 1080)), "wall_main_v012.mov   F 000742   TC 00:00:30:22   1920 × 1080   23.98 fps");
+        assert_eq!(caption("hapq_64.mov", 2, 0, Some(Timecode::counted(30)), Some((15360, 512)), (64, 64)), "hapq_64.mov   F 000002   TC 00:00:00:02   64 × 64   30 fps");
+        assert_eq!(caption("still.exr", 0, 0, None, None, (16, 16)), "still.exr   F 000000   16 × 16");
+        // the file's own timecode, and frame numbers from 1
+        assert_eq!(caption("av.mov", 2, 1, Timecode::parse("01:00:00;00", 30, 30), Some((30000, 1001)), (64, 64)), "av.mov   F 000003   TC 01:00:00;02   64 × 64   29.97 fps");
     }
 
     /// every letter the caption, the row of tools and the field use is in the fonts they are drawn in.
@@ -549,7 +552,7 @@ mod tests {
         ctx.set_fonts(super::super::fonts());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let has = |words: &str, family: &str, size: f32| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, size), words));
-            assert!(has(&caption("wall_main_v012.mov", 742, Some((24000, 1001)), (1920, 1080)), MONO_MEDIUM, CAPTION_TEXT));
+            assert!(has(&caption("wall_main_v012.mov", 742, 0, Timecode::parse("01:00:00;00", 24, 24), Some((24000, 1001)), (1920, 1080)), MONO_MEDIUM, CAPTION_TEXT));
             assert!(has("save image done", MONO_MEDIUM, 11.5));
             assert!(has("type, then enter", TEXT_FONT, TEXT_SIZE));
         });
