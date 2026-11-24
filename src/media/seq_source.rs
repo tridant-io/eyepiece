@@ -7,6 +7,11 @@ use std::sync::Arc;
 
 pub struct SeqLane {
     pub source: Source<Image>,
+    /// how every frame's numbers are stored: a frame stored otherwise fails
+    pub samples: Samples,
+    /// as the frame the clip opened on has them, for what the renderer sets up before any frame arrives
+    pub bits: u32,
+    pub has_alpha: bool,
 }
 
 struct SeqLoader<F> {
@@ -24,11 +29,12 @@ impl SeqLane {
     /// starts the worker on `frames` frames, frame i being the file `path_of(i)`. `missing` lists, in order, the frames
     /// with no file. `opened` is the frame the clip opens on, already decoded.
     pub fn open(frames: usize, missing: Vec<usize>, opened: (usize, Arc<Image>), path_of: impl Fn(usize) -> String + Send + 'static) -> Result<SeqLane, String> {
-        let (at, shape) = (opened.0, (opened.1.width, opened.1.height, opened.1.samples));
+        let (at, image) = (opened.0, &opened.1);
+        let (shape, bits, has_alpha) = ((image.width, image.height, image.samples), image.bits, image.has_alpha);
         let source = Source::start(frames, SeqLoader { path_of, missing, shape, opened: Some(opened) })?;
         // the worker starts at frame 0: point it at the frame the clip opens on before it decodes anything else
         source.want(at, false);
-        Ok(SeqLane { source })
+        Ok(SeqLane { source, samples: shape.2, bits, has_alpha })
     }
 }
 

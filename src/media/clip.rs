@@ -212,6 +212,7 @@ mod tests {
     use super::*;
     use crate::media::dec::Picture;
     use crate::media::source::Frame;
+    use crate::media::still::Samples;
     use std::time::Duration;
 
     fn media(name: &str) -> String {
@@ -342,6 +343,8 @@ mod tests {
         let c = Clip::open(&media("still_8bit.png")).expect("open");
         assert_eq!((c.name.as_str(), c.codec, c.timeline.frames(), c.first_frame, c.rate_text().as_str()), ("still_8bit.png", "png", 1, 0, "still"));
         assert!(c.missing.is_empty());
+        let Lane::Stills(stills) = &c.lane else { panic!("not the stills lane") };
+        assert_eq!((stills.samples, stills.bits, stills.has_alpha), (Samples::U8, 8, false));
         assert_eq!(red(&c, 0), Ok(0));
     }
 
