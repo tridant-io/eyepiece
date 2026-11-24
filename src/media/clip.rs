@@ -260,7 +260,11 @@ impl Clip {
                 (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates play only from mov, mp4 and mkv.")),
             };
             let size = (video.width, video.height);
-            if codec == "prores" || codec == "notchlc" {
+            // on macos the system decodes prores 422 three to five times faster than software does (phase 0), so
+            // it waits for the device like the rest. 4444 stays in software there: with alpha the system's chroma
+            // came back wrong
+            let system_prores = cfg!(target_os = "macos") && !matches!(tag.as_str(), "ap4h" | "ap4x");
+            if codec == "notchlc" || (codec == "prores" && !system_prores) {
                 // these decode in software here, so they need not wait for the graphics device: the first frame is
                 // being decoded while the device is made, which takes longer than anything else in a start
                 Lane::Video(VideoLane::open(path, video.index, samples, times, size, None)?)
@@ -706,7 +710,8 @@ mod tests {
     /// when it was not ready), then, for the first pass and the second, the frames ready
     /// when first due out of the frames due, and how long the pass took. the clips are the files in EYEPIECE_PLAY,
     /// separated by `;` (any frame of a sequence, or a video file), each run EYEPIECE_RUNS times (3 if unset):
-    /// `cargo test --release plays_at_speed -- --ignored --nocapture`
+    /// `cargo test --release plays_at_speed -- --ignored --nocapture`. in software, unless EYEPIECE_SYSTEM is set
+    /// on macos, where the system's decoder needs no device of ours.
     #[test]
     #[ignore]
     fn plays_at_speed() {
@@ -717,7 +722,11 @@ mod tests {
             let mut results = Vec::new();
             for run in 0..runs {
                 let mut clip = Clip::open(path).expect("open");
-                clip.start(None).expect("start");
+                #[cfg(windows)]
+                let system = None;
+                #[cfg(not(windows))]
+                let system = std::env::var_os("EYEPIECE_SYSTEM").map(|_| Hardware);
+                clip.start(system).expect("start");
                 let look = |want: &[usize], frame: usize, patience: Duration| match &clip.lane {
                     Lane::Stills(s) => arrived(&s.source, want, frame, patience),
                     Lane::Video(v) => arrived(&v.source, want, frame, patience),
@@ -728,9 +737,10 @@ mod tests {
                 let mut t = Transport::new(frames, clip.timeline.fps(), hz);
                 let long = Duration::from_secs(30);
                 t.go(clip.first_frame as i64);
-                // the reader settles on the first frame and the ones a step away before it is asked for another
+                // the reader settles on the first frame and the one after before it is asked for another (of the many
+                // frames wanted while standing still, a reader with one worker takes on only the first few)
                 let near = t.ahead();
-                assert!(near.iter().all(|&f| look(&near, f, long)), "the first frames arrived");
+                assert!(near.iter().take(2).all(|&f| look(&near, f, long)), "the first frames arrived");
                 t.go((frames / 2) as i64);
                 let asked = Instant::now();
                 assert!(look(&t.ahead(), t.frame(), long), "the middle frame arrived");

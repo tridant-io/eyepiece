@@ -310,14 +310,18 @@ mod tests {
     }
 
     /// the same frame through videotoolbox and through ffmpeg's software decoder: the two pictures agree, for 4:2:0
-    /// in 8 and 10 bits and for the 4:2:2 that videotoolbox takes on apple's own chips.
+    /// in 8 and 10 bits, for the 4:2:2 that videotoolbox takes on apple's own chips, and for prores 422.
     #[test]
     fn the_hardware_decoder_and_the_software_one_draw_the_same_picture() {
-        for name in ["h264_64.mp4", "hevc10_64.mp4", "h264_422_64.mp4"] {
+        for name in ["h264_64.mp4", "hevc10_64.mp4", "h264_422_64.mp4", "prores_64.mov"] {
             let hardware = frame(name).2;
             let gpu = Gpu::offscreen().expect("a metal device");
             let mut clip = Clip::open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))).expect("open");
+            clip.start(Some(gpu.hardware())).expect("start");
+            assert!(matches!(&clip.lane, Lane::Video(video) if video.layout.hardware), "{name}: videotoolbox took it");
+            let mut clip = Clip::open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))).expect("open");
             clip.start(None).expect("start");
+            assert!(matches!(&clip.lane, Lane::Video(video) if !video.layout.hardware), "{name}: software when asked");
             let mut paint = Paint::new(&gpu, &clip).expect("a painter");
             assert_eq!(paint.put(&gpu, &clip, 0, Duration::from_secs(20)), Ok(true));
             let software = gpu.read_pixels(64, 64, |gpu| paint.draw(gpu, (0.0, 0.0, 64.0, 64.0), (64.0, 64.0), None)).expect("read back");
