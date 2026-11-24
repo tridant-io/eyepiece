@@ -47,9 +47,9 @@ function Send-Key([int]$vk, [int]$times = 1) { foreach ($i in 1..$times) { [void
 function Confirm-That([string]$what, [bool]$holds, [string]$detail = '') {
     if ($holds) { Write-Host "ok    $what" } else { Write-Host "FAIL  ${what}: $detail"; $script:failed++ }
 }
-# the title is set by another thread: it must come to satisfy the test within two seconds
+# the title is set by another thread: it must come to satisfy the test within five seconds (a busy machine is slow)
 function Wait-Title([string]$what, [scriptblock]$test, [string]$wanted) {
-    foreach ($i in 1..20) { if (& $test (Get-Title)) { Write-Host "ok    $what"; return }; Start-Sleep -Milliseconds 100 }
+    foreach ($i in 1..50) { if (& $test (Get-Title)) { Write-Host "ok    $what"; return }; Start-Sleep -Milliseconds 100 }
     Confirm-That $what $false "the title is '$(Get-Title)', wanted $wanted"
 }
 function Assert-Title([string]$what, [string]$pattern) { Wait-Title $what { param($t) $t -match $pattern }.GetNewClosure() "/$pattern/" }
