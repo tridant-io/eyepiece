@@ -9,3 +9,4 @@ pub mod hap_source;
 pub mod source;
 pub mod timeline;
 pub mod video_source;
+pub mod watch;

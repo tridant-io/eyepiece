@@ -8,6 +8,8 @@ mod browse;
 mod event;
 mod media;
 mod play;
+mod settings;
+mod shot;
 mod ui;
 mod view;
 #[cfg(windows)]
