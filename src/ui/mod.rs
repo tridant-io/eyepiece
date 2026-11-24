@@ -300,6 +300,8 @@ pub struct Output {
     pub shown: bool,
     /// the frame under the pointer on the timebar: its picture is wanted
     pub hovered: Option<usize>,
+    /// the pointer is where a drag would draw a mark: it is shown as a cross
+    pub cross: bool,
 }
 
 /// the menus that open over the bar
@@ -324,6 +326,7 @@ pub struct Ui {
     /// the pointer moved since the last pass
     moved: bool,
     inside: bool,
+    cross: bool,
     /// the controls are wanted on screen, and until when with the pointer at rest
     shown: bool,
     awake_until: f64,
@@ -390,6 +393,7 @@ impl Ui {
             scale,
             moved: false,
             inside: false,
+            cross: false,
             shown: false,
             awake_until: 0.0,
             chip_until: 0.0,
@@ -612,10 +616,11 @@ impl Ui {
         });
         let again = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < Duration::from_secs(3600));
         self.moved = false;
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown, hovered: self.time_hover }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown, hovered: self.time_hover, cross: self.cross }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
+        self.cross = false;
         let full = ui.max_rect();
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         match &screen.clip {
@@ -688,6 +693,8 @@ impl Ui {
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
         let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.markup.on && self.markup.row.is_some_and(|row| row.contains(p))));
         let held = ui.input(|i| i.pointer.any_down());
+        // in markup mode the pointer is a cross where a drag would draw: on the picture, clear of everything over it
+        self.cross = self.markup.on && self.inside && !over && !self.keys && pointer.is_some_and(|p| !(self.commands.is_some() && self.commands_rect.contains(p)));
 
         // a press anywhere but on the open menu or its button closes the menu
         if self.menu.is_some() && pressed && !pointer.is_some_and(|p| self.menu_rect.contains(p) || self.menu_button.contains(p)) {

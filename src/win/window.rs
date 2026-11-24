@@ -65,7 +65,8 @@ struct Shared {
     moving: bool,
     /// while fullscreen: where the window was, to put it back
     restore: Option<WINDOWPLACEMENT>,
-    pointer_hidden: bool,
+    /// which pointer shows over the picture area: a `Pointer`, as a number
+    pointer: usize,
 }
 
 /// a window handle that may cross to the render thread: win32 lets any thread size, title and present to a window.
@@ -130,7 +131,7 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
         let posted_pointer = std::env::var_os("EYEPIECE_POSTED_POINTER").is_some();
         let (x, y, w, h) = outer(client);
         let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), &name, w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, grabbed: (POINT::default(), RECT::default()), moving: false, restore: None, pointer_hidden: false })) as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, grabbed: (POINT::default(), RECT::default()), moving: false, restore: None, pointer: Pointer::Arrow as usize })) as isize);
         // square corners and no border line, so no pixel of the picture is covered (windows 11; ignored before it)
         let (square, no_color) = (1u32, 0xffff_fffeu32);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const u32 as *const c_void, 4);
@@ -229,9 +230,27 @@ pub fn set_fullscreen(window: Handle, on: bool, next_display: bool) {
     post_with(window, WM_FULLSCREEN, if !on { 0 } else if next_display { 2 } else { 1 });
 }
 
-/// shows or hides the pointer while it is over the picture.
-pub fn show_pointer(window: Handle, shown: bool) {
-    post_with(window, WM_POINTER, shown as usize);
+/// the pointer over the picture area: none (fullscreen with the controls away), the arrow, or the cross that markup
+/// mode draws with.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Pointer {
+    Hidden,
+    Arrow,
+    Cross,
+}
+
+/// which pointer shows while it is over the picture area.
+pub fn show_pointer(window: Handle, pointer: Pointer) {
+    post_with(window, WM_POINTER, pointer as usize);
+}
+
+/// the system's pointer for a `Pointer` as a number; none for the hidden one.
+unsafe fn cursor(pointer: usize) -> Option<HCURSOR> {
+    match pointer {
+        0 => None,
+        2 => LoadCursorW(None, IDC_CROSS).ok(),
+        _ => LoadCursorW(None, IDC_ARROW).ok(),
+    }
 }
 
 /// puts one thing on the clipboard, in one of the system's formats. false when the clipboard could not be had.
@@ -604,14 +623,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_POINTER => {
-            (*shared).pointer_hidden = wp.0 == 0;
+            (*shared).pointer = wp.0;
             // at once, not at the pointer's next move
-            SetCursor(if wp.0 == 0 { None } else { LoadCursorW(None, IDC_ARROW).ok() });
+            SetCursor(cursor(wp.0));
             LRESULT(0)
         }
         // windows asks which pointer to show whenever it moves over the window
-        WM_SETCURSOR if (*shared).pointer_hidden && (lp.0 & 0xffff) as u32 == HTCLIENT => {
-            SetCursor(None);
+        WM_SETCURSOR if (*shared).pointer != Pointer::Arrow as usize && (lp.0 & 0xffff) as u32 == HTCLIENT => {
+            SetCursor(cursor((*shared).pointer));
             LRESULT(1)
         }
         WM_DPICHANGED => {

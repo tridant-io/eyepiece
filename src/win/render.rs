@@ -1608,7 +1608,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
     // the picture area fills a display; the pointer is shown (it hides in fullscreen while the controls are away)
-    let (mut fullscreen, mut pointer_shown) = (false, true);
+    let (mut fullscreen, mut pointer_shown) = (false, window::Pointer::Arrow);
     let (mut redraw, mut titled) = (true, None);
     // the last key was a command, not typing: the character windows makes of the same press is then not typed
     // anywhere (N opens a new tab; its "n" must not pick a file in that tab's browser)
@@ -1971,10 +1971,16 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if let Some((_, until)) = &toast {
             ui_due = Some(ui_due.map_or(*until, |due| due.min(*until)));
         }
-        // fullscreen with the controls away is the frame and nothing else: no pointer either
-        if pointer_shown != (!fullscreen || out.shown) {
-            pointer_shown = !pointer_shown;
-            window::show_pointer(window, pointer_shown);
+        // fullscreen with the controls away is the frame and nothing else: no pointer either. where a drag would
+        // draw a mark the pointer is a cross, and stays
+        let pointer_now = match (out.cross, fullscreen && !out.shown) {
+            (true, _) => window::Pointer::Cross,
+            (false, true) => window::Pointer::Hidden,
+            (false, false) => window::Pointer::Arrow,
+        };
+        if pointer_shown != pointer_now {
+            pointer_shown = pointer_now;
+            window::show_pointer(window, pointer_now);
         }
 
         // loop analysis asks, once for a clip, how much changes across its seam; the answer comes when it is read

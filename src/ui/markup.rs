@@ -411,6 +411,31 @@ mod tests {
         }
     }
 
+    /// the pointer is a cross where a drag would draw: on the picture in markup mode, not on the row of tools or the
+    /// bar, and not with markup off or the pointer out of the window.
+    #[test]
+    fn the_pointer_is_a_cross_where_a_drag_would_draw() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        drive(&mut ui, &[(300.0, 200.0, None)]);
+        assert!(!ui.cross, "markup off");
+        ui.toggle_markup();
+        drive(&mut ui, &[(300.0, 200.0, None)]);
+        assert!(ui.cross, "on the picture");
+        // the row of tools stands 10 to 46 down while the controls are away; 44 down is under the strip's band
+        let row = ui.markup.row.expect("the row of tools");
+        assert!(row.contains(Pos2::new(320.0, 44.0)), "{row:?}");
+        drive(&mut ui, &[(320.0, 44.0, None)]);
+        assert!(!ui.cross, "on the row of tools");
+        drive(&mut ui, &[(300.0, 200.0, None), (300.0, 340.0, None)]);
+        assert!(!ui.cross, "on the bar");
+        drive(&mut ui, &[(300.0, 200.0, None)]);
+        assert!(ui.cross);
+        ui.pointer_leave();
+        let mut out = ui.run(&super::super::Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None });
+        out.textures.clear();
+        assert!(!out.cross, "out of the window");
+    }
+
     /// a click and a double click on the picture neither toggle the controls nor fill the display in markup mode,
     /// as they do with it off; and the pointer in the middle of the picture does not bring the controls up.
     #[test]

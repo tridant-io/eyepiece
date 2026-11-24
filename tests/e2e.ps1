@@ -425,14 +425,6 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
 # the picture draws a rectangle on the frame on screen, and control + Z takes it back. the screenshot menu's three
 # switches put the marks, the guides and a caption into a saved frame, and are kept between runs
 Set-Content -LiteralPath $settings -Value 'mute = on', "browser_folder = $env:APPDATA", "screenshot_folder = $shots"
-Add-Type @'
-using System; using System.Runtime.InteropServices;
-public static class EyepieceMarkup {
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
-}
-'@
-function Get-WindowPlace { $r = New-Object EyepieceMarkup+RECT; [void][EyepieceMarkup]::GetWindowRect($script:h, [ref]$r); "$($r.L),$($r.T)" }
 # a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other
 function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
     Move-Pointer $x0 $y0
@@ -446,12 +438,10 @@ Start-Player (Join-Path $media 'h264_320.mp4')
 Assert-Frame 'the clip is open' 0 24
 Send-Key 0x45; Assert-Title 'E turns markup mode on, and the title says so' ' fps . markup$'
 # the picture fills the window here; the drag is in its middle, where the pointer does not bring the controls up.
-# (posted input never holds the real button, which a move of the window needs: the headless test of the controls is
-# the one that tells a drag that draws from one that moves the window)
-$place = Get-WindowPlace
+# (that the window stays where it is cannot be told here: posted input never holds the real button, which a move of
+# the window needs. the headless test of the controls tells a drag that draws from one that moves the window)
 Drag-On 200 120 300 200
 Assert-Title 'a drag on the picture draws a mark on the frame' ' fps . 1 mark . markup$'
-Confirm-That 'and the window stays where it was' ((Get-WindowPlace) -eq $place) "it was at $place, now $(Get-WindowPlace)"
 Send-Key 0x5A 1 4; Assert-Title 'control + Z takes it back' ' fps . markup$'
 Drag-On 200 120 300 200; Assert-Title 'a mark again' ' fps . 1 mark . markup$'
 Send-Key 0x47; Assert-Title 'a mark sits on its frame: the next one has none' '^h264_320\.mp4 . 1 / 24 .* fps . markup$'
