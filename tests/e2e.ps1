@@ -579,9 +579,13 @@ Send-Key 0x21; Assert-Title 'page up goes back' '^hap_64\.mov . .* . clip 1 of 4
 Send-Key 0x21; Assert-Title 'page up from the first clip goes round to the last, which does not open and says why' '^eyepiece . .*y_broken\.mov'
 Send-Key 0x21; Assert-Title 'and page up again goes on to the clip before it' '^x_roll\.mov . .* . clip 3 of 4'
 Go-FirstClip
-# a click on the tab that is up lists the folder's clips under it: 8 in from the left and 8 under the strip, a
-# heading, then rows 23 high. a click on the third row goes to the third clip; esc puts the list away
-Click-At 80 16; Start-Sleep -Milliseconds 400; Click-At 100 133
+# the folder's tab (fig. 14): "browse /" from 12 (8 letters 6.9 wide), then the count, "1 of 4", between two arrows
+# 16.9 wide with their room. the arrows do what the page keys do
+Click-At 134 16; Assert-Title 'the arrow after the tab''s count goes to the next clip' '^prores_64\.mov . .* . clip 2 of 4'
+Click-At 76 16; Assert-Title 'the arrow before it goes back' '^hap_64\.mov . .* . clip 1 of 4'
+# a click on the count lists the folder's clips under the tab: 8 in from the left and 8 under the strip, a heading,
+# then rows 23 high. a click on the third row goes to the third clip; esc puts the list away
+Click-At 105 16; Start-Sleep -Milliseconds 400; Click-At 100 133
 Assert-Title 'a click on a row of the folder''s list goes to that clip' '^x_roll\.mov . \d / 3 . .* . clip 3 of 4'
 Send-Key 0x1B
 Go-FirstClip

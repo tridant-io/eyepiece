@@ -55,6 +55,8 @@ const TAB_MAX: f32 = 310.0;
 const TAB_PAD: f32 = 40.0;
 /// tabs narrow to this before they run under the window's buttons
 const TAB_MIN: f32 = 64.0;
+/// room each side of the arrows on a folder's tab
+const NAV_PAD: f32 = 5.0;
 const PLUS: f32 = 32.0;
 const ROW: f32 = 36.0;
 const TIME: f32 = 14.0;
@@ -121,6 +123,8 @@ pub struct Screen<'a> {
     /// every tab's name, and which one is up
     pub tabs: Vec<&'a str>,
     pub current: usize,
+    /// for each tab that plays a folder, by the same place: where it is in the folder
+    pub places: Vec<Option<Place<'a>>>,
     /// its clip, when it has one
     pub clip: Option<Model<'a>>,
     /// why its file did not open, when it did not
@@ -161,6 +165,16 @@ pub struct Extras {
     /// the guides, when they are showing
     pub guides: bool,
     pub markup: bool,
+}
+
+/// where a tab that plays a folder is in it: the folder's name, the clip that is up, how many there are, and the
+/// clip's name
+#[derive(Clone, Copy)]
+pub struct Place<'a> {
+    pub folder: &'a str,
+    pub at: usize,
+    pub count: usize,
+    pub clip: &'a str,
 }
 
 /// a played folder, for its list: its name, its clips in order, and which of them is up
@@ -970,8 +984,18 @@ impl Ui {
         // the tabs, from the left: the one that is up is the bright, filled one, and carries the close mark. each is
         // as wide as its name up to a limit; too many for the strip, and they all narrow
         let room = (x - strip.left() - PLUS).max(0.0);
-        let wide = |name: &str| (painter.layout_no_wrap(name.to_string(), font(MONO_MEDIUM, 11.5), FG).size().x + TAB_PAD).min(TAB_MAX);
-        let mut widths: Vec<f32> = screen.tabs.iter().map(|name| wide(name)).collect();
+        let place = |i: usize| screen.places.get(i).copied().flatten();
+        let wide = |i: usize, name: &str| {
+            let label = match place(i) {
+                Some(place) => {
+                    let [title, arrow, count, space] = folder_pieces(&painter, place, MONO_MEDIUM);
+                    title + 2.0 * arrow + count + space + painter.layout_no_wrap(place.clip.to_string(), font(MONO_MEDIUM, 11.5), FG).size().x
+                }
+                None => painter.layout_no_wrap(name.to_string(), font(MONO_MEDIUM, 11.5), FG).size().x,
+            };
+            (label + TAB_PAD).min(TAB_MAX)
+        };
+        let mut widths: Vec<f32> = screen.tabs.iter().enumerate().map(|(i, name)| wide(i, name)).collect();
         if widths.iter().sum::<f32>() > room {
             let each = (room / widths.len() as f32).max(TAB_MIN);
             widths.iter_mut().for_each(|w| *w = w.min(each));
@@ -1014,6 +1038,11 @@ impl Ui {
             }
             clipped.rect_filled(Rect::from_min_size(Pos2::new(tab.right() - 1.0, tab.top()), Vec2::new(1.0, tab.height())), 0.0, LINE);
             let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
+            if let Some(place) = place(i) {
+                let text = Rect::from_min_max(Pos2::new(tab.left() + 12.0, tab.top()), Pos2::new(tab.right() - (TAB_PAD - 12.0), tab.bottom())).intersect(view);
+                self.folder_tab(ui, text, (i, up), place, actions);
+                continue;
+            }
             let galley = cut_middle(&clipped, name, font(family, 11.5), color, width - TAB_PAD);
             clipped.galley(Pos2::new(tab.left() + 12.0, text_top(&clipped, font(family, 11.5), tab.center().y)), galley, color);
         }
@@ -1025,6 +1054,51 @@ impl Ui {
             actions.push(Action::NewTab);
         }
         self.hint(&response, keys::named(Key::N, keys::NONE));
+    }
+
+    /// the label of tab `i`, which plays a folder, inside `text`, as the design's fig. 14 has it: the folder's name and
+    /// a slash, dim; the clip's place, underlined dotted, between arrows to the clip before and the clip after; the
+    /// clip's name, cut in its middle to the room left. an arrow does what its page key does, on its own tab.
+    fn folder_tab(&mut self, ui: &mut egui::Ui, text: Rect, (i, up): (usize, bool), place: Place, actions: &mut Vec<Action>) {
+        let painter = ui.painter().with_clip_rect(text);
+        let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
+        let top = text_top(&painter, font(family, 11.5), text.center().y);
+        let [title, arrow, count, space] = folder_pieces(&painter, place, family);
+        painter.galley(Pos2::new(text.left(), top), painter.layout_no_wrap(format!("{} /", place.folder), font(family, 11.5), DIM), DIM);
+        let at = text.left() + title + arrow;
+        for (left, glyph, key) in [(at - arrow, "‹", Key::PageUp), (at + count, "›", Key::PageDown)] {
+            let hit = Rect::from_min_max(Pos2::new(left, text.top()), Pos2::new(left + arrow, text.bottom())).intersect(text);
+            let mut lit = false;
+            if hit.is_positive() {
+                let response = ui.interact(hit, ui.scope_id().with(("tab-step", i, glyph)), Sense::click());
+                if response.clicked() {
+                    if !up {
+                        actions.push(Action::SelectTab(i));
+                    }
+                    actions.push(Action::Key(key, keys::NONE));
+                }
+                self.hint(&response, keys::named(key, keys::NONE));
+                lit = response.hovered();
+            }
+            let color = if lit { FG } else { DIM };
+            painter.galley(Pos2::new(left + NAV_PAD, top), painter.layout_no_wrap(glyph.to_string(), font(family, 11.5), color), color);
+        }
+        let figures = painter.layout_no_wrap(format!("{} of {}", place.at + 1, place.count), font(MONO_MEDIUM, 11.5), FG);
+        // the dotted line: the row of pixels 3 under the figures, every other one lit. as a mesh of its own: a line or
+        // a rect a pixel across is rounded away to nothing
+        let figure = &figures.rows[0].row.glyphs[0];
+        let under = (top + figure.pos.y + figure.uv_rect.offset.y + figure.uv_rect.size.y).round() + 3.0;
+        let (mut dots, mut dot) = (egui::Mesh::default(), at.round());
+        while dot < at + count {
+            dots.add_colored_rect(Rect::from_min_size(Pos2::new(dot, under), Vec2::splat(1.0)), FG);
+            dot += 2.0;
+        }
+        painter.add(dots);
+        painter.galley(Pos2::new(at, top), figures, FG);
+        let name = at + count + arrow + space;
+        if name < text.right() {
+            painter.galley(Pos2::new(name, top), cut_middle(&painter, place.clip, font(family, 11.5), color, text.right() - name), color);
+        }
     }
 
     /// the bar along the bottom: one row of controls over the full-width timebar.
@@ -1302,6 +1376,13 @@ fn tab_scroll(scroll: f32, widths: &[f32], up: usize, room: f32, came_up: bool) 
     scroll.clamp(0.0, (widths.iter().sum::<f32>() - room).max(0.0))
 }
 
+/// how wide the pieces of a folder tab's label are before the clip's name: the folder's name and its slash, an arrow
+/// with its room, the clip's place, and the space before the name.
+fn folder_pieces(painter: &egui::Painter, place: Place, family: &str) -> [f32; 4] {
+    let wide = |text: String, family: &str| painter.layout_no_wrap(text, font(family, 11.5), FG).size().x;
+    [wide(format!("{} /", place.folder), family), wide("‹".to_string(), family) + 2.0 * NAV_PAD, wide(format!("{} of {}", place.at + 1, place.count), MONO_MEDIUM), wide(" ".to_string(), family)]
+}
+
 /// a name cut in its middle to fit `width`, so what ends it (a version, a frame range) stays in view.
 fn cut_middle(painter: &egui::Painter, name: &str, font_id: FontId, color: Color32, width: f32) -> Arc<egui::Galley> {
     let whole = painter.layout_no_wrap(name.to_string(), font_id.clone(), color);
@@ -1506,7 +1587,7 @@ mod tests {
     #[test]
     fn a_step_with_the_controls_away_says_its_frame() {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        let screen = |frame| Screen { tabs: vec!["clip"], current: 0, clip: Some(Model { frame, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+        let screen = |frame| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(Model { frame, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
         let mut pass = |ui: &mut Ui, frame| ui.run(&screen(frame)).textures.clear();
         pass(&mut ui, 0);
         assert!(ui.flash.is_none(), "nothing is said of a clip that only came up");
@@ -1612,18 +1693,65 @@ mod tests {
 
     /// `drive`, over the clip `model` tells of
     pub(super) fn drive_with(ui: &mut Ui, model: Model, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
-        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+        drive_on(ui, &Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None }, steps)
+    }
+
+    /// `drive`, over what `screen` shows
+    fn drive_on(ui: &mut Ui, screen: &Screen, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
         let mut actions = Vec::new();
         for &(x, y, button) in steps {
             match button {
                 Some((button, down)) => ui.pointer_button(button, down, x, y),
                 None => ui.pointer_move(x, y),
             }
-            let mut out = ui.run(&screen);
+            let mut out = ui.run(screen);
             out.textures.clear();
             actions.extend(out.actions);
         }
         actions
+    }
+
+    /// a click at one place, and the pass after it
+    fn click(x: f32, y: f32) -> [(f32, f32, Option<(crate::event::Button, bool)>); 4] {
+        use crate::event::Button::Left;
+        [(x, y, None), (x, y, Some((Left, true))), (x, y, Some((Left, false))), (x, y, None)]
+    }
+
+    /// the design's fig. 14: a folder's tab has arrows beside its count that do what page up and page down do, on
+    /// that tab, whether its clip opened or not. a click elsewhere on the tab that is up still shows the list. here
+    /// "browse /" is 8 of the type's 6.9-wide letters from 12, each arrow 16.9 wide with its room, the count 41.4
+    #[test]
+    fn a_folders_tab_steps_through_it_with_the_arrows_beside_its_count() {
+        let (previous, count, next) = (12.0 + 55.2 + 8.45, 12.0 + 55.2 + 16.9 + 20.7, 12.0 + 55.2 + 16.9 + 41.4 + 8.45);
+        let place = |at| Some(Place { folder: "browse", at, count: 4, clip: "hap_64.mov" });
+        let list = || FolderList { title: "browse", at: 0, items: Vec::new() };
+        let screen = |clip, error| Screen { tabs: vec!["browse / 1 of 4 · hap_64.mov", "browse / 2 of 4 · prores_64.mov"], current: 0, places: vec![place(0), place(1)], clip, error, opening: None, list: Some(list()), browsing: false, fullscreen: false, toast: None };
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        let up = screen(Some(model()), None);
+        assert_eq!(drive_on(&mut ui, &up, &click(next, 16.0)), vec![Action::Key(Key::PageDown, keys::NONE)]);
+        assert!(ui.menu.is_none(), "an arrow does not open the list");
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive_on(&mut ui, &up, &click(previous, 16.0)), vec![Action::Key(Key::PageUp, keys::NONE)]);
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive_on(&mut ui, &up, &click(count, 16.0)), vec![]);
+        assert!(ui.menu == Some(Menu::List), "the count shows the list");
+        // the other folder's tab, from the end of this one (its name is 10 letters, then the tab's 40): its arrow
+        // brings it up and steps it
+        let other = 12.0 + 55.2 + 2.0 * 16.9 + 41.4 + 6.9 + 69.0 + 28.0;
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive_on(&mut ui, &up, &click(other + next, 16.0)), vec![Action::SelectTab(1), Action::Key(Key::PageDown, keys::NONE)]);
+        // a clip of the folder that did not open: its tab steps on all the same
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        assert_eq!(drive_on(&mut ui, &screen(None, Some("it does not open")), &click(next, 16.0)), vec![Action::Key(Key::PageDown, keys::NONE)]);
+        // and the type has the arrows: a sign it lacks is drawn as an empty box
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for family in [MONO, MONO_MEDIUM] {
+                assert!(ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 11.5), "‹›")), "{family} has no arrows");
+            }
+        });
+        out.textures_delta.clear();
     }
 
     /// a right click and the passes after it, at one place

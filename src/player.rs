@@ -1682,6 +1682,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             };
             let screen = Screen {
                 tabs: tabs.all.iter().map(Tab::name).collect(),
+                places: tabs.all.iter().map(|t| t.played.as_ref().map(|p| ui::Place { folder: &p.title, at: p.at, count: p.items.len(), clip: t.clip_name() })).collect(),
                 current: tabs.up,
                 clip: tab.view.as_ref().map(|v| Model { marks: tab.marks(), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }),
                 error: tab.error.as_deref(),
