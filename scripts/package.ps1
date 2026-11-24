@@ -32,6 +32,9 @@ Copy-Item (Join-Path $repo 'target\release\eyepiece.exe') $dist -Force
 foreach ($dll in 'avformat-63.dll', 'avcodec-63.dll', 'avutil-61.dll', 'swresample-7.dll') { Copy-Item (Join-Path $ffmpeg "bin\$dll") $dist -Force }
 # ffmpeg is lgpl: its license travels with its libraries, which stay separate files a user may replace
 Copy-Item (Join-Path $ffmpeg 'LICENSE.txt') (Join-Path $dist 'ffmpeg-LICENSE.txt') -Force
+# the two typefaces drawn in the controls are built into the program; the open font license asks that it travel with them
+Copy-Item (Join-Path $repo 'assets/fonts/IBM-Plex-LICENSE.txt') (Join-Path $dist 'fonts-IBM-Plex-LICENSE.txt') -Force
+Copy-Item (Join-Path $repo 'assets/fonts/Archivo-OFL.txt') (Join-Path $dist 'fonts-Archivo-OFL.txt') -Force
 
 $exe = Join-Path $dist 'eyepiece.exe'
 if (-not $NoSign) {

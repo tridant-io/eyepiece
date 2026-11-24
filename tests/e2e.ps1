@@ -14,6 +14,8 @@ public static class EyepieceE2e {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 '@
@@ -128,6 +130,16 @@ Click-At 0 -3; Assert-Frame 'its left end is the first' 0 24
 # however busy the machine is
 Click-At 55 -32; Start-Sleep -Milliseconds 80; Click-At 55 -32 -Again
 Wait-Title 'the play button plays, and pauses' { param($t) $t -match ' (\d+) / 24 ' -and [int]$Matches[1] -ge 1 } 'a frame past 0'
+# the strip's own window buttons, from the right: close, maximize, minimize, 40 wide each
+Click-At -60 16; Start-Sleep -Milliseconds 400
+Confirm-That 'the strip''s maximize button maximizes the window' ([EyepieceE2e]::IsZoomed($script:h)) 'the window is not maximized'
+Send-Key 0x24; Assert-Frame 'maximized, it still answers' 0 24
+Click-At -60 16; Start-Sleep -Milliseconds 400
+Confirm-That 'and puts it back' (-not [EyepieceE2e]::IsZoomed($script:h)) 'the window is still maximized'
+Click-At -100 16; Start-Sleep -Milliseconds 400
+Confirm-That 'the strip''s minimize button minimizes the window' ([EyepieceE2e]::IsIconic($script:h)) 'the window is not minimized'
+[void][EyepieceE2e]::ShowWindow($script:h, 9); Start-Sleep -Milliseconds 400
+Send-Key 0x47; Assert-Frame 'brought back, it still answers' 1 24
 # the close mark at the right end of the strip closes the window
 Move-Pointer 100 100
 Click-At -20 16

@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmSetWindowAtt
 use windows::Win32::Graphics::Gdi::{GetStockObject, ScreenToClient, BLACK_BRUSH, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_END, VK_HOME, VK_LEFT, VK_RIGHT, VK_SHIFT, VK_SPACE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_END, VK_HOME, VK_LBUTTON, VK_LEFT, VK_RBUTTON, VK_RIGHT, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -321,8 +321,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_BEGIN_MOVE => {
             let _ = ReleaseCapture();
-            // the system's own move, as if its title bar had been grabbed. it returns when the button comes up
-            SendMessageW(hwnd, WM_SYSCOMMAND, Some(WPARAM((SC_MOVE | HTCAPTION) as usize)), Some(LPARAM(0)));
+            // only while the button is really still down: started after a quick flick has ended, the system's move
+            // would hold on to the window until the next click
+            let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
+            if GetAsyncKeyState(primary.0 as i32) < 0 {
+                // the system's own move, as if its title bar had been grabbed. it returns when the button comes up
+                SendMessageW(hwnd, WM_SYSCOMMAND, Some(WPARAM((SC_MOVE | HTCAPTION) as usize)), Some(LPARAM(0)));
+            }
             // the move took the button's release with it: report it here, where the pointer is now
             let mut p = POINT::default();
             let _ = GetCursorPos(&mut p);
