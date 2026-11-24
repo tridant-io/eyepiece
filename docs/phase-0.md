@@ -9,7 +9,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | name | what | notes |
 |---|---|---|
 | dev pc | windows 11 pro, 20 logical cores, nvidia rtx 2080 ti (driver 610.88), samsung 990 pro nvme, one display at 3840 × 2160 measured at 59.9964 Hz | a parsec virtual display adapter is also installed. touchdesigner and a browser were open during the runs. |
-| tec-mba | macbook air, apple m2, 16 GB, macos 26.6, built-in display 2880 × 1864. rust 1.98.1 and apple's command line tools (no full xcode); no ffmpeg installed. 18 GB free on a volume that is 96% full | reached over ssh 2026-11-23. it is also a ci runner for another project and may be in use over parsec |
+| tec-mba | macbook air, apple m2, 16 GB, macos 26.6, built-in display 2880 × 1864. rust 1.98.1 and apple's command line tools (no full xcode); no ffmpeg installed. 11 GB free at the last look, on a volume that filled completely on 2026-11-21 | reached over ssh 2026-11-23. it is also a ci runner for another project and may be in use over parsec |
 
 ## the gates
 
@@ -140,7 +140,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | the display is the clock for silent clips; audio is the clock otherwise | holds, with one rule added: choose the frame by counting refreshes from the os's statistics, never by reading the wall clock at the call. |
 | one frame step is one refresh for hap, prores and notchlc | true for hap. prores needs a slice-threaded stepping decoder and decoded neighbors. notchlc is unmeasured. |
 | on a network folder, use the folder listing and nothing else (adr 0004) | holds, and the line is exact. the listing sends one open, of the folder, and no read. asking for one file's details by path (`std::fs::metadata`) opened a file even straight after a listing. so names, sizes and dates come from the listing's own entries, never from a call per file. |
-| prores decodes in software everywhere | on the mac prores goes through videotoolbox: three to five times the throughput of software on the m2 and a lone step in 6 to 11 ms. software prores stays the windows lane and the mac's fallback. |
+| prores decodes in software everywhere | on the mac, hardware prores is three to five times faster, but it is not the same numbers: within 4 code values of ffmpeg's software decode for 422 hq and 4444 xq, and wrong chroma at color edges for 4444 with alpha as ffmpeg requests it. so: videotoolbox for prores without alpha, with the difference between decoders stated; 4444 with alpha stays in software on the mac until that is settled. |
 | the first present shows the first frame | on the mac the first two presents after a window opens never reach the display. the player keeps presenting until the system reports one shown, and only then counts the picture as up. |
 | a network folder is listed once, with sizes and dates | true on windows. on the mac, names come in one listing but sizes and dates cost a request per file: names first, sizes and dates filled in for what is on screen. |
 | a changed file is seen through the open handle | not on the mac: after a rename-over or a recreate the handle keeps reading the old file. the player watches the path (size, time, which file the name points at) and reopens. on windows the same watch works. |
@@ -151,7 +151,8 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| gates 2 and 4 and hap playback on macos, again | a quiet mac. all three ran while it was busy with other work (load average 16 to 28 on 8 cores), so the dropped frames and the times are not yet the mac's own. the reruns need only that its other work stops. the speeds measured there carry the same caveat. |
+| gates 2 and 4 and hap playback on macos, again | a quiet mac. all three ran while it was busy with other work (load average 16 to 28 on 8 cores), so the dropped frames and the times cannot be read either way yet. for hap playback the cause is open: the copy took five times longer in the window than off screen, on the same busy machine, and that is not explained. the speeds measured there carry the same caveat. |
+| prores 4444 with alpha on the mac | a decision after a look: videotoolbox, asked the way ffmpeg asks, returns it with chroma that does not match the software decode at color edges. try another output format, or decode that variant in software. |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
 | touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
@@ -275,7 +276,7 @@ nobody had touched the mac for over half an hour, so the windows disturbed no on
 | never reached the display | 6: presents 0 and 1, and 172 to 175 |
 | refreshes that went by without a new frame | 9 |
 | refresh rate from the times | 59.9999 Hz; 59.9998 Hz in each half |
-| frames shown twice on purpose (59.94 on 60) | 2, predicted 1.2 |
+| frames the loop chose to show twice (59.94 on 60), by its own count, not from the display times | 2, predicted 1.2 |
 
 - the system does report when each frame reached the display, the times step by exactly one refresh, and the rate is steady well inside 0.01 Hz. that is what the design needs.
 - the first two presents after the window opens never reach the display. a 5 s run and every cold-start launch showed the same two. so the player must not treat its first present as shown: it keeps presenting until one comes back with a time.
@@ -341,3 +342,20 @@ the mac was busy throughout, as before: load average 15 to 28 on 8 cores. every 
 - a lone step into long-gop hevc costs up to 52 decoded frames even in hardware: 79 ms, 193 at worst.
 
 **the mac's disk.** it had 16 GB free before the clips and 11 GB after; the clips are 2.4 GB of that, so something else on the mac took about 2.5 GB in the same hour. ours in all: about 3.5 GB (`/private/tmp/eyepiece-media` 2.4 GB, `~/src/eyepiece` 845 MB, `/private/tmp/eyepiece-ffmpeg-src` 188 MB, the rest under 30 MB).
+
+### 2026-11-23, late night: what videotoolbox hands back for prores
+
+speed alone does not make hardware prores the mac's lane: bit depth and alpha have to survive. `vt_check <clip>` decodes frame 0 both ways and compares every sample at the software decoder's depth, reading the hardware buffer on the cpu. not a timing, so the mac being busy does not matter here.
+
+| clip | software gives | videotoolbox hands back | bits carried | samples that differ | by at most |
+|---|---|---|---|---|---|
+| hevc 10-bit 4:2:0 | yuv420p10 | 'x420', luma plane + chroma plane | 10 | none | 0 |
+| prores 422 hq (noise) | yuv422p10 | 'x422', luma plane + chroma plane | 10 | 4.6% luma, 3.7% chroma | 4 code values of 1,023 |
+| prores 4444 xq (noise) | yuv444p12 | 'sv44', luma plane + chroma plane | 16 | 21% luma, 19% chroma | 4 code values of 4,095 |
+| prores 4444 with an alpha ramp (test pattern) | yuva444p12 | 'y416', one packed plane: alpha, luma, cb, cr | 16 | luma 1.4%, alpha 50%, chroma 6.5% | luma 2, alpha 1, **chroma 2,476 of 4,095** |
+
+- hevc is the same picture bit for bit, as gate 1 found.
+- prores without alpha keeps its depth and its chroma layout, and the two-plane layout is the one gate 1's path already wraps (chroma is full height for 4:2:2 and full size for 4:4:4, so the shader's chroma address changes, nothing else). 4444 xq even arrives with 16 bits where ffmpeg's decoder stops at 12.
+- but the two prores decoders do not agree exactly: up to 4 code values on noise. apple's is the reference decoder for its own codec; this check cannot say which is nearer the truth. for a player that shows pixel values, a prores value on the mac and on windows may differ by that much, and the readout has to say which decoder it came from.
+- **prores 4444 with alpha is not right through this path.** alpha and luma match. chroma does not: 6.5% of samples differ, by more than half the range at worst, and they sit on the test pattern's vertical color edges, where the hardware value lies between its neighbors' (at x = 960, the middle edge, it is exactly neutral). that is what halving chroma horizontally and stretching it back would do. the layout is also a third one: a single packed plane, not luma plus chroma.
+- open: whether asking videotoolbox for a different output format (ffmpeg picks 'y416' when there is alpha) gives true 4:4:4 chroma. until then 4444 with alpha decodes in software on the mac, at the software speeds above.

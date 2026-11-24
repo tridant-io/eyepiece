@@ -170,12 +170,52 @@ pub struct PixelBuffer(pub *mut c_void);
 #[link(name = "CoreVideo", kind = "framework")]
 extern "C" {
     fn CVPixelBufferGetPixelFormatType(pb: *mut c_void) -> u32;
+    fn CVPixelBufferGetPlaneCount(pb: *mut c_void) -> usize;
     fn CVPixelBufferGetWidthOfPlane(pb: *mut c_void, plane: usize) -> usize;
     fn CVPixelBufferGetHeightOfPlane(pb: *mut c_void, plane: usize) -> usize;
+    fn CVPixelBufferGetBytesPerRowOfPlane(pb: *mut c_void, plane: usize) -> usize;
+    fn CVPixelBufferGetBaseAddressOfPlane(pb: *mut c_void, plane: usize) -> *const u8;
+    fn CVPixelBufferLockBaseAddress(pb: *mut c_void, flags: u64) -> i32;
+    fn CVPixelBufferUnlockBaseAddress(pb: *mut c_void, flags: u64) -> i32;
+    fn CVPixelBufferGetBytesPerRow(pb: *mut c_void) -> usize;
+    fn CVPixelBufferGetBaseAddress(pb: *mut c_void) -> *const u8;
+    fn CVPixelBufferGetHeight(pb: *mut c_void) -> usize;
     fn CVPixelBufferGetIOSurface(pb: *mut c_void) -> *mut c_void;
 }
 
 impl PixelBuffer {
+    /// how many planes the buffer has. 0 means one packed plane.
+    pub fn planes(self) -> usize {
+        unsafe { CVPixelBufferGetPlaneCount(self.0) }
+    }
+
+    /// width and height of a plane, in samples.
+    pub fn plane_size(self, plane: usize) -> (usize, usize) {
+        unsafe { (CVPixelBufferGetWidthOfPlane(self.0, plane), CVPixelBufferGetHeightOfPlane(self.0, plane)) }
+    }
+
+    /// a copy of one plane's bytes and its stride, read on the cpu. for checking only: the display path never does this.
+    pub fn copy_plane(self, plane: usize) -> (Vec<u8>, usize) {
+        unsafe {
+            CVPixelBufferLockBaseAddress(self.0, 1);
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(self.0, plane);
+            let bytes = std::slice::from_raw_parts(CVPixelBufferGetBaseAddressOfPlane(self.0, plane), stride * self.plane_size(plane).1).to_vec();
+            CVPixelBufferUnlockBaseAddress(self.0, 1);
+            (bytes, stride)
+        }
+    }
+
+    /// the same for a buffer with one packed plane (planes() == 0).
+    pub fn copy_packed(self) -> (Vec<u8>, usize) {
+        unsafe {
+            CVPixelBufferLockBaseAddress(self.0, 1);
+            let stride = CVPixelBufferGetBytesPerRow(self.0);
+            let bytes = std::slice::from_raw_parts(CVPixelBufferGetBaseAddress(self.0), stride * CVPixelBufferGetHeight(self.0)).to_vec();
+            CVPixelBufferUnlockBaseAddress(self.0, 1);
+            (bytes, stride)
+        }
+    }
+
     /// the four-letter pixel format code, as text
     pub fn format(self) -> String {
         unsafe { CVPixelBufferGetPixelFormatType(self.0) }.to_be_bytes().iter().map(|&b| b as char).collect()

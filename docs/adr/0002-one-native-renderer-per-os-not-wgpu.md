@@ -5,6 +5,6 @@ The stack research recommended wgpu, on condition of a cold-start test: one grap
 ## Consequences
 
 - Three renderers to keep in step, each one textured quad plus the controls' triangles, and shaders written per API.
-- Present timing comes from the OS directly: DXGI frame statistics, CADisplayLink, wp_presentation.
+- Present timing comes from the OS directly: DXGI frame statistics on Windows, each drawable's presented time on macOS (what phase 0 measured; a display link may still drive the pacing), wp_presentation on Linux.
 - Phase 0's gates test exactly these native paths. A failed gate reopens this decision.
 - On macOS the renderer reaches Metal and AppKit through the `objc2` family of crates (objc2, block2, objc2-metal, objc2-app-kit, objc2-quartz-core, objc2-foundation, objc2-core-foundation, objc2-io-surface). The owner agreed to them on 2026-11-23, after the phase 0 programs built and ran on them. CoreVideo's few calls are declared by hand.

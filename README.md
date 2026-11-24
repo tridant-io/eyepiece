@@ -42,7 +42,7 @@ sh spike/mac/setup.sh
 sh spike/mac/gate.sh gate5_share some-small-clip.mov
 ```
 
-the programs: `gate1_zerocopy`, `gate3_ramp`, `metal_caps`, `gate5_share`, `hap_lane` and `decode_speed` run from any shell. `gate2_present`, `gate4_coldstart` and `hap_play` open a window, and `sign-test.sh` (the signing and notarization gate) needs the keychain, so those four run inside the login session:
+the programs: `gate1_zerocopy`, `gate3_ramp`, `metal_caps`, `gate5_share`, `hap_lane`, `decode_speed` and `vt_check` run from any shell. `gate2_present`, `gate4_coldstart` and `hap_play` open a window, and `sign-test.sh` (the signing and notarization gate) needs the keychain, so those four run inside the login session:
 
 ```sh
 sh spike/mac/session-run.sh gate2 spike/mac/target/release/gate2_present some-10-bit-hevc.mp4 20
