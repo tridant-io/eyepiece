@@ -48,6 +48,8 @@ pub struct Layout {
     pub siting: (f32, f32),
     /// true when the file did not say and `siting` is the usual place
     pub siting_assumed: bool,
+    /// true when the picture has a plane of alpha, as big as luma (prores 4444)
+    pub alpha: bool,
 }
 
 /// one decoded frame, owned. software: its planes live in ffmpeg's buffers. hardware: it holds a decoder surface, which
@@ -123,15 +125,15 @@ impl Picture {
                 _ => (0.0, 0.5, true),
             };
             let siting = (if chroma_shift.0 > 0 { across } else { 0.0 }, if chroma_shift.1 > 0 { down } else { 0.0 });
-            Ok(Layout { hardware, stored, chroma_shift, matrix, matrix_assumed, siting, siting_assumed: siting_assumed && chroma_shift != (0, 0) })
+            Ok(Layout { hardware, stored, chroma_shift, matrix, matrix_assumed, siting, siting_assumed: siting_assumed && chroma_shift != (0, 0), alpha: matches!(samples, F::AV_PIX_FMT_YUVA444P10LE | F::AV_PIX_FMT_YUVA444P12LE) })
         }
     }
 
-    /// for a software picture: plane `i` (0 luma, 1 cb, 2 cr), its bytes a row, and its rows.
+    /// for a software picture: plane `i` (0 luma, 1 cb, 2 cr, 3 alpha), its bytes a row, and its rows.
     pub fn plane(&self, i: usize, chroma_shift: (u32, u32)) -> (&[u8], usize, usize) {
         unsafe {
             let f = &*self.0;
-            let rows = if i == 0 { f.height as usize } else { (f.height as usize).div_ceil(1 << chroma_shift.1) };
+            let rows = if i == 0 || i == 3 { f.height as usize } else { (f.height as usize).div_ceil(1 << chroma_shift.1) };
             let stride = f.linesize[i] as usize;
             (std::slice::from_raw_parts(f.data[i], stride * rows), stride, rows)
         }

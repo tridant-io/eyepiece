@@ -77,6 +77,12 @@ Texture2D<float> tv : register(t2);
 float luma(int2 p) { return ty.Load(int3(p, 0)); }
 float2 chroma(int2 p) { return float2(tu.Load(int3(p, 0)), tv.Load(int3(p, 0))); }
 #endif
+#ifdef ALPHA
+Texture2D<float> ta : register(t3);
+float alpha(int2 p) { return ta.Load(int3(p, 0)) * alpha_scale; }
+#else
+float alpha(int2 p) { return 1; }
+#endif
 float4 texel(int2 p) {
     p = clamp(p, int2(0, 0), int2(size) - 1);
     float y = luma(p) * scale_offset.x + scale_offset.y;
@@ -94,7 +100,7 @@ float4 texel(int2 p) {
         stored = lerp(top, bottom, w.y);
     }
     float2 c = stored * scale_offset.z + scale_offset.w;
-    return float4(y + matrix_.x * c.y, y + matrix_.y * c.x + matrix_.z * c.y, y + matrix_.w * c.x, 1);
+    return float4(y + matrix_.x * c.y, y + matrix_.y * c.x + matrix_.z * c.y, y + matrix_.w * c.x, alpha(p));
 }";
 
 /// where the current frame's samples are, for the shader.
@@ -103,7 +109,7 @@ enum Painter {
     Blocks { tex: ID3D11Texture2D, view: ID3D11ShaderResourceView },
     /// stills: one texture of red, green, blue and alpha, rewritten every frame
     Image { tex: ID3D11Texture2D, view: ID3D11ShaderResourceView },
-    /// software pictures: luma, cb and cr textures, rewritten every frame
+    /// software pictures: luma, cb and cr textures, and alpha's when the picture has that plane, rewritten every frame
     Planes { planes: Vec<(ID3D11Texture2D, ID3D11ShaderResourceView)>, layout: Layout },
     /// hardware pictures: views onto the decoder's own surface. the picture is held with them, so the decoder does
     /// not decode into that surface again while it is on screen
@@ -153,6 +159,8 @@ impl Paint {
                     matrix: [c.cr_to_r, c.cb_to_g, c.cr_to_g, c.cb_to_b],
                     bilinear: 1.0,
                     siting: [layout.siting.0, layout.siting.1],
+                    // alpha fills the range of the file's bits, which a wider texel holds at its low end
+                    alpha_scale: ((1u32 << layout.stored.texel_bits) - 1) as f32 / ((1u32 << layout.stored.bits) - 1) as f32,
                     ..Default::default()
                 };
                 if layout.hardware {
@@ -160,8 +168,10 @@ impl Paint {
                 } else {
                     let format = if layout.stored.texel_bits > 8 { DXGI_FORMAT_R16_UNORM } else { DXGI_FORMAT_R8_UNORM };
                     let chroma = (clip.width.div_ceil(1 << layout.chroma_shift.0), clip.height.div_ceil(1 << layout.chroma_shift.1));
-                    let planes = [(clip.width, clip.height), chroma, chroma].iter().map(|&(w, h)| gpu.dynamic_texture(w as u32, h as u32, format).map_err(text)).collect::<Result<Vec<_>, _>>()?;
-                    (format!("{CONSTANTS_HLSL}\n{YCBCR}\n{MAIN}"), Painter::Planes { planes, layout }, constants)
+                    let sizes = [(clip.width, clip.height), chroma, chroma, (clip.width, clip.height)];
+                    let planes = sizes[..if layout.alpha { 4 } else { 3 }].iter().map(|&(w, h)| gpu.dynamic_texture(w as u32, h as u32, format).map_err(text)).collect::<Result<Vec<_>, _>>()?;
+                    let alpha = if layout.alpha { "#define ALPHA\n" } else { "" };
+                    (format!("{alpha}{CONSTANTS_HLSL}\n{YCBCR}\n{MAIN}"), Painter::Planes { planes, layout }, constants)
                 }
             }
             Lane::Waiting(_) => return Err("the clip did not start".into()),
@@ -215,9 +225,9 @@ impl Paint {
                         Painter::Planes { planes, layout } => {
                             let bytes = layout.stored.texel_bits as usize / 8;
                             let widths = [clip.width, clip.width.div_ceil(1 << layout.chroma_shift.0)];
-                            (0..3).try_for_each(|i| {
+                            (0..planes.len()).try_for_each(|i| {
                                 let (data, stride, rows) = picture.plane(i, layout.chroma_shift);
-                                gpu.fill(&planes[i].0, data, rows, widths[i.min(1)] * bytes, stride)
+                                gpu.fill(&planes[i].0, data, rows, widths[(i % 3).min(1)] * bytes, stride)
                             })
                             .map(|()| true)
                             .map_err(text)

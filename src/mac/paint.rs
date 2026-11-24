@@ -71,10 +71,19 @@ const YCBCR: &str = "
 #define PLANES texture2d<float> ty, texture2d<float> tc
 #define TEXEL(p) texel(ty, tc, k, p)
 #define CHROMA(p) tc.read(uint2(p)).rg
+#define ALPHA_AT(p) 1.0
+#else
+#ifdef ALPHA
+#define TEXTURES texture2d<float> ty [[texture(0)]], texture2d<float> tu [[texture(1)]], texture2d<float> tv [[texture(2)]], texture2d<float> ta [[texture(3)]]
+#define PLANES texture2d<float> ty, texture2d<float> tu, texture2d<float> tv, texture2d<float> ta
+#define TEXEL(p) texel(ty, tu, tv, ta, k, p)
+#define ALPHA_AT(p) (ta.read(uint2(p)).r * k.alpha_scale)
 #else
 #define TEXTURES texture2d<float> ty [[texture(0)]], texture2d<float> tu [[texture(1)]], texture2d<float> tv [[texture(2)]]
 #define PLANES texture2d<float> ty, texture2d<float> tu, texture2d<float> tv
 #define TEXEL(p) texel(ty, tu, tv, k, p)
+#define ALPHA_AT(p) 1.0
+#endif
 #define CHROMA(p) float2(tu.read(uint2(p)).r, tv.read(uint2(p)).r)
 #endif
 static inline float4 texel(PLANES, constant Constants& k, int2 p) {
@@ -94,14 +103,14 @@ static inline float4 texel(PLANES, constant Constants& k, int2 p) {
         stored = mix(top, bottom, w.y);
     }
     float2 c = stored * k.scale_offset.z + k.scale_offset.w;
-    return float4(y + k.matrix_.x * c.y, y + k.matrix_.y * c.x + k.matrix_.z * c.y, y + k.matrix_.w * c.x, 1);
+    return float4(y + k.matrix_.x * c.y, y + k.matrix_.y * c.x + k.matrix_.z * c.y, y + k.matrix_.w * c.x, ALPHA_AT(p));
 }";
 
 /// where the current frame's samples are, for the shader.
 enum Painter {
     /// hap's one texture of blocks, or a still's of red, green, blue and alpha: rewritten every frame
     One(Texture),
-    /// software pictures: luma, cb and cr textures, rewritten every frame
+    /// software pictures: luma, cb and cr textures, and alpha's when the picture has that plane, rewritten every frame
     Planes { planes: Vec<Texture>, layout: Layout },
     /// hardware pictures: textures that are the planes of the decoder's own surface. the picture is held with them,
     /// so the decoder does not decode into that surface again while it is on screen
@@ -147,6 +156,8 @@ impl Paint {
                     matrix: [c.cr_to_r, c.cb_to_g, c.cr_to_g, c.cb_to_b],
                     bilinear: 1.0,
                     siting: [layout.siting.0, layout.siting.1],
+                    // alpha fills the range of the file's bits, which a wider texel holds at its low end
+                    alpha_scale: ((1u32 << layout.stored.texel_bits) - 1) as f32 / ((1u32 << layout.stored.bits) - 1) as f32,
                     ..Default::default()
                 };
                 if layout.hardware {
@@ -154,8 +165,10 @@ impl Paint {
                 } else {
                     let format = if layout.stored.texel_bits > 8 { MTLPixelFormat::R16Unorm } else { MTLPixelFormat::R8Unorm };
                     let chroma = (clip.width.div_ceil(1 << layout.chroma_shift.0), clip.height.div_ceil(1 << layout.chroma_shift.1));
-                    let planes = [(clip.width, clip.height), chroma, chroma].iter().map(|&(w, h)| gpu.dynamic_texture(w as u32, h as u32, format)).collect::<Result<Vec<_>, _>>()?;
-                    (format!("{CONSTANTS_MSL}\n{YCBCR}\n{MAIN}"), Painter::Planes { planes, layout }, constants)
+                    let sizes = [(clip.width, clip.height), chroma, chroma, (clip.width, clip.height)];
+                    let planes = sizes[..if layout.alpha { 4 } else { 3 }].iter().map(|&(w, h)| gpu.dynamic_texture(w as u32, h as u32, format)).collect::<Result<Vec<_>, _>>()?;
+                    let alpha = if layout.alpha { "#define ALPHA\n" } else { "" };
+                    (format!("{alpha}{CONSTANTS_MSL}\n{YCBCR}\n{MAIN}"), Painter::Planes { planes, layout }, constants)
                 }
             }
             Lane::Waiting(_) => return Err("the clip did not start".into()),
@@ -205,9 +218,9 @@ impl Paint {
                     Painter::Planes { planes, layout } => {
                         let bytes = layout.stored.texel_bits as usize / 8;
                         let widths = [clip.width, clip.width.div_ceil(1 << layout.chroma_shift.0)];
-                        (0..3).try_for_each(|i| {
+                        (0..planes.len()).try_for_each(|i| {
                             let (data, stride, rows) = picture.plane(i, layout.chroma_shift);
-                            gpu.fill(&planes[i], data, rows, widths[i.min(1)] * bytes, stride)
+                            gpu.fill(&planes[i], data, rows, widths[(i % 3).min(1)] * bytes, stride)
                         })
                         .map(|()| true)
                     }

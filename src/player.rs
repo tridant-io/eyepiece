@@ -218,14 +218,16 @@ impl View {
         .ok()
     }
 
-    /// whether the frame in the painter holds the file's alpha: hap alpha and hap r do, and stills (whose alpha is 1
-    /// when the file has none). y'cbcr frames are drawn opaque, prores 4444 too, and so is hap q alpha; hap's bc1 can
-    /// decode a block to clear black, and hap's alpha alone is drawn as gray: neither is the file's alpha.
+    /// whether the frame in the painter holds the file's alpha: hap alpha and hap r do, stills (whose alpha is 1 when
+    /// the file has none), and y'cbcr pictures with a plane of alpha (prores 4444). other y'cbcr frames are drawn
+    /// opaque, and so is hap q alpha; hap's bc1 can decode a block to clear black, and hap's alpha alone is drawn as
+    /// gray: neither is the file's alpha.
     fn carries_alpha(&self) -> bool {
         match &self.clip.lane {
             Lane::Hap(hap) => matches!(hap.tex, Tex::Bc3 | Tex::Bc7),
             Lane::Stills(_) => true,
-            Lane::Video(_) | Lane::Waiting(_) => false,
+            Lane::Video(video) => video.layout.alpha,
+            Lane::Waiting(_) => false,
         }
     }
 
@@ -2146,8 +2148,8 @@ mod tests {
     }
 
     /// what a frame read back holds of the file's alpha, by lane: a still's own (here a png with clear pixels), which a
-    /// saved frame keeps, and hap alpha's (the test clip's is opaque all over); none for hap q and the y'cbcr lanes,
-    /// prores 4444 among them.
+    /// saved frame keeps, hap alpha's (the test clip's is opaque all over), and prores 4444's, from its own plane;
+    /// none for hap q and the other y'cbcr lanes.
     #[test]
     fn a_frame_read_back_holds_the_files_alpha_where_the_lane_draws_it() {
         // 16 x 16, its top row clear, the next half clear, the rest opaque
@@ -2171,10 +2173,21 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         std::fs::remove_dir(&dir).unwrap();
         assert!(view("hapalpha_64.mov").1.carries_alpha());
-        for name in ["hapq_64.mov", "prores4444_64.mov", "h264_64.mp4"] {
+        for name in ["hapq_64.mov", "prores_64.mov", "h264_64.mp4"] {
             let (gpu, opaque) = view(name);
             assert!(!opaque.carries_alpha(), "{name}");
             assert!(!shot::transparent(&opaque.read(&gpu, 64, 64).expect("the frame")), "{name}: an opaque lane read back clear pixels");
         }
+        // prores 4444 keeps alpha in a plane of its own. this clip's is opaque all over
+        let (gpu, full) = view("prores4444_64.mov");
+        assert!(full.carries_alpha() && !shot::transparent(&full.read(&gpu, 64, 64).expect("the frame")));
+        // and this one's runs from clear at the left by 16 of 1023 a pixel
+        let (gpu, ramp) = view("prores4444a_64.mov");
+        let read = ramp.read(&gpu, 64, 64).expect("the frame");
+        for x in [0usize, 1, 20, 63] {
+            let (got, stored) = (read[(10 * 64 + x) * 4 + 3] as f32 / 65535.0, x as f32 * 16.0 / 1023.0);
+            assert!((got - stored).abs() < 1.0 / 255.0, "alpha at x {x} reads {got}, and the file has {stored}");
+        }
+        assert!(ramp.carries_alpha() && shot::transparent(&read));
     }
 }
