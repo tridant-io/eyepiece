@@ -658,12 +658,10 @@ impl Watching {
         let (stopped, file, wake) = (stop.clone(), path.to_string(), wake.clone());
         std::thread::spawn(move || {
             let network = browse::volume_of(Path::new(&file)) == browse::Volume::Network;
-            // a few looks a second at a local file, one every two seconds on a network volume. there too the look
-            // asks after the one file: it was opened by the user, so that is inside the look-only rule, and it costs
-            // the same whatever the folder holds. a listing of the folder of a 3000-frame sequence took 18 ms a look
-            // over this machine's own share, against under 1 ms
+            // a few looks a second at a local file. on a network volume a look is the folder's listing asked for the
+            // one name, every two seconds: the file itself is never opened or asked about there (adr 0004)
             let rest = if network { Duration::from_secs(2) } else { Duration::from_millis(250) };
-            let mut watch = Watch::new(Path::new(&file), false);
+            let mut watch = Watch::new(Path::new(&file), network);
             while !stopped.load(Ordering::Relaxed) {
                 std::thread::sleep(rest);
                 let seen = match watch.poll() {
@@ -691,6 +689,9 @@ struct Played {
     title: String,
     items: Vec<std::path::PathBuf>,
     at: usize,
+    /// on a volume where files may be read ahead of their turn: their headers for the list, and the clips before
+    /// and after the one on screen kept ready. not on a network volume, where a clip is opened only when it plays
+    local: bool,
     /// each clip's name, and what its header says, as far as the headers have been read; the reader, while it reads
     names: Vec<String>,
     facts: Vec<Option<Result<crate::media::clip::Facts, String>>>,
@@ -700,7 +701,11 @@ struct Played {
 impl Played {
     /// a folder's clips, with their headers being read in the background: no reader is started for them and no
     /// frame read, so a folder of hundreds costs its headers.
-    fn new(title: String, items: Vec<std::path::PathBuf>, wake: &Sender<Event>) -> Played {
+    fn new(title: String, items: Vec<std::path::PathBuf>, wake: &Sender<Event>, local: bool) -> Played {
+        let names: Vec<String> = items.iter().map(|file| file.file_name().map_or_else(|| file.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())).collect();
+        if !local {
+            return Played { title, at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: None };
+        }
         let (read, reading) = mpsc::channel();
         let (files, wake) = (items.clone(), wake.clone());
         std::thread::spawn(move || {
@@ -716,8 +721,7 @@ impl Played {
             drop(read);
             let _ = wake.send(Event::Wake);
         });
-        let names = items.iter().map(|file| file.file_name().map_or_else(|| file.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())).collect();
-        Played { title, at: 0, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading) }
+        Played { title, at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading) }
     }
 }
 
@@ -1138,17 +1142,23 @@ impl Tabs {
     }
 
     /// plays a folder in the tab that is up: its clips one after another in name order, from the first, with the
-    /// folder's loop mode. the window is sized to the first clip. returns what there is to say about it.
-    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>) -> Option<String> {
+    /// folder's loop mode. on a network volume it first asks, once, with the count of clips it will open (`asked`
+    /// says that has just been done); there each clip is opened only when it is played. returns what there is to
+    /// say about it.
+    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>, asked: bool) -> Option<String> {
         let listed = browse::list(folder).map_err(|e| e.to_string().to_lowercase());
-        let (items, left_out) = match listed.and_then(|entries| folder::items(browse::volume_of(folder), &entries).map_err(str::to_string)) {
-            Ok(found) => found,
+        let (items, left_out) = match listed {
+            Ok(entries) => folder::items(&entries),
             Err(why) => return Some(why),
         };
         let Some(first) = items.first().map(|first| first.to_string_lossy().into_owned()) else { return Some("no video in this folder".into()) };
+        let network = browse::volume_of(folder) == browse::Volume::Network;
+        if let Some(ask) = folder::ask(browse::volume_of(folder), items.len(), asked) {
+            return Some(ask);
+        }
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let coming = self.open(gpu, first, wake, true);
-        (coming.played, coming.play) = (Some(Played::new(title, items, wake)), true);
+        (coming.played, coming.play) = (Some(Played::new(title, items, wake, !network)), true);
         (left_out > 0).then(|| format!("{left_out} file{} not on this disk left out", if left_out == 1 { " is" } else { "s are" }))
     }
 
@@ -1227,6 +1237,7 @@ impl Tabs {
         let tab = &mut all[*up];
         let near: Vec<(usize, String)> = match &tab.played {
             Some(_) if tab.coming.is_some() || tab.view.is_none() => return,
+            Some(played) if !played.local => Vec::new(),
             Some(played) => {
                 let mut near: Vec<usize> = [1, -1].into_iter().filter_map(|by| folder::step(played.items.len(), played.at, by)).collect();
                 near.dedup();
@@ -1356,7 +1367,8 @@ impl Tabs {
         }
         if coming.why == Why::Opened {
             tab.played = coming.played.take();
-            if tab.played.is_none() {
+            // a folder's window is sized when its headers are read; where they are not read, to its first clip
+            if tab.played.as_ref().is_none_or(|played| !played.local) {
                 window::fit(window, window::client_for((view.clip.width, view.clip.height)));
             }
             tab.mode = opening_mode(tab.played.is_some(), settings);
@@ -1478,6 +1490,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
     let mut speaker_open = false;
+    // the network folder play was last asked about, and until when asking for it again plays it
+    let mut asked_folder: Option<(std::path::PathBuf, Instant)> = None;
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone());
     // the clip the spare reader has in hand for the timebar, and the frame last asked of it
@@ -1790,8 +1804,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
                 Action::PlayFolder(folder) => {
-                    if let Some(said) = tabs.play_folder(&gpu, folder, &wake) {
+                    // a folder that had to be asked about is played when it is asked for again within a few seconds
+                    let asked = asked_folder.take().is_some_and(|(of, until): (std::path::PathBuf, Instant)| &of == folder && Instant::now() < until);
+                    if let Some(said) = tabs.play_folder(&gpu, folder, &wake, asked) {
                         toast = say(said);
+                        asked_folder = (!asked).then(|| (folder.clone(), Instant::now() + Duration::from_secs(8)));
                     }
                 }
                 Action::Loop(mode) => tabs.tab().set_mode(*mode, settings),

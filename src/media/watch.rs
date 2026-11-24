@@ -85,8 +85,26 @@ fn look(path: &Path, network: bool) -> Option<Look> {
     }
 }
 
-/// from the parent folder's listing alone. on windows an entry's size and time come with the listing, so nothing is
-/// opened and the file is not asked about.
+/// from the parent folder's listing alone, asked for this one name: an entry's size and time come with the listing, so
+/// the file is not opened and not asked about (an open over smb changes its ctime on the owner's nas, adr 0004), and
+/// a look costs the same whatever the folder holds.
+#[cfg(windows)]
+fn listed(path: &Path) -> Option<Look> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{FindClose, FindFirstFileW, WIN32_FIND_DATAW};
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut entry = WIN32_FIND_DATAW::default();
+    let found = unsafe { FindFirstFileW(PCWSTR(name.as_ptr()), &mut entry) }.ok()?;
+    let _ = unsafe { FindClose(found) };
+    let whole = |high: u32, low: u32| ((high as u64) << 32) | low as u64;
+    // the time is in 100 ns steps from 1601
+    let since_1970 = whole(entry.ftLastWriteTime.dwHighDateTime, entry.ftLastWriteTime.dwLowDateTime).checked_sub(116_444_736_000_000_000)?;
+    Some(Look { len: whole(entry.nFileSizeHigh, entry.nFileSizeLow), modified: SystemTime::UNIX_EPOCH + Duration::from_nanos(since_1970.checked_mul(100)?), id: None })
+}
+
+/// from the parent folder's listing alone.
+#[cfg(not(windows))]
 fn listed(path: &Path) -> Option<Look> {
     let name = path.file_name()?;
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));

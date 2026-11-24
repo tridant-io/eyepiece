@@ -7,16 +7,20 @@ use crate::settings::Loop;
 use std::path::PathBuf;
 
 /// the files of a folder that play, in the order its listing has them: its videos and sequences, a sequence by its
-/// first file, and not its lone stills. with them, how many were left out because their data is not on the disk: playing those would
-/// download them. a folder on a network volume is not played at all: the design asks first there, with the count of
-/// files it would open, and that asking is not built.
-pub fn items(volume: Volume, entries: &[Entry]) -> Result<(Vec<PathBuf>, usize), &'static str> {
-    if volume == Volume::Network {
-        return Err("a folder on a network volume is not played yet: open its clips one at a time");
-    }
+/// first file, and not its lone stills. with them, how many were left out because their data is not on the disk:
+/// playing those would download them.
+pub fn items(entries: &[Entry]) -> (Vec<PathBuf>, usize) {
     // a lone still has one frame and never plays to its end: play would stop on it
     let cards = || entries.iter().filter(|e| matches!(e.kind, Kind::Sequence { .. }) || (e.kind == Kind::Clip && !browse::is_still(&e.name)));
-    Ok((cards().filter(|e| !e.away).map(|e| e.path.clone()).collect(), cards().filter(|e| e.away).count()))
+    (cards().filter(|e| !e.away).map(|e| e.path.clone()).collect(), cards().filter(|e| e.away).count())
+}
+
+/// what is asked before a folder is played: on a network volume, once, that it means opening its clips, with how
+/// many (the design: "play folder on a network path asks once, with the count"). None when there is nothing to ask:
+/// any other volume, or a folder that has just been asked about (`asked`).
+pub fn ask(volume: Volume, clips: usize, asked: bool) -> Option<String> {
+    let opens = if clips == 1 { "its 1 clip, and nothing else".to_string() } else { format!("its {clips} clips, each when it plays") };
+    (volume == Volume::Network && !asked).then(|| format!("network folder · playing it opens {opens}. play folder again to go on"))
 }
 
 /// what play does at the ends of one clip of `items`, for the tab's loop mode: with `all`, a clip of several stops
@@ -55,13 +59,20 @@ mod tests {
     fn a_folder_plays_its_clips_that_are_on_the_disk() {
         let run = Kind::Sequence { first: 1, last: 9, missing: Vec::new(), pad: 4 };
         let entries = [entry("sub", Kind::Folder, false), entry("a.mov", Kind::Clip, false), entry("b.mov", Kind::Clip, true), entry("notes.txt", Kind::Other, false), entry("s.0001.exr", run, false), entry("plate.png", Kind::Clip, false)];
-        let (plays, left_out) = items(Volume::Local, &entries).unwrap();
+        let (plays, left_out) = items(&entries);
         assert_eq!(plays, [Path::new("shots").join("a.mov"), Path::new("shots").join("s.0001.exr")]);
         // a lone still has one frame and never plays to its end: play would stop on it, so it is not in the folder
         assert_eq!(left_out, 1);
-        assert_eq!(items(Volume::Removable, &entries).unwrap().0.len(), 2);
-        // nothing on a network volume is opened to play a folder
-        assert!(items(Volume::Network, &entries).is_err());
+    }
+
+    #[test]
+    fn a_folder_on_a_network_volume_is_asked_about_once_with_its_count() {
+        assert_eq!((ask(Volume::Local, 300, false), ask(Volume::Removable, 300, false)), (None, None));
+        let asks = ask(Volume::Network, 300, false).expect("it asks");
+        assert!(asks.contains("300 clips") && asks.contains("network"), "{asks}");
+        // asked, it plays
+        assert_eq!(ask(Volume::Network, 300, true), None);
+        assert!(ask(Volume::Network, 1, false).expect("it asks").contains("1 clip,"));
     }
 
     #[test]
