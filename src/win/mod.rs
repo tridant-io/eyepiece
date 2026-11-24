@@ -3,7 +3,6 @@
 mod d3d;
 mod instance;
 mod paint;
-pub mod pictures;
 mod ui_paint;
 pub mod window;
 

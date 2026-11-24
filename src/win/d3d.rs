@@ -116,9 +116,9 @@ pub(super) fn compile(src: &str, target: &str) -> Result<Vec<u8>> {
 }
 
 impl Gpu {
-    /// a hardware device and a swapchain on `hwnd`, `w` x `h` pixels.
-    pub fn new(hwnd: HWND, w: u32, h: u32) -> Result<Gpu> {
-        Gpu::make(Some(hwnd), w, h)
+    /// a hardware device and a swapchain on the window, `w` x `h` pixels.
+    pub fn new(window: super::window::Handle, w: u32, h: u32) -> Result<Gpu> {
+        Gpu::make(Some(window.0), w, h)
     }
 
     /// a hardware device with no window: it draws only into pictures of its own (`read_pixels`).

@@ -13,6 +13,8 @@ mod media;
 mod play;
 // the player needs a system's half (`sys`): macos has its renderer so far, and not yet its window
 #[cfg(windows)]
+mod pictures;
+#[cfg(windows)]
 mod player;
 mod preview;
 mod settings;

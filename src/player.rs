@@ -4,7 +4,8 @@
 //! frames and of the controls are `crate::sys`, one module for each system with the same things in it.
 
 use crate::sys::window::{self, Handle};
-use crate::sys::{pictures, Gpu, Paint, UiPainter};
+use crate::pictures;
+use crate::sys::{Gpu, Paint, UiPainter};
 use crate::audio::{Audio, Speaker};
 use crate::browse;
 use crate::event::{Event, Key, Mods};
@@ -1375,7 +1376,7 @@ pub fn run(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: 
 fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>, settings: &mut Settings) {
     let (w, h) = window::client_size(window);
     // declared before the tabs on purpose: a clip, and with it any decoder writing to this device, goes first
-    let mut gpu = match Gpu::new(window.0, w, h) {
+    let mut gpu = match Gpu::new(window, w, h) {
         Ok(gpu) => gpu,
         Err(e) => return window::set_title(window, &format!("eyepiece · no graphics device: {e}")),
     };
@@ -1962,22 +1963,20 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     }
 }
 
-// these make a device and a hidden window of the system's own
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use windows::core::w;
-    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WINDOW_EX_STYLE, WS_POPUP};
 
-    /// a test clip with its first frame in the painter, on a window that is never shown. needs a gpu.
+    /// a test clip with its first frame in the painter, with no window. needs a gpu.
     fn view(name: &str) -> (Gpu, View) {
         open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR")))
     }
 
     /// `view`, for a file anywhere
     fn open(path: &str) -> (Gpu, View) {
-        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_POPUP, 0, 0, 64, 64, None, None, None, None) }.expect("a window");
-        let gpu = Gpu::new(hwnd, 64, 64).expect("a graphics device");
+        // a device that draws only into pictures of its own, told the size a window would have
+        let mut gpu = Gpu::offscreen().expect("a graphics device");
+        (gpu.w, gpu.h) = (64, 64);
         let clip = Clip::open(path).expect("open");
         let mut view = View::new(&gpu, clip, 60.0).expect("view");
         assert!(view.load(&gpu, Duration::from_secs(20)), "the first frame arrived");
