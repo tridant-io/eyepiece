@@ -658,10 +658,12 @@ impl Watching {
         let (stopped, file, wake) = (stop.clone(), path.to_string(), wake.clone());
         std::thread::spawn(move || {
             let network = browse::volume_of(Path::new(&file)) == browse::Volume::Network;
-            // a few looks a second at a local file. on a network volume a look is a listing of the file's folder
-            // (the file itself is never asked about there), so it is taken every two seconds
+            // a few looks a second at a local file, one every two seconds on a network volume. there too the look
+            // asks after the one file: it was opened by the user, so that is inside the look-only rule, and it costs
+            // the same whatever the folder holds. a listing of the folder of a 3000-frame sequence took 18 ms a look
+            // over this machine's own share, against under 1 ms
             let rest = if network { Duration::from_secs(2) } else { Duration::from_millis(250) };
-            let mut watch = Watch::new(Path::new(&file), network);
+            let mut watch = Watch::new(Path::new(&file), false);
             while !stopped.load(Ordering::Relaxed) {
                 std::thread::sleep(rest);
                 let seen = match watch.poll() {
