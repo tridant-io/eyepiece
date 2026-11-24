@@ -400,10 +400,14 @@ mod tests {
     }
 
     /// tells a reader what is wanted, as the render loop does every refresh, and says whether `frame` came within
-    /// `patience`. a frame that failed counts as come: the render loop shows its fault and moves on.
+    /// `patience`. a clip played here has no faults, so a frame that fails is a bug, and stops the run.
     fn arrived<T: Send + Sync + 'static>(source: &Source<T>, want: &[usize], frame: usize, patience: Duration) -> bool {
         source.want(want);
-        !matches!(source.get(frame, patience), Frame::Pending)
+        match source.get(frame, patience) {
+            Frame::Ready(_) => true,
+            Frame::Pending => false,
+            Frame::Failed(why) => panic!("frame {frame}: {why}"),
+        }
     }
 
     fn median<T: Copy + Ord>(mut values: Vec<T>) -> T {
