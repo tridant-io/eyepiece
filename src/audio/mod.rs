@@ -9,7 +9,7 @@ mod speed;
 
 use crate::media::source::guarded;
 use decode::Decoder;
-use out::{Feed, Output, Shared};
+use out::{Feed, Line, Output, Shared};
 use speed::Speed;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -27,19 +27,62 @@ pub struct Info {
     pub sample_rate: u32,
 }
 
+/// the player's one way out to the system's default output: every clip's sound goes through it, one clip at a time.
+/// it is made and kept on the thread that draws, since the device's stream does not move between threads.
+pub struct Speaker {
+    shared: Arc<Shared>,
+    /// None until sound is first wanted, when there is no device, or when it would not open
+    output: Option<Output>,
+    volume: f32,
+    muted: bool,
+}
+
+impl Speaker {
+    pub fn new() -> Speaker {
+        Speaker { shared: Arc::new(Shared::new()), output: None, volume: 1.0, muted: false }
+    }
+
+    /// the line to the device, which is opened when first asked for (that took about 40 ms) and again when it was
+    /// lost. None when there is no device or it will not open: that is no fault, and a clip then plays without
+    /// sound, on the display's clock.
+    pub fn line(&mut self) -> Option<Line> {
+        if self.output.as_ref().is_none_or(|o| o.lost()) {
+            self.output = Output::open(self.shared.clone());
+        }
+        self.output.as_ref().map(|o| o.line(&self.shared))
+    }
+
+    /// 0 to 1
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+        self.shared.set_gain(if self.muted { 0.0 } else { self.volume });
+    }
+
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        self.shared.set_gain(if self.muted { 0.0 } else { self.volume });
+    }
+}
+
+/// one clip's sound: its decoder, on a thread of its own. it touches no device until it plays, so it is opened
+/// wherever its clip is.
 pub struct Audio {
     info: Info,
     /// to the decode thread: the next play, or None to stop
     commands: Option<Sender<Option<Play>>>,
     worker: Option<std::thread::JoinHandle<()>>,
-    shared: Arc<Shared>,
-    /// None when there is no device, or it would not open
-    output: Option<Output>,
-    /// what is playing: its feed, the second it started from, its speed, and when it was asked for. None while
-    /// paused or silent
-    playing: Option<(Arc<Feed>, f64, f64, Instant)>,
-    volume: f32,
-    muted: bool,
+    /// None while paused or silent
+    playing: Option<Playing>,
+}
+
+/// what is playing: its feed, the line it goes out on, the second it started from, its speed, and when it was asked
+/// for
+struct Playing {
+    feed: Arc<Feed>,
+    line: Line,
+    start: f64,
+    speed: f64,
+    asked: Instant,
 }
 
 /// one play, for the decode thread.
@@ -57,63 +100,43 @@ impl Audio {
         let Some((decoder, info)) = Decoder::open(path)? else { return Ok(None) };
         let (commands, theirs) = mpsc::channel();
         let worker = std::thread::Builder::new().name("sound".into()).spawn(move || work(decoder, theirs)).map_err(|e| e.to_string())?;
-        let shared = Arc::new(Shared::new());
-        // no device is not a fault: the clip plays without sound, on the display's clock
-        let output = Output::open(shared.clone());
-        Ok(Some(Audio { info, commands: Some(commands), worker: Some(worker), shared, output, playing: None, volume: 1.0, muted: false }))
+        Ok(Some(Audio { info, commands: Some(commands), worker: Some(worker), playing: None }))
     }
 
     pub fn info(&self) -> &Info {
         &self.info
     }
 
-    /// starts, or restarts, playing from `seconds` into the clip at `speed` (1.0 is normal).
-    /// pitch is kept from 0.5 to 2; outside that the sound is silent, as the design says.
-    pub fn play(&mut self, seconds: f64, speed: f64) {
-        if !speed::WITH_SOUND.contains(&speed) {
-            return self.pause();
-        }
-        // a device that went away, or was never there, may be back
-        if self.output.as_ref().is_none_or(|o| o.lost()) {
-            self.output = Output::open(self.shared.clone());
-        }
-        let Some(output) = &self.output else { return self.pause() };
-        let feed = Arc::new(Feed::new(output.rate, output.channels));
-        self.send(Some(Play { feed: feed.clone(), seconds, speed, rate: output.rate, channels: output.channels }));
-        self.shared.set_feed(Some(feed.clone()));
-        self.playing = Some((feed, seconds, speed, Instant::now()));
+    /// starts, or restarts, playing from `seconds` into the clip at `speed` (1.0 is normal), out of `speaker`, where
+    /// it takes the place of whatever was sounding. pitch is kept from 0.5 to 2; outside that the sound is silent,
+    /// as the design says.
+    pub fn play(&mut self, speaker: &mut Speaker, seconds: f64, speed: f64) {
+        let Some(line) = speaker.line().filter(|_| speed::WITH_SOUND.contains(&speed)) else { return self.pause() };
+        let feed = Arc::new(Feed::new(line.rate, line.channels));
+        self.send(Some(Play { feed: feed.clone(), seconds, speed, rate: line.rate, channels: line.channels }));
+        line.shared.set_feed(Some(feed.clone()));
+        self.playing = Some(Playing { feed, line, start: seconds, speed, asked: Instant::now() });
     }
 
     pub fn pause(&mut self) {
         self.send(None);
-        self.shared.set_feed(None);
-        self.playing = None;
-    }
-
-    /// 0 to 1
-    pub fn set_volume(&mut self, volume: f32) {
-        self.volume = volume.clamp(0.0, 1.0);
-        self.shared.set_gain(if self.muted { 0.0 } else { self.volume });
-    }
-
-    pub fn set_muted(&mut self, muted: bool) {
-        self.muted = muted;
-        self.shared.set_gain(if self.muted { 0.0 } else { self.volume });
+        // only its own sound is taken off the speaker: another clip's may be on it by now
+        if let Some(was) = self.playing.take() {
+            was.line.shared.clear_feed(&was.feed);
+        }
     }
 
     /// where the sound is now, in seconds of the clip, from the device's own count of samples played.
     /// this is the clock when a clip has sound. None while paused or silent.
     pub fn position(&self) -> Option<f64> {
-        let (feed, start, speed, _) = self.playing.as_ref()?;
-        let output = self.output.as_ref().filter(|o| !o.lost())?;
-        Some(clip_seconds(*start, feed.heard(Instant::now(), output.rate), output.rate, *speed))
+        let now = self.playing.as_ref().filter(|p| !p.line.lost())?;
+        Some(clip_seconds(now.start, now.feed.heard(Instant::now(), now.line.rate), now.line.rate, now.speed))
     }
 
     /// a play was asked for and none of it has reached the speaker yet. the picture waits for it, so the two start
     /// together; a device that never starts holds it no longer than `START_WITHIN`.
     pub fn starting(&self) -> bool {
-        let Some((feed, _, _, asked)) = &self.playing else { return false };
-        asked.elapsed() < START_WITHIN && self.output.as_ref().is_some_and(|o| !o.lost() && feed.heard(Instant::now(), o.rate) == 0)
+        self.playing.as_ref().is_some_and(|p| p.asked.elapsed() < START_WITHIN && !p.line.lost() && p.feed.heard(Instant::now(), p.line.rate) == 0)
     }
 
     fn send(&self, play: Option<Play>) {
@@ -124,8 +147,10 @@ impl Audio {
 }
 
 impl Drop for Audio {
-    /// stops the decode thread and waits for it, so the file is closed when this returns.
+    /// takes its sound off the speaker, stops the decode thread and waits for it, so the file is closed when this
+    /// returns.
     fn drop(&mut self) {
+        self.pause();
         self.commands.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

@@ -1,20 +1,21 @@
 //! a played folder: the clips of one folder that a tab plays one after another, in name order (the design's
 //! fig. 14). the rules here are the prototype's (`step` and `item` in docs/design/plan.html).
 
-use crate::browse::{Entry, Kind, Volume};
+use crate::browse::{self, Entry, Kind, Volume};
 use crate::play;
 use crate::settings::Loop;
 use std::path::PathBuf;
 
 /// the files of a folder that play, in the order its listing has them: its videos and sequences, a sequence by its
-/// first file. with them, how many were left out because their data is not on the disk: playing those would
+/// first file, and not its lone stills. with them, how many were left out because their data is not on the disk: playing those would
 /// download them. a folder on a network volume is not played at all: the design asks first there, with the count of
 /// files it would open, and that asking is not built.
 pub fn items(volume: Volume, entries: &[Entry]) -> Result<(Vec<PathBuf>, usize), &'static str> {
     if volume == Volume::Network {
         return Err("a folder on a network volume is not played yet: open its clips one at a time");
     }
-    let cards = || entries.iter().filter(|e| matches!(e.kind, Kind::Clip | Kind::Sequence { .. }));
+    // a lone still has one frame and never plays to its end: play would stop on it
+    let cards = || entries.iter().filter(|e| matches!(e.kind, Kind::Sequence { .. }) || (e.kind == Kind::Clip && !browse::is_still(&e.name)));
     Ok((cards().filter(|e| !e.away).map(|e| e.path.clone()).collect(), cards().filter(|e| e.away).count()))
 }
 
@@ -53,9 +54,10 @@ mod tests {
     #[test]
     fn a_folder_plays_its_clips_that_are_on_the_disk() {
         let run = Kind::Sequence { first: 1, last: 9, missing: Vec::new(), pad: 4 };
-        let entries = [entry("sub", Kind::Folder, false), entry("a.mov", Kind::Clip, false), entry("b.mov", Kind::Clip, true), entry("notes.txt", Kind::Other, false), entry("s.0001.exr", run, false)];
+        let entries = [entry("sub", Kind::Folder, false), entry("a.mov", Kind::Clip, false), entry("b.mov", Kind::Clip, true), entry("notes.txt", Kind::Other, false), entry("s.0001.exr", run, false), entry("plate.png", Kind::Clip, false)];
         let (plays, left_out) = items(Volume::Local, &entries).unwrap();
         assert_eq!(plays, [Path::new("shots").join("a.mov"), Path::new("shots").join("s.0001.exr")]);
+        // a lone still has one frame and never plays to its end: play would stop on it, so it is not in the folder
         assert_eq!(left_out, 1);
         assert_eq!(items(Volume::Removable, &entries).unwrap().0.len(), 2);
         // nothing on a network volume is opened to play a folder

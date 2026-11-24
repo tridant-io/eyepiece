@@ -102,6 +102,15 @@ impl Shared {
         self.changed.store(true, Ordering::Release);
     }
 
+    /// takes `feed` off the device, if it is the one on it: another clip's play may have taken its place by now.
+    pub fn clear_feed(&self, feed: &Arc<Feed>) {
+        let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        if next.as_ref().is_some_and(|on| Arc::ptr_eq(on, feed)) {
+            *next = None;
+            self.changed.store(true, Ordering::Release);
+        }
+    }
+
     pub fn set_gain(&self, gain: f32) {
         self.gain.store(gain.to_bits(), Ordering::Relaxed);
     }
@@ -168,6 +177,27 @@ impl Output {
     }
 
     /// the device failed or went away: nothing more is heard through this output.
+    pub fn lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
+    }
+
+    /// the output as one clip's sound sees it.
+    pub fn line(&self, shared: &Arc<Shared>) -> Line {
+        Line { shared: shared.clone(), rate: self.rate, channels: self.channels, lost: self.lost.clone() }
+    }
+}
+
+/// the output as one clip's sound sees it: where its play goes, the device's rate and channels, and whether the
+/// device has gone. unlike the output itself it moves between threads.
+#[derive(Clone)]
+pub struct Line {
+    pub shared: Arc<Shared>,
+    pub rate: u32,
+    pub channels: u16,
+    lost: Arc<AtomicBool>,
+}
+
+impl Line {
     pub fn lost(&self) -> bool {
         self.lost.load(Ordering::Relaxed)
     }
