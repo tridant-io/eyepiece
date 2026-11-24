@@ -4,11 +4,14 @@
 use super::d3d::Gpu;
 use super::render::View;
 use crate::media::clip::{Clip, Lane};
+use crate::event::Event;
 use crate::preview::make::{self, Pictures, Reader};
+use crate::preview::spare::{self, Spare};
 use crate::preview::Cache;
 use std::cell::OnceCell;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,6 +28,20 @@ pub fn start(playing: Arc<AtomicBool>) -> Option<Pictures> {
         make::serve(wants, got, Cache::open(), &playing, |path| Open::new(gpu.get_or_init(|| Gpu::offscreen().ok()).as_ref()?, path));
     };
     std::thread::Builder::new().name("pictures".into()).spawn(work).ok().map(|_| pictures)
+}
+
+/// starts the spare reader of the clip on screen, which wakes the window when it has an answer. its device too is
+/// made when first needed. None when its thread will not start.
+pub fn start_spare(wake: Sender<Event>) -> Option<Spare> {
+    let (spare, asks, answers) = Spare::new();
+    let work = move || {
+        let gpu: OnceCell<Option<Gpu>> = OnceCell::new();
+        let told = || {
+            let _ = wake.send(Event::Wake);
+        };
+        spare::serve(asks, answers, told, |path| Open::new(gpu.get_or_init(|| Gpu::offscreen().ok()).as_ref()?, path));
+    };
+    std::thread::Builder::new().name("spare reader".into()).spawn(work).ok().map(|_| spare)
 }
 
 struct Open<'a> {
@@ -74,6 +91,17 @@ impl Reader for Open<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a real clip's seam: its last frame against its first differs, and a frame against itself does not.
+    #[test]
+    fn a_clips_last_frame_is_compared_with_its_first() {
+        let gpu = Gpu::offscreen().expect("a graphics device");
+        let mut open = Open::new(&gpu, Path::new(&format!("{}/tests/media/hapq_64.mov", env!("CARGO_MANIFEST_DIR")))).expect("it opens");
+        let (last, first) = (open.read(open.frames() - 1, 64, 64).expect("the last frame"), open.read(0, 64, 64).expect("the first"));
+        let seam = spare::compare(&last, &first);
+        assert!(!seam.identical && seam.change > 0.0, "{seam:?}");
+        assert!(spare::compare(&first, &open.read(0, 64, 64).expect("the first again")).identical);
+    }
 
     /// a picture of a real clip, through a device with no window: the frame asked for, at the size asked for.
     #[test]

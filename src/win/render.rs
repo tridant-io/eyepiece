@@ -18,6 +18,7 @@ use crate::media::watch::{Change, Watch};
 use crate::media::source::Frame;
 use crate::media::still::Samples;
 use crate::play::{Show, Transport};
+use crate::preview::spare::Seam;
 use crate::settings::{self, Settings};
 use crate::shot;
 use crate::ui::{Action, Facts, Model, Screen, Shot, Ui};
@@ -144,6 +145,9 @@ pub(super) struct View {
     sounding: Option<(u32, f64)>,
     /// times the picture was moved to where the sound is
     resynced: u64,
+    /// the spare reader has been asked how the clip's last frame and its first compare, and what it said
+    seam_asked: bool,
+    seam_change: Option<Seam>,
 }
 
 fn text(e: windows::core::Error) -> String {
@@ -210,7 +214,7 @@ impl View {
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new((clip.width, clip.height));
-        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0 })
+        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, seam_asked: false, seam_change: None })
     }
 
     /// looks for the clip's sound, once. stills have none. returns why, when there is sound that cannot be played.
@@ -521,6 +525,7 @@ impl View {
             linear: matches!(&self.clip.lane, Lane::Stills(stills) if stills.samples == Samples::F32),
             looping,
             folder,
+            seam_change: self.seam_change,
             seam: self.transport.seam_place(),
             seam_seconds: settings.loop_analysis_seconds as f64,
             speed: self.transport.speed(),
@@ -1177,6 +1182,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // the maker of the browser's pictures stands back while a clip plays
     let playing_now = Arc::new(AtomicBool::new(false));
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
+    // a second reader of the clip on screen, for loop analysis
+    let spare = pictures::start_spare(wake.clone());
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
@@ -1495,6 +1502,22 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             window::show_pointer(window, pointer_shown);
         }
 
+        // loop analysis asks, once for a clip, how much changes across its seam; the answer comes when it is read
+        if let Some(spare) = &spare {
+            let tab = tabs.tab();
+            if let (Some(path), Some(v)) = (&tab.path, &mut tab.view) {
+                if v.transport.seam().is_some() && !v.seam_asked {
+                    v.seam_asked = true;
+                    spare.ask(Path::new(path));
+                }
+            }
+            while let Some((path, seam)) = spare.take() {
+                for v in tabs.all.iter_mut().filter(|tab| tab.path.as_deref().map(Path::new) == Some(path.as_path())).filter_map(|tab| tab.view.as_mut()) {
+                    v.seam_change = seam;
+                }
+                again = true;
+            }
+        }
         // a folder's next clip comes nearer; and what play does at the clip's own ends follows the tab's loop mode
         // (standing still nothing else paces the loop, so the wait for it is taken here, a few milliseconds a look)
         let paced = playing || tabs.tab().cutting();

@@ -11,6 +11,7 @@ use crate::event::{Key, Mods};
 use crate::media::meta::Meta;
 use crate::settings::Loop;
 use crate::preview::make::Pictures;
+use crate::preview::spare::Seam;
 use crate::view::{Guides, Look};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
@@ -154,6 +155,8 @@ pub struct Model<'a> {
     pub looping: Loop,
     /// the tab plays a folder: "all" is then one of its loop modes
     pub folder: bool,
+    /// how the clip's last frame and its first compare, once that has been measured for loop analysis
+    pub seam_change: Option<Seam>,
     /// loop analysis, while it is on: the place in its round and the round's length, in frames
     pub seam: Option<(usize, usize)>,
     /// the seconds each side of the seam loop analysis uses
@@ -986,8 +989,20 @@ fn row_middle(bar: Rect) -> f32 {
 
 /// what the loop analysis chip says, while it is on.
 fn seam_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
-    let seconds = model.seam_seconds;
-    model.seam.map(|_| vec![("loop analysis".to_string(), FG), (format!(" · last {seconds:.1} s "), FG), ("→".to_string(), DIM), (format!(" first {seconds:.1} s"), FG)])
+    model.seam.map(|_| seam_words(model.seam_seconds, model.seam_change))
+}
+
+/// the loop analysis chip's words, for the seconds each side of the seam and what is known of the seam itself.
+fn seam_words(seconds: f64, change: Option<Seam>) -> Vec<(String, Color32)> {
+    let mut parts = vec![("loop analysis".to_string(), FG), (format!(" · last {seconds:.1} s "), FG), ("into".to_string(), DIM), (format!(" first {seconds:.1} s"), FG)];
+    // a last frame that is the first frame again is a fault in the file: the loop shows it twice, and stutters
+    match change {
+        Some(seam) if seam.identical => parts.push((" · the last frame and the first are the same".to_string(), AMBER)),
+        Some(seam) if seam.change < 0.0005 => parts.push((" · the seam changes under 0.1%".to_string(), DIM)),
+        Some(seam) => parts.push((format!(" · the seam changes {:.1}%", seam.change * 100.0), DIM)),
+        None => {}
+    }
+    parts
 }
 
 /// what the speed chip says, when the clip is not running at its own rate: "2× speed", "−4× reverse".
@@ -1113,6 +1128,23 @@ mod tests {
                 let middle = top + glyph.pos.y + glyph.uv_rect.offset.y + glyph.uv_rect.size.y / 2.0;
                 assert!((middle - 100.0).abs() < 0.2, "{family} {size}: the middle of a figure is at {middle}, not at 100");
             }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// a sign the chip's font does not have is drawn as an empty box.
+    #[test]
+    fn the_loop_analysis_chip_is_all_in_its_font() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let has = |words: &str| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(MONO_MEDIUM, 11.0), words));
+            for change in [None, Some(Seam { identical: true, change: 0.0 }), Some(Seam { identical: false, change: 0.024 }), Some(Seam { identical: false, change: 0.0001 })] {
+                let words: String = seam_words(3.0, change).into_iter().map(|(text, _)| text).collect();
+                assert!(has(&words), "not all in the font: {words}");
+            }
+            // the design's arrow between the two halves is not in the bundled fonts, which is why the chip says "into"
+            assert!(!has("→"));
         });
         out.textures_delta.clear();
     }

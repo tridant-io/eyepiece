@@ -20,6 +20,8 @@ a played folder: play folder puts the folder's clips in the tab, in name order, 
 
 a file that changes on disk: the player holds no lock on what it has open, so a render can write over it. each open file is watched (its size, time and identity a few times a second; on a network volume its folder's listing every two seconds, the file itself never asked about), and once a changed file has held still for half a second the new file takes the old one's place: on the same frame when it has that frame, with the zoom and pan when it is the same size, and the speed, look and loop mode as they were. a line says so (`wall_v012.mov changed on disk at 14:32 · same frame`). a file that goes away is said too, and what was showing stays.
 
+loop analysis also says how the seam looks in numbers: a second reader of the clip compares its last frame with its first, at full size, and the chip gives the mean change of a pixel as a part of full scale (`the seam changes 2.4%`), or says in amber that the two frames are the same, which is the doubled frame that makes a loop stutter.
+
 known gaps:
 
 - **a sequence is watched by its first file only.** a render that writes over a sequence is picked up when that file changes; frames written after that are read as they are on disk when they are next wanted, and a frame already in memory stays the old one until the clip is opened again.

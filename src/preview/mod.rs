@@ -3,6 +3,7 @@
 //! them. eviction removes only files this cache wrote, one at a time, and never a folder.
 
 pub mod make;
+pub mod spare;
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
