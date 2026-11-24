@@ -238,7 +238,7 @@ tec-mba, apple m2, macos 26.6. the machine was in use throughout (load average 1
 - what it does not: the real app's entitlements, a build for both processor kinds, or a disk image or installer around it.
 - the signer is the mac's only identity, a personal developer id. windows signs as "Tridant, Inc.". which name the mac build carries is the owner's to say.
 
-**left on the mac** (sizes after the graphics gates in the next entry). `~/src/eyepiece` (sources, the ffmpeg install and build output, 407 MB), `/private/tmp/eyepiece-ffmpeg-src` (188 MB), `/private/tmp/eyepiece-media` (one clip, 50 MB), `/private/tmp/eyepiece-signtest-*` (25 MB), `/private/tmp/eyepiece-g6` and `/private/tmp/eyepiece-tiny_hap.mov` (under 1 MB). about 670 MB in all; the mac has 17 GB free. no job and no mount is left behind. removing any of it waits for the owner's word.
+**left on the mac** (sizes at the end of that night, after the entries below). `~/src/eyepiece` (sources, the ffmpeg install, build output and the one-off job files, 855 MB), `/private/tmp/eyepiece-ffmpeg-src` (188 MB), `/private/tmp/eyepiece-media` (one clip, 50 MB), `/private/tmp/eyepiece-signtest-*` (25 MB), `/private/tmp/eyepiece-g6` and `/private/tmp/eyepiece-tiny_hap.mov` (under 1 MB). about 1.1 GB in all; the mac has 16 GB free. no job and no mount is left behind. removing any of it waits for the owner's word.
 
 ### 2026-11-23, night: the mac's graphics gates that need no window
 
