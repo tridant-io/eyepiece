@@ -355,6 +355,12 @@ pub fn client_for(video: (usize, usize)) -> (u32, u32) {
     (((vw * fitted).round()).max(MIN_CLIENT.0 * scale) as u32, ((vh * fitted).round()).max(MIN_CLIENT.1 * scale) as u32)
 }
 
+/// the picture area of a window opened with no clip: 1180 x 720 of the design's pixels, as on windows.
+pub fn client_for_none() -> (u32, u32) {
+    let scale = f32::from_bits(SCALE.load(Ordering::Relaxed)) as f64;
+    client_for(((1180.0 * scale) as usize, (720.0 * scale) as usize))
+}
+
 /// where a window with `client` physical pixels of picture goes: centered in the display's free area.
 fn placed(screen: &NSScreen, client: (u32, u32)) -> NSRect {
     let (scale, room) = (screen.backingScaleFactor(), screen.visibleFrame());

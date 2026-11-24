@@ -1998,53 +1998,59 @@ mod tests {
     use crate::media::color;
     use crate::media::source::Frame;
 
-    /// 4:2:0 chroma is brought up to the picture's size by blending the four samples round each pixel, placed where
-    /// the file sites them; on request the nearest sample is taken instead. every pixel is checked against the same
-    /// arithmetic done here on the decoder's own planes.
+    /// chroma smaller than the picture is brought up to it by blending the four samples round each pixel, placed
+    /// where the file sites them; on request the nearest sample is taken instead. every pixel is checked against the
+    /// same arithmetic done here on the decoder's own planes: 4:2:0 in 8 bits, and 4:2:2 in 10 from two decoders.
     #[test]
     fn chroma_is_blended_at_the_files_siting_or_taken_from_the_nearest_sample() {
         let mut gpu = Gpu::offscreen().expect("a graphics device");
         (gpu.w, gpu.h) = (64, 64);
-        // decoded in software, so that the planes can be read here too
-        let mut clip = Clip::open(&format!("{}/tests/media/h264_64.mp4", env!("CARGO_MANIFEST_DIR"))).expect("open");
-        clip.start(None).expect("start");
-        let mut view = View::new(&gpu, clip, 60.0).expect("view");
-        assert!(view.load(&gpu, Duration::from_secs(20)), "the first frame arrived");
-        let Lane::Video(video) = &view.clip.lane else { panic!("a clip ffmpeg decodes") };
-        let layout = video.layout;
-        assert_eq!((layout.chroma_shift, layout.siting), ((1, 1), (0.0, 0.5)));
-        let Frame::Ready(picture) = video.source.get(0, Duration::from_secs(20)) else { panic!("the first frame") };
-        let sample = |plane: usize, x: usize, y: usize| {
-            let (data, stride, _) = picture.plane(plane, layout.chroma_shift);
-            data[y * stride + x] as f32 / 255.0
-        };
-        let c = color::conversion(layout.stored, layout.matrix);
-        let wanted = |x: usize, y: usize, bilinear: bool| -> [f32; 3] {
-            let chroma = |plane: usize| {
-                if !bilinear {
-                    return sample(plane, x / 2, y / 2);
-                }
-                let (ax, ay) = ((x as f32 - layout.siting.0) / 2.0, (y as f32 - layout.siting.1) / 2.0);
-                let at = |dx: f32, dy: f32| sample(plane, (ax.floor() + dx).clamp(0.0, 31.0) as usize, (ay.floor() + dy).clamp(0.0, 31.0) as usize);
-                let (wx, wy) = (ax - ax.floor(), ay - ay.floor());
-                let (top, bottom) = (at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * wx, at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * wx);
-                top + (bottom - top) * wy
+        for (name, shift, siting) in [("h264_64.mp4", (1, 1), (0.0, 0.5)), ("h264_422_64.mp4", (1, 0), (0.0, 0.0)), ("prores_64.mov", (1, 0), (0.0, 0.0))] {
+            // decoded in software, so that the planes can be read here too
+            let mut clip = Clip::open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))).expect("open");
+            clip.start(None).expect("start");
+            let mut view = View::new(&gpu, clip, 60.0).expect("view");
+            assert!(view.load(&gpu, Duration::from_secs(20)), "{name}: the first frame arrived");
+            let Lane::Video(video) = &view.clip.lane else { panic!("a clip ffmpeg decodes") };
+            let layout = video.layout;
+            assert_eq!((layout.chroma_shift, layout.siting), (shift, siting), "{name}");
+            let Frame::Ready(picture) = video.source.get(0, Duration::from_secs(20)) else { panic!("{name}: the first frame") };
+            // a sample as the shader reads it: its texel as a part of the texel's range
+            let wide = layout.stored.texel_bits > 8;
+            let sample = |plane: usize, x: usize, y: usize| {
+                let (data, stride, _) = picture.plane(plane, layout.chroma_shift);
+                if wide { u16::from_le_bytes([data[y * stride + x * 2], data[y * stride + x * 2 + 1]]) as f32 / 65535.0 } else { data[y * stride + x] as f32 / 255.0 }
             };
-            let (luma, cb, cr) = (sample(0, x, y) * c.y_scale + c.y_offset, chroma(1) * c.c_scale + c.c_offset, chroma(2) * c.c_scale + c.c_offset);
-            [luma + c.cr_to_r * cr, luma + c.cb_to_g * cb + c.cr_to_g * cr, luma + c.cb_to_b * cb].map(|v| v.clamp(0.0, 1.0))
-        };
-        let mut reads = Vec::new();
-        for bilinear in [true, false] {
-            view.paint.set_bilinear(bilinear);
-            let read = view.read(&gpu, 64, 64).expect("the frame");
-            let worst = (0..64 * 64).flat_map(|i| (0..3).map(move |channel| (i, channel))).map(|(i, channel)| (read[i * 4 + channel] as f32 / 65535.0 - wanted(i % 64, i / 64, bilinear)[channel]).abs()).fold(0.0, f32::max);
-            assert!(worst < 1.0 / 255.0, "blended {bilinear}: the worst sample is {:.2} code values of 8 bits off", worst * 255.0);
-            reads.push(read);
+            let (across, down) = (1usize << shift.0, 1usize << shift.1);
+            let last = ((64 / across - 1) as f32, (64 / down - 1) as f32);
+            let c = color::conversion(layout.stored, layout.matrix);
+            let wanted = |x: usize, y: usize, bilinear: bool| -> [f32; 3] {
+                let chroma = |plane: usize| {
+                    if !bilinear {
+                        return sample(plane, x / across, y / down);
+                    }
+                    let (ax, ay) = ((x as f32 - siting.0) / across as f32, (y as f32 - siting.1) / down as f32);
+                    let at = |dx: f32, dy: f32| sample(plane, (ax.floor() + dx).clamp(0.0, last.0) as usize, (ay.floor() + dy).clamp(0.0, last.1) as usize);
+                    let (wx, wy) = (ax - ax.floor(), ay - ay.floor());
+                    let (top, bottom) = (at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * wx, at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * wx);
+                    top + (bottom - top) * wy
+                };
+                let (luma, cb, cr) = (sample(0, x, y) * c.y_scale + c.y_offset, chroma(1) * c.c_scale + c.c_offset, chroma(2) * c.c_scale + c.c_offset);
+                [luma + c.cr_to_r * cr, luma + c.cb_to_g * cb + c.cr_to_g * cr, luma + c.cb_to_b * cb].map(|v| v.clamp(0.0, 1.0))
+            };
+            let mut reads = Vec::new();
+            for bilinear in [true, false] {
+                view.paint.set_bilinear(bilinear);
+                let read = view.read(&gpu, 64, 64).expect("the frame");
+                let worst = (0..64 * 64).flat_map(|i| (0..3).map(move |channel| (i, channel))).map(|(i, channel)| (read[i * 4 + channel] as f32 / 65535.0 - wanted(i % 64, i / 64, bilinear)[channel]).abs()).fold(0.0, f32::max);
+                assert!(worst < 1.0 / 255.0, "{name}, blended {bilinear}: the worst sample is {:.2} code values of 8 bits off", worst * 255.0);
+                reads.push(read);
+            }
+            assert!(reads[0] != reads[1], "{name} has edges of color: the two ways differ");
+            // the panel says which
+            let nearest = Settings { chroma: settings::Chroma::Nearest, ..Settings::default() };
+            assert_eq!((view.chroma(&Settings::default()).map(|said| said.0), view.chroma(&nearest)), (Some("blended, sited left".to_string()), Some(("the nearest sample".to_string(), false))), "{name}");
         }
-        assert!(reads[0] != reads[1], "this picture has edges of color: the two ways differ");
-        // the panel says which, and that the place is the file's own word
-        let nearest = Settings { chroma: settings::Chroma::Nearest, ..Settings::default() };
-        assert_eq!((view.chroma(&Settings::default()), view.chroma(&nearest)), (Some(("blended, sited left".to_string(), false)), Some(("the nearest sample".to_string(), false))));
     }
 
     /// a test clip with its first frame in the painter, with no window. needs a gpu.

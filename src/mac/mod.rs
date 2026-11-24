@@ -24,7 +24,7 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     });
     let client = match &first {
         Some((_, Ok(clip))) => window::client_for((clip.width, clip.height)),
-        _ => window::client_for((0, 0)),
+        _ => window::client_for_none(),
     };
     let (tx, rx) = mpsc::channel();
     // the render thread's way to wake itself: what it has read or written in the background says when it is done

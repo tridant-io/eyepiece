@@ -427,6 +427,21 @@ Confirm-That 'and S names the saved frame for it' (Wait-File $first) "no $first"
 Send-Key 0x23; Assert-Frame 'and the last frame has the number of the count' 3 3
 Stop-Player
 (Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^first_frame' } | Set-Content -LiteralPath $settings
+# chroma that is smaller than the picture (4:2:0 here, from the hardware decoder) is blended up where the file sites
+# it: at an edge from green to yellow the pixel between reads a blend. chroma = nearest in the settings file takes
+# the nearest sample instead
+Start-Player (Join-Path $media 'h264_320.mp4')
+Assert-Frame 'the 4:2:0 clip is open' 0 24
+Move-Pointer 215 150; Send-Key 0xBB 6
+Assert-Title 'at 1600% a pixel on an edge of color is blended from the chroma samples round it' ' . 1600% . x 107 y 75 . 90 218 0$'
+Stop-Player
+@((Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^chroma' }) + 'chroma = nearest' | Set-Content -LiteralPath $settings
+Start-Player (Join-Path $media 'h264_320.mp4')
+Assert-Frame 'the 4:2:0 clip is open again' 0 24
+Move-Pointer 215 150; Send-Key 0xBB 6
+Assert-Title 'with chroma = nearest the same pixel is the nearest sample''s' ' . 1600% . x 107 y 75 . 0 255 1$'
+Stop-Player
+(Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^chroma' } | Set-Content -LiteralPath $settings
 foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $first, $shots) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
