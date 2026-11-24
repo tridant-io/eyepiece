@@ -17,6 +17,12 @@ pub enum Icon {
     Mute,
     Full,
     Close,
+    // markup's tools, and undo
+    Rectangle,
+    Circle,
+    Pen,
+    Text,
+    Undo,
 }
 
 /// the stroke the design gives every icon, in the icon's own units
@@ -105,6 +111,23 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Close => {
             line(&[(4.5, 4.5), (11.5, 11.5)]);
             line(&[(11.5, 4.5), (4.5, 11.5)]);
+        }
+        Icon::Rectangle => {
+            painter.rect_stroke(Rect::from_min_max(p(3.0, 4.5), p(13.0, 11.5)), 0.0, stroke, egui::StrokeKind::Middle);
+        }
+        Icon::Circle => {
+            painter.circle_stroke(p(8.0, 8.0), 5.0 * unit, stroke);
+        }
+        Icon::Pen => {
+            painter.add(Shape::closed_line([(3.0, 13.0), (3.8, 10.0), (11.0, 2.8), (13.2, 5.0), (6.0, 12.2)].iter().map(|&(x, y)| p(x, y)).collect(), stroke));
+        }
+        Icon::Text => {
+            line(&[(4.0, 4.5), (12.0, 4.5)]);
+            line(&[(8.0, 4.5), (8.0, 12.5)]);
+        }
+        Icon::Undo => {
+            line(&[(5.5, 4.0), (3.0, 6.5), (5.5, 9.0)]);
+            line(&[&[(3.5, 6.5)][..], &arc(9.0, 9.7, 3.2, -90.0, 90.0), &[(6.5, 12.9)]].concat());
         }
     }
 }

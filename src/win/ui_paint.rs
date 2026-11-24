@@ -166,16 +166,17 @@ impl UiPainter {
         Ok(buffer)
     }
 
-    /// draws the controls over what is already in the frame. `scale` is physical pixels for one of egui's units.
-    pub fn paint(&mut self, gpu: &Gpu, primitives: &[egui::ClippedPrimitive], scale: f32) -> Result<()> {
+    /// draws the controls over what is already in the frame. `scale` is physical pixels for one of egui's units, and
+    /// `(w, h)` the size of what is drawn into: the window, or a picture of our own (`Gpu::read_pixels`).
+    pub fn paint(&mut self, gpu: &Gpu, primitives: &[egui::ClippedPrimitive], scale: f32, (w, h): (u32, u32)) -> Result<()> {
         let (mut vertices, mut indices, mut draws): (Vec<egui::epaint::Vertex>, Vec<u32>, Vec<Draw>) = (Vec::new(), Vec::new(), Vec::new());
         for p in primitives {
             let egui::epaint::Primitive::Mesh(mesh) = &p.primitive else { continue };
             let clip = RECT {
-                left: ((p.clip_rect.min.x * scale).round() as i32).clamp(0, gpu.w as i32),
-                top: ((p.clip_rect.min.y * scale).round() as i32).clamp(0, gpu.h as i32),
-                right: ((p.clip_rect.max.x * scale).round() as i32).clamp(0, gpu.w as i32),
-                bottom: ((p.clip_rect.max.y * scale).round() as i32).clamp(0, gpu.h as i32),
+                left: ((p.clip_rect.min.x * scale).round() as i32).clamp(0, w as i32),
+                top: ((p.clip_rect.min.y * scale).round() as i32).clamp(0, h as i32),
+                right: ((p.clip_rect.max.x * scale).round() as i32).clamp(0, w as i32),
+                bottom: ((p.clip_rect.max.y * scale).round() as i32).clamp(0, h as i32),
             };
             if mesh.indices.is_empty() || clip.right <= clip.left || clip.bottom <= clip.top {
                 continue;
@@ -200,9 +201,9 @@ impl UiPainter {
             std::ptr::copy_nonoverlapping(indices.as_ptr() as *const u8, m.pData as *mut u8, indices.len() * 4);
             c.Unmap(&ib, 0);
 
-            let screen = [gpu.w as f32 / scale, gpu.h as f32 / scale, 0.0, 0.0];
+            let screen = [w as f32 / scale, h as f32 / scale, 0.0, 0.0];
             c.UpdateSubresource(&self.screen, 0, None, screen.as_ptr() as *const c_void, 0, 0);
-            c.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: gpu.w as f32, Height: gpu.h as f32, MinDepth: 0.0, MaxDepth: 1.0 }]));
+            c.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: w as f32, Height: h as f32, MinDepth: 0.0, MaxDepth: 1.0 }]));
             c.IASetInputLayout(&self.layout);
             c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             c.IASetVertexBuffers(0, 1, Some(&Some(vb)), Some(&(vertex_bytes as u32)), Some(&0));

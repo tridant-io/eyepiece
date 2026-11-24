@@ -8,6 +8,7 @@ mod browse;
 mod audio;
 mod event;
 mod folder;
+mod markup;
 mod media;
 mod play;
 mod preview;

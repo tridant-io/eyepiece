@@ -5,10 +5,14 @@
 mod browser;
 mod icons;
 mod keys;
+mod markup;
 mod menus;
 mod widgets;
 
+pub use markup::{caption, saved};
+
 use crate::event::{Key, Mods};
+use crate::markup::{Mark, Marks};
 use crate::media::meta::Meta;
 use crate::settings::Loop;
 use crate::preview::make::Pictures;
@@ -148,6 +152,16 @@ pub enum Shot {
     Copy,
 }
 
+/// what a saved screenshot carries besides the picture: the screenshot menu's three switches
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extras {
+    /// the clip's name, the frame, the timecode, the size and the rate, under the picture
+    pub caption: bool,
+    /// the guides, when they are showing
+    pub guides: bool,
+    pub markup: bool,
+}
+
 /// a played folder, for its list: its name, its clips in order, and which of them is up
 pub struct FolderList<'a> {
     pub title: &'a str,
@@ -217,6 +231,9 @@ pub struct Model<'a> {
     pub muted: bool,
     /// where screenshots go, as the menu names it
     pub shots_to: &'a str,
+    pub extras: Extras,
+    /// the marks drawn on the clip, by frame
+    pub marks: Option<&'a Marks>,
 }
 
 /// what the user asked for through the controls.
@@ -250,6 +267,10 @@ pub enum Action {
     /// lay the browser over the clip, or take it away
     Browse(bool),
     Shot(Shot),
+    Extras(Extras),
+    /// a mark drawn on this frame of the clip; every mark taken off the frame on screen
+    Mark(usize, Mark),
+    ClearMarks,
     /// this text to the clipboard
     Copy(String),
     /// how loud, 0 to 1; and mute, or sound again
@@ -348,6 +369,7 @@ pub struct Ui {
     hinted: Option<(egui::Id, Rect, (String, String))>,
     tip: Option<(egui::Id, f64)>,
     browser: browser::Browser,
+    markup: markup::Markup,
 }
 
 impl Ui {
@@ -397,6 +419,7 @@ impl Ui {
             hinted: None,
             tip: None,
             browser: browser::Browser::new(folder, pictures),
+            markup: markup::Markup::default(),
         }
     }
 
@@ -500,9 +523,27 @@ impl Ui {
         over
     }
 
-    /// escape: closes the open menu. false when there was nothing of ours to close.
+    /// escape: drops the markup text being typed, or else closes the open menu, or else ends markup mode. false when
+    /// there was nothing of ours to close.
     pub fn escape(&mut self) -> bool {
-        self.menu.take().is_some() | self.commands.take().is_some()
+        if self.markup.drop_text() || self.menu.take().is_some() | self.commands.take().is_some() {
+            return true;
+        }
+        let was = self.markup.on;
+        if was {
+            self.markup.toggle();
+        }
+        was
+    }
+
+    /// markup mode on or off (E). it closes the menus, as the screenshot menu's "markup mode" asks.
+    pub fn toggle_markup(&mut self) {
+        self.markup.toggle();
+        (self.menu, self.commands) = (None, None);
+    }
+
+    pub fn markup(&self) -> bool {
+        self.markup.on
     }
 
     /// the table of keys comes up over the clip, in place of any menu.
@@ -619,9 +660,11 @@ impl Ui {
         // the picture, under everything else. a plain click on it shows or hides the controls. a drag moves the
         // window while the whole frame is in view, and the picture when it is larger than the window. a double click
         // fills the display with it, or puts the window back (the owner's word, in place of the design's fit and
-        // last zoom)
+        // last zoom). in markup mode a drag draws instead, and a click and a double click do nothing of the kind
         let picture = ui.interact(full, ui.scope_id().with("picture"), Sense::click_and_drag());
-        if model.overflows {
+        if self.markup.on {
+            self.markup.pointer(ui, &picture, model, self.scale, actions);
+        } else if model.overflows {
             if picture.dragged_by(egui::PointerButton::Primary) {
                 let by = picture.drag_delta() * self.scale;
                 if by != Vec2::ZERO {
@@ -638,12 +681,12 @@ impl Ui {
         if pressed {
             self.taken = [self.taken[1], self.keys || (self.commands.is_some() && pointer.is_some_and(|p| self.commands_rect.contains(p)))];
         }
-        if picture.double_clicked() && !self.taken[0] {
+        if picture.double_clicked() && !self.taken[0] && !self.markup.on {
             actions.push(Action::Fullscreen);
         }
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
-        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)));
+        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.markup.on && self.markup.row.is_some_and(|row| row.contains(p))));
         let held = ui.input(|i| i.pointer.any_down());
 
         // a press anywhere but on the open menu or its button closes the menu
@@ -662,14 +705,19 @@ impl Ui {
         self.keys &= !pressed;
 
         // the design's rule: moving the pointer brings the controls up; they go when it rests for a while off them,
-        // or leaves the window; a plain click on the picture shows or hides them at once. an open menu keeps them up
-        if self.moved {
+        // or leaves the window; a plain click on the picture shows or hides them at once. an open menu keeps them up.
+        // marking up, only the top 40 and the bottom 60 bring them up, so the picture is free to draw on: in between
+        // they go 0.9 s after the pointer comes there (prototype `wake`)
+        let middle = self.markup.on && pointer.is_some_and(|p| p.y > full.top() + 40.0 && p.y < full.bottom() - 60.0);
+        if self.moved && middle {
+            self.awake_until = self.awake_until.min(now + 0.9);
+        } else if self.moved {
             (self.shown, self.awake_until) = (true, now + IDLE);
         }
         if self.moved || std::mem::take(&mut self.view_changed) {
             self.chip_until = now + CHIP_IDLE;
         }
-        if picture.clicked() {
+        if picture.clicked() && !self.markup.on {
             self.shown = !self.shown || self.moved;
             self.awake_until = now + IDLE;
         }
@@ -692,7 +740,8 @@ impl Ui {
         self.shown &= !self.keys;
         let alpha = ui.ctx().animate_bool_with_time(ui.scope_id().with("chrome"), self.shown, FADE);
 
-        self.guides(ui, model);
+        Self::draw_guides(ui.painter(), model.guides, model.picture, model.shown_size, self.scale);
+        self.markup.marks(ui, model, self.scale);
         // the table of keys: over the picture, and under the chips, which still say what is not as the file has it
         if self.keys {
             keys::table(ui, full);
@@ -742,6 +791,12 @@ impl Ui {
             }
             _ => self.flash = None,
         }
+        // markup mode says it is on with its row of tools, at the top middle as the chips stand, whether the controls
+        // are up or not
+        if self.markup.on {
+            self.markup.tools(ui, full.center().x, full.top() + 10.0 + STRIP * alpha, actions);
+            self.markup.field(ui, full, actions);
+        }
         // the metadata panel, pinned: at the right under the chips, whether the controls are up or not
         if self.facts_pinned {
             let corner = Pos2::new(full.right() - 10.0, top + 34.0);
@@ -789,18 +844,18 @@ impl Ui {
         self.tooltip(ui, full, now);
     }
 
-    /// the lines over the picture: the grid of tiles, the center lines and circle. one display pixel wide at 100%.
-    fn guides(&self, ui: &egui::Ui, model: &Model) {
-        let guides = model.guides;
+    /// the lines over the picture: the grid of tiles, the center lines and circle, one display pixel wide at 100%. the
+    /// picture is at `(x, y, w, h)` in the target's pixels, `shown` big in its own as shown, and `scale` pixels of the
+    /// target make one of the design's: the window's, or a saved picture's (`markup::saved`).
+    fn draw_guides(painter: &egui::Painter, guides: Guides, (x, y, w, h): (f32, f32, f32, f32), shown: (usize, usize), scale: f32) {
         if !guides.grid && !guides.center {
             return;
         }
-        let (x, y, w, h) = model.picture;
-        let (video_w, video_h) = (model.shown_size.0 as f32, model.shown_size.1 as f32);
-        let unit = 1.0 / self.scale;
-        let width = self.scale.round().max(1.0);
+        let (video_w, video_h) = (shown.0 as f32, shown.1 as f32);
+        let unit = 1.0 / scale;
+        let width = scale.round().max(1.0);
         let color = Color32::from_rgb(guides.color[0], guides.color[1], guides.color[2]);
-        let painter = ui.painter().with_clip_rect(Rect::from_min_size(Pos2::new(x * unit, y * unit), Vec2::new(w * unit, h * unit)));
+        let painter = painter.with_clip_rect(Rect::from_min_size(Pos2::new(x * unit, y * unit), Vec2::new(w * unit, h * unit)));
         // a filled rectangle given in physical pixels
         let fill = |x: f32, y: f32, w: f32, h: f32, color: Color32| painter.rect_filled(Rect::from_min_size(Pos2::new(x * unit, y * unit), Vec2::new(w * unit, h * unit)), 0.0, color);
         let (across, down) = (|v: f32| (x + v * w / video_w).round(), |v: f32| (y + v * h / video_h).round());
@@ -1036,7 +1091,15 @@ impl Ui {
             self.volume_rect = self.volume_rect.union(room);
         }
         let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
-        let shot = icon_button(ui, rect, "shot", Icon::Shot, if self.menu == Some(Menu::Shot) { Lit::Open } else { Lit::No });
+        // lit while markup mode is on, which it opens to
+        let lit = if self.markup.on {
+            Lit::Active
+        } else if self.menu == Some(Menu::Shot) {
+            Lit::Open
+        } else {
+            Lit::No
+        };
+        let shot = icon_button(ui, rect, "shot", Icon::Shot, lit);
         if shot.clicked() {
             self.toggle_menu(Menu::Shot, rect);
         }
@@ -1172,6 +1235,9 @@ impl Ui {
             for gap in model.gaps {
                 let x = area.left() + area.width() * (*gap as f32 / last).min(1.0);
                 painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, track.top() - 4.0), Pos2::new(x + 1.0, track.bottom())), 0.0, AMBER);
+            }
+            if let Some(marks) = model.marks {
+                markup::ticks(&painter, area, track, last, marks);
             }
         }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
@@ -1378,9 +1444,15 @@ fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
 /// has a rate to count it by.
 fn stamp(frame: usize, rate: Option<(i64, i64)>, timecode: bool) -> (&'static str, String) {
     match rate.map(|(n, d)| (n as f64 / d as f64).round() as usize).filter(|fps| *fps > 0 && timecode) {
-        Some(fps) => ("TC", format!("{:02}:{:02}:{:02}:{:02}", frame / fps / 3600, frame / fps / 60 % 60, frame / fps % 60, frame % fps)),
+        Some(fps) => ("TC", self::timecode(frame, fps)),
         None => ("F", format!("{frame:06}")),
     }
+}
+
+/// a frame as timecode at `fps` whole frames a second, counted from 00:00:00:00 at the first frame (the file's own
+/// timecode is not read yet).
+fn timecode(frame: usize, fps: usize) -> String {
+    format!("{:02}:{:02}:{:02}:{:02}", frame / fps / 3600, frame / fps / 60 % 60, frame / fps % 60, frame % fps)
 }
 
 /// a line of trouble with the amber edge: the one place amber is used, for a fault in the file. returns its box.
@@ -1476,7 +1548,7 @@ mod tests {
     }
 
     /// a 64 x 64 clip standing on its first frame, fitted into a 640 x 360 window, as the controls are told of it
-    fn model() -> Model<'static> {
+    pub(super) fn model() -> Model<'static> {
         Model {
             frame: 0,
             frames: 3,
@@ -1509,12 +1581,19 @@ mod tests {
             shots_to: "pictures / eyepiece",
             folder: false,
             seam_change: None,
+            extras: Extras { caption: false, guides: false, markup: true },
+            marks: None,
         }
     }
 
     /// drives the controls over that clip with the pointer, a pass for each step, and gathers what they asked for
-    fn drive(ui: &mut Ui, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
-        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+    pub(super) fn drive(ui: &mut Ui, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
+        drive_with(ui, model(), steps)
+    }
+
+    /// `drive`, over the clip `model` tells of
+    pub(super) fn drive_with(ui: &mut Ui, model: Model, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
+        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
         let mut actions = Vec::new();
         for &(x, y, button) in steps {
             match button {

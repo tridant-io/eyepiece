@@ -9,6 +9,7 @@ use crate::audio::{Audio, Speaker};
 use crate::browse;
 use crate::event::{Event, Key, Mods};
 use crate::folder;
+use crate::markup::{Marks, Placing};
 use crate::media::clip::{Clip, Lane};
 use crate::media::color;
 use crate::media::dec::{Layout, Picture};
@@ -21,8 +22,9 @@ use crate::play::{Show, Transport};
 use crate::preview::spare::{Answer, Ask, Seam};
 use crate::settings::{self, Settings};
 use crate::shot;
-use crate::ui::{Action, Facts, FolderList, ListItem, Model, Screen, Shot, Ui};
+use crate::ui::{self, Action, Extras, Facts, FolderList, ListItem, Model, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -392,17 +394,35 @@ impl View {
     /// the frame in the painter, drawn `w` x `h` into a picture of our own and read back (`Gpu::read_pixels`): the
     /// file's own frame as it is stored, whatever the window shows.
     pub(super) fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
-        let views = self.views()?;
-        let size = (self.clip.width as f32, self.clip.height as f32);
-        let _lock = gpu.locked();
-        gpu.read_pixels(w, h, |gpu| gpu.draw(&self.ps, &views, (0.0, 0.0, w as f32, h as f32), size, self.constants)).ok()
+        self.picture(gpu, (w, h), Some((0.0, 0.0, w as f32, h as f32)), |_| {})
     }
 
-    /// the window's picture as it is shown, zoom, pan and look included, without the controls.
-    fn read_view(&self, gpu: &Gpu) -> Option<Vec<u16>> {
-        self.views()?;
+    /// the frame in the painter drawn into a picture of our own `size` big and read back, with `over` painted after
+    /// it: the file's own frame as it is stored, at `at`; or with no place, the window's picture as it is shown (zoom,
+    /// pan and look) without the controls.
+    fn picture(&self, gpu: &Gpu, size: (u32, u32), at: Option<(f32, f32, f32, f32)>, over: impl FnOnce(&Gpu)) -> Option<Vec<u16>> {
+        let views = self.views()?;
+        let file = (self.clip.width as f32, self.clip.height as f32);
         let _lock = gpu.locked();
-        gpu.read_pixels(gpu.w, gpu.h, |gpu| self.draw(gpu)).ok()
+        gpu.read_pixels(size.0, size.1, |gpu| {
+            match at {
+                Some(rect) => gpu.draw(&self.ps, &views, rect, file, self.constants),
+                None => self.draw(gpu),
+            }
+            over(gpu);
+        })
+        .ok()
+    }
+
+    /// whether the frame in the painter holds the file's alpha: hap alpha and hap r do, and stills (whose alpha is 1
+    /// when the file has none). y'cbcr frames are drawn opaque, prores 4444 too, and so is hap q alpha; hap's bc1 can
+    /// decode a block to clear black, and hap's alpha alone is drawn as gray: neither is the file's alpha.
+    fn carries_alpha(&self) -> bool {
+        match &self.clip.lane {
+            Lane::Hap(hap) => matches!(hap.tex, Tex::Bc3 | Tex::Bc7),
+            Lane::Stills(_) => true,
+            Lane::Video(_) | Lane::Waiting(_) => false,
+        }
     }
 
     /// how the clip is decoded, in the metadata panel's words.
@@ -542,6 +562,9 @@ impl View {
             shown_size: self.look.shown(self.size()),
             look: self.look,
             guides: guides(settings),
+            extras: Extras { caption: settings.screenshot_caption, guides: settings.screenshot_guides, markup: settings.screenshot_markup },
+            // the tab's, not the clip's: `play` fills them in
+            marks: None,
         }
     }
 
@@ -564,6 +587,7 @@ impl View {
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks => {}
         }
     }
 
@@ -648,6 +672,9 @@ struct Tab {
     label: String,
     /// the watch on its file, for a render that writes over it
     watch: Option<Watching>,
+    /// the marks drawn on each of its clips, by file: they stay while the tab is open, through cuts, steps and
+    /// another tab being up, and go with it
+    marks: HashMap<String, Marks>,
 }
 
 /// a watch on a tab's file, kept from a thread of its own (asking after a file on a share that sleeps can take
@@ -965,7 +992,7 @@ type Closed = (String, usize, Framing, Look);
 
 impl Tab {
     fn empty() -> Tab {
-        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch: None }
+        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch: None, marks: HashMap::new() }
     }
 
     /// a tab for a file: its clip, or why there is none.
@@ -976,7 +1003,12 @@ impl Tab {
             Err(why) => (None, Some(why)),
         };
         let mode = if settings.loop_file == settings::Loop::Off { settings::Loop::Off } else { settings::Loop::One };
-        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch }
+        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch, marks: HashMap::new() }
+    }
+
+    /// the marks of the clip it shows, when it shows one.
+    fn marks(&self) -> Option<&Marks> {
+        self.marks.get(self.path.as_ref()?)
     }
 
     /// play or pause, asked for while play waits on a clip's last frame for the folder's next, or while a file is
@@ -1094,6 +1126,19 @@ impl Tabs {
         } else {
             tab.view.as_mut()
         }
+    }
+
+    /// the clip on screen with its marks, when a clip is what is on screen.
+    fn marked(&self) -> Option<(&View, Option<&Marks>)> {
+        let tab = &self.all[self.up];
+        Some((tab.view.as_ref().filter(|_| !tab.browsing())?, tab.marks()))
+    }
+
+    /// the marks of the clip on screen, to draw on or take off, and the frame it is on.
+    fn marking(&mut self) -> Option<(&mut Marks, usize)> {
+        let tab = &mut self.all[self.up];
+        let frame = tab.view.as_ref().filter(|_| !tab.browsing())?.transport.frame();
+        Some((tab.marks.entry(tab.path.clone()?).or_default(), frame))
     }
 
     /// puts another tab up. the one left behind stops where it is. two clips of one size and length change places on
@@ -1421,13 +1466,8 @@ impl Tabs {
 
 /// takes a screenshot of the clip on screen: the file's frame at full size, the view as shown, or the frame to the
 /// clipboard. files are written in the background, and a toast says what was written.
-fn shoot(v: &View, gpu: &Gpu, what: Shot, settings: &Settings, wake: &Sender<Event>) {
-    let (w, h) = (v.clip.width as u32, v.clip.height as u32);
-    let (pixels, size, stem) = match what {
-        Shot::Frame | Shot::Copy => (v.read(gpu, w, h), (w, h), shot::stem(&v.clip.name, v.transport.frame())),
-        Shot::View => (v.read_view(gpu), (gpu.w, gpu.h), shot::stem(&v.clip.name, v.transport.frame()) + ".view"),
-    };
-    let Some(pixels) = pixels else {
+fn shoot(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Settings, scale: f32, wake: &Sender<Event>) {
+    let Some((size, pixels, with)) = shot_pixels(v, marks, gpu, what, settings, scale) else {
         let _ = wake.send(Event::Toast("there is no picture to save".into()));
         return;
     };
@@ -1436,15 +1476,62 @@ fn shoot(v: &View, gpu: &Gpu, what: Shot, settings: &Settings, wake: &Sender<Eve
         let _ = wake.send(Event::Toast(said));
         return;
     }
+    // a saved frame keeps the file's alpha when its frame has one; the view is saved as it is seen
+    let alpha = what == Shot::Frame && v.carries_alpha() && shot::transparent(&pixels);
+    let stem = shot::stem(&v.clip.name, v.transport.frame()) + if what == Shot::View { ".view" } else { "" };
     let (deep, folder, wake) = (v.depth() > 8, shots_folder(settings), wake.clone());
-    let detail = if what == Shot::View { "as shown".to_string() } else { format!("{} × {}", size.0, size.1) };
+    let mut detail = if what == Shot::View { "as shown".to_string() } else { format!("{} × {}", v.clip.width, v.clip.height) };
+    if !with.is_empty() {
+        detail += &format!(" · with {}", with.join(", "));
+    }
     std::thread::spawn(move || {
-        let said = match shot::save(&pixels, size.0, size.1, deep, &folder, &stem) {
+        let said = match shot::save(&pixels, size.0, size.1, deep, alpha, &folder, &stem) {
             Ok(file) => format!("saved to {} · {} · {detail}", shots_to(&folder), file.file_name().map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned())),
             Err(why) => format!("not saved · {why}"),
         };
         let _ = wake.send(Event::Toast(said));
     });
+}
+
+/// what a screenshot is made of: its size, its pixels as `shot::save` takes them, and what the screenshot menu's
+/// switches put in it besides the picture. the frame is the file's own at its own size, with the guides and the marks
+/// drawn as fig. 20 draws them on a frame 1200 wide, scaled to its width (never smaller than at 100% on screen); the
+/// view is the window's picture, with them as the window shows them. a caption goes under either. the copy is the
+/// frame alone.
+fn shot_pixels(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Settings, scale: f32) -> Option<((u32, u32), Vec<u16>, Vec<&'static str>)> {
+    let frame = v.transport.frame();
+    let (w, h) = (v.clip.width as u32, v.clip.height as u32);
+    let (size, at, place, unit) = match what {
+        Shot::View => ((gpu.w, gpu.h), None, Placing { picture: v.framing.rect((gpu.w as f32, gpu.h as f32)), look: v.look, size: v.size() }, scale),
+        Shot::Frame | Shot::Copy => {
+            let whole = (0.0, 0.0, w as f32, h as f32);
+            ((w, h), Some(whole), Placing { picture: whole, look: Look::default(), size: v.size() }, (2.1 * w as f32 / 1200.0).max(1.0))
+        }
+    };
+    let extras = what != Shot::Copy;
+    let guides = Some(guides(settings)).filter(|g| extras && settings.screenshot_guides && (g.grid || g.center));
+    let marks = if extras && settings.screenshot_markup { marks.map_or(&[][..], |m| m.on(frame)) } else { &[] };
+    let caption = (extras && settings.screenshot_caption).then(|| ui::caption(&v.clip.name, frame, v.clip.timeline.rate(), v.size()));
+    let with: Vec<&'static str> = [(caption.is_some(), "caption"), (guides.is_some(), "guides"), (!marks.is_empty(), "markup")].into_iter().filter(|(on, _)| *on).map(|(_, name)| name).collect();
+    if with.is_empty() {
+        return Some((size, v.picture(gpu, size, at, |_| {})?, with));
+    }
+    // a pass of egui of their own, painted after the picture by a painter of its own (the window's holds the
+    // controls' textures, under the same names)
+    let mut over = ui::saved(size, unit, &place, guides, marks, caption.as_deref());
+    let size = (size.0, over.height);
+    let pixels = UiPainter::new(gpu).ok().and_then(|mut painter| {
+        {
+            let _lock = gpu.locked();
+            painter.set_textures(gpu, &over.textures).ok()?;
+        }
+        v.picture(gpu, size, at, |gpu| {
+            let _ = painter.paint(gpu, &over.primitives, over.scale, size);
+        })
+    });
+    // egui checks that no change to its textures is dropped unseen
+    over.textures.clear();
+    Some((size, pixels?, with))
 }
 
 /// where screenshots go: the folder the settings name, or pictures / eyepiece.
@@ -1607,8 +1694,14 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Key { key: Key::T, mods } if mods.ctrl && mods.shift => tabs.reopen(&gpu, &wake),
                 // control + C copies the frame
                 Event::Key { key: Key::C, mods } if mods.ctrl && !browsing => {
-                    if let Some(v) = tabs.view() {
-                        shoot(v, &gpu, Shot::Copy, settings, &wake);
+                    if let Some((v, marks)) = tabs.marked() {
+                        shoot(v, marks, &gpu, Shot::Copy, settings, scale, &wake);
+                    }
+                }
+                // in markup mode control + Z takes back the last mark drawn on the frame on screen
+                Event::Key { key: Key::Z, mods } if mods.ctrl && !browsing && ui.markup() => {
+                    if let Some((marks, frame)) = tabs.marking() {
+                        marks.undo(frame);
                     }
                 }
                 // escape leaves fullscreen first; then it is the browser's, which goes back to the clip, or closes a menu
@@ -1631,8 +1724,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // ? (or the slash alone) shows the table of keys over the clip
                 Event::Key { key: Key::Slash, mods } if !mods.ctrl && !mods.alt => ui.show_keys(),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
-                // the next display), the readout, the guides, the loop mode and loop analysis
-                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::Up | Key::Down | Key::PageUp | Key::PageDown) => match key {
+                // the next display), the readout, the guides, the loop mode and loop analysis, markup mode
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::E | Key::Up | Key::Down | Key::PageUp | Key::PageDown) => match key {
                     Key::N => tabs.new_tab(),
                     Key::PageUp => tabs.step_item(-1, &gpu, &wake),
                     Key::PageDown => tabs.step_item(1, &gpu, &wake),
@@ -1651,8 +1744,17 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     }
                     // a screenshot: the file's frame at full size; with shift, the view as shown
                     Key::S => {
+                        if let Some((v, marks)) = tabs.marked() {
+                            shoot(v, marks, &gpu, if mods.shift { Shot::View } else { Shot::Frame }, settings, scale, &wake);
+                        }
+                    }
+                    // markup mode, over a clip: play stops for it
+                    Key::E => {
                         if let Some(v) = tabs.view() {
-                            shoot(v, &gpu, if mods.shift { Shot::View } else { Shot::Frame }, settings, &wake);
+                            if !ui.markup() {
+                                v.transport.set_playing(false);
+                            }
+                            ui.toggle_markup();
                         }
                     }
                     Key::I => ui.toggle_facts(),
@@ -1744,7 +1846,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             let screen = Screen {
                 tabs: tabs.all.iter().map(Tab::name).collect(),
                 current: tabs.up,
-                clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some()))),
+                clip: tab.view.as_ref().map(|v| Model { marks: tab.marks(), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }),
                 error: tab.error.as_deref(),
                 opening: opening.as_deref().filter(|_| tab.view.is_none() && tab.error.is_none()),
                 list: tab.played.as_ref().map(|played| FolderList {
@@ -1788,8 +1890,19 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
                 }
                 Action::Shot(what) => {
-                    if let Some(v) = tabs.view() {
-                        shoot(v, &gpu, *what, settings, &wake);
+                    if let Some((v, marks)) = tabs.marked() {
+                        shoot(v, marks, &gpu, *what, settings, scale, &wake);
+                    }
+                }
+                Action::Extras(to) => (settings.screenshot_caption, settings.screenshot_guides, settings.screenshot_markup) = (to.caption, to.guides, to.markup),
+                Action::Mark(frame, mark) => {
+                    if let Some((marks, _)) = tabs.marking() {
+                        marks.add(*frame, mark.clone());
+                    }
+                }
+                Action::ClearMarks => {
+                    if let Some((marks, frame)) = tabs.marking() {
+                        marks.clear(frame);
                     }
                 }
                 Action::Copy(text) => {
@@ -1977,7 +2090,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 if let Some(v) = tabs.view() {
                     v.draw(&gpu);
                 }
-                if let Err(e) = ui_painter.paint(&gpu, &out.primitives, out.scale) {
+                if let Err(e) = ui_painter.paint(&gpu, &out.primitives, out.scale, (gpu.w, gpu.h)) {
                     return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
                 }
             }
@@ -2010,7 +2123,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 let title = match (&tab.view, &tab.error) {
                     (Some(v), _) => {
                         let (mode, folder) = tab.words();
-                        v.title(size, settings, (mode, &folder)) + if tab.browsing { " · browser" } else { "" }
+                        // the marks on the frame on screen, and markup mode
+                        let marks = match tab.marks().map_or(0, |m| m.on(v.transport.frame()).len()) {
+                            0 => String::new(),
+                            1 => " · 1 mark".to_string(),
+                            n => format!(" · {n} marks"),
+                        } + if ui.markup() { " · markup" } else { "" };
+                        v.title(size, settings, (mode, &folder)) + &marks + if tab.browsing { " · browser" } else { "" }
                     }
                     (None, Some(why)) => format!("eyepiece · {why}{}", tab.words().1),
                     (None, None) => "eyepiece".to_string(),
@@ -2037,9 +2156,14 @@ mod tests {
 
     /// a test clip with its first frame in the painter, on a window that is never shown. needs a gpu.
     fn view(name: &str) -> (Gpu, View) {
+        open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR")))
+    }
+
+    /// `view`, for a file anywhere
+    fn open(path: &str) -> (Gpu, View) {
         let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_POPUP, 0, 0, 64, 64, None, None, None, None) }.expect("a window");
         let gpu = Gpu::new(hwnd, 64, 64).expect("a graphics device");
-        let clip = Clip::open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))).expect("open");
+        let clip = Clip::open(path).expect("open");
         let mut view = View::new(&gpu, clip, 60.0).expect("view");
         assert!(view.load(&gpu, Duration::from_secs(20)), "the first frame arrived");
         (gpu, view)
@@ -2065,5 +2189,68 @@ mod tests {
         // the same pixel of the same frame is not read twice; with no pixel asked for, nothing is kept
         assert!(!view.probe(&gpu, Some((63, 63))));
         assert!(!view.probe(&gpu, None) && view.probe.is_none());
+    }
+
+    /// a saved frame carries the marks drawn on it, over the very pixels of the file they were drawn on, and the
+    /// caption in a band under the picture, which covers none of it. the copy is the frame alone.
+    #[test]
+    fn a_saved_frame_carries_its_marks_and_a_caption_under_the_picture() {
+        use crate::markup::{Mark, Shape, INKS};
+        let (gpu, view) = view("hap_64.mov");
+        let plain = view.read(&gpu, 64, 64).expect("the frame");
+        let mut marks = Marks::default();
+        marks.add(0, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] });
+        let settings = Settings { screenshot_caption: true, screenshot_markup: true, ..Settings::default() };
+        let ((w, h), pixels, with) = shot_pixels(&view, Some(&marks), &gpu, Shot::Frame, &settings, 1.0).expect("a picture");
+        assert_eq!((w, with), (64, vec!["caption", "markup"]));
+        // a 64-wide frame takes the window's own size of ink and type: the caption's line wraps, under the picture
+        assert!(h > 64 + 29, "{h} high");
+        let at = |pixels: &[u16], x: usize, y: usize| -> [i32; 4] { std::array::from_fn(|c| pixels[(y * w as usize + x) * 4 + c] as i32) };
+        let close = |a: [i32; 4], b: [i32; 4]| (0..3).all(|c| (a[c] - b[c]).abs() < 700);
+        // the rectangle's left side runs down x = 10 of the file, 2.5 wide: pixels 9 and 10 are its ink
+        let red = [65535, 0x3b * 257, 0x30 * 257, 65535];
+        for y in [15, 25, 35] {
+            assert!(close(at(&pixels, 9, y), red) && close(at(&pixels, 10, y), red), "at y {y}: {:?} {:?}", at(&pixels, 9, y), at(&pixels, 10, y));
+            // and the file's own pixels on each side of it
+            assert_eq!(at(&pixels, 7, y), at(&plain, 7, y));
+            assert_eq!(at(&pixels, 12, y), at(&plain, 12, y));
+        }
+        // under the picture, the caption's band
+        assert!(close(at(&pixels, 1, 66), [0x11 * 257; 4]), "{:?}", at(&pixels, 1, 66));
+        let (_, copy, with) = shot_pixels(&view, Some(&marks), &gpu, Shot::Copy, &settings, 1.0).expect("a copy");
+        assert!(copy == plain && with.is_empty());
+    }
+
+    /// what a frame read back holds of the file's alpha, by lane: a still's own (here a png with clear pixels), which a
+    /// saved frame keeps, and hap alpha's (the test clip's is opaque all over); none for hap q and the y'cbcr lanes,
+    /// prores 4444 among them.
+    #[test]
+    fn a_frame_read_back_holds_the_files_alpha_where_the_lane_draws_it() {
+        // 16 x 16, its top row clear, the next half clear, the rest opaque
+        let dir = std::env::temp_dir().join(format!("eyepiece-alpha-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clear.png");
+        let stored: Vec<u8> = (0..16 * 16).flat_map(|i| [200, 100, 50, if i < 16 { 0 } else if i < 32 { 128 } else { 255 }]).collect();
+        let mut encoder = png::Encoder::new(std::fs::File::create(&file).unwrap(), 16, 16);
+        encoder.set_color(png::ColorType::Rgba);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&stored).unwrap();
+        writer.finish().unwrap();
+        {
+            let (gpu, view) = open(&file.to_string_lossy());
+            assert!(view.carries_alpha());
+            let (_, read, _) = shot_pixels(&view, None, &gpu, Shot::Frame, &Settings::default(), 1.0).expect("the frame");
+            assert_eq!([read[3], read[16 * 4 + 3], read[32 * 4 + 3]], [0, 128 * 257, 65535]);
+            assert!(shot::transparent(&read));
+        }
+        // a failed test leaves the file for a look
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(view("hapalpha_64.mov").1.carries_alpha());
+        for name in ["hapq_64.mov", "prores4444_64.mov", "h264_64.mp4"] {
+            let (gpu, opaque) = view(name);
+            assert!(!opaque.carries_alpha(), "{name}");
+            assert!(!shot::transparent(&opaque.read(&gpu, 64, 64).expect("the frame")), "{name}: an opaque lane read back clear pixels");
+        }
     }
 }

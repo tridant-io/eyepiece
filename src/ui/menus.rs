@@ -1,7 +1,8 @@
 //! the menus that open over the bar, laid out as the design has them.
 
 use super::widgets::{self, ROW};
-use super::{cut_middle, font, text_top, Action, Facts, FolderList, Menu, Model, Shot, ACCENT, AMBER, DIM, FG, HOVER, MONO, MONO_MEDIUM};
+use super::{cut_middle, font, text_top, Action, Extras, Facts, FolderList, Menu, Model, Shot, ACCENT, AMBER, DIM, FG, HOVER, MONO, MONO_MEDIUM};
+use crate::event::{Key, Mods};
 use crate::settings::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
 use egui::{Align2, Color32, Pos2, Rect, Sense};
@@ -118,7 +119,22 @@ fn shot(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
         Some(_) => actions.push(Action::Shot(Shot::Copy)),
         None => {}
     }
-    widgets::note(ui, "frame is the file's own frame at full size, 16 bits a channel when the file is deeper than 8. view is the picture as it is shown: zoom, pan and look.");
+    // what a saved picture carries besides the picture (fig. 18), kept between runs. a row is the design's line of
+    // 12 at 1.3
+    let extras = model.extras;
+    for (name, on, label, to) in [
+        ("caption", extras.caption, "caption: name, frame, timecode", Extras { caption: !extras.caption, ..extras }),
+        ("guides", extras.guides, "guides, when showing", Extras { guides: !extras.guides, ..extras }),
+        ("markup", extras.markup, "markup", Extras { markup: !extras.markup, ..extras }),
+    ] {
+        let row = widgets::row(ui, 15.6);
+        if widgets::switch(ui, name, row, on, label, "", false) {
+            actions.push(Action::Extras(to));
+        }
+    }
+    if widgets::buttons(ui, "markup-mode", &[("markup mode", "E", false)]).is_some() {
+        actions.push(Action::Key(Key::E, Mods::default()));
+    }
 }
 
 /// a slider and a field side by side. returns where the slider was moved to (0 to 1), and what was typed.

@@ -6,8 +6,8 @@ use crate::media::meta::{Row, Tone};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, Pos2, Rect, Sense, Vec2};
 
-const CHOSEN: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
-const ON_CHOSEN: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
+pub const CHOSEN: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
+pub const ON_CHOSEN: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 /// a row that holds a field
 pub const ROW: f32 = 26.0;
 

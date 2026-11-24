@@ -1,6 +1,5 @@
 //! every command that has a key, in one table. the table of keys (`?`, fig. 21), the right-click menu and the tooltips
-//! on the strip's and the bar's buttons are all read from it, so they say the same. it holds only keys that work:
-//! markup (E) comes into it when it is built.
+//! on the strip's and the bar's buttons are all read from it, so they say the same. it holds only keys that work.
 
 use super::{font, text_top, widgets, DIM, FG, HOVER, MONO, MONO_MEDIUM, SANS};
 use crate::event::{Key, Mods};
@@ -129,6 +128,8 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("screenshot", "screenshot", "S", Key::S, NONE),
             both("screenshot", "screenshot of the view", "shift S", Key::S, SHIFT),
             menu_only("copy frame", "ctrl C", Key::C, CTRL),
+            both("markup", "markup mode", "E", Key::E, NONE),
+            menu_only("take back a mark", "ctrl Z", Key::Z, CTRL),
         ],
     ),
     (
@@ -333,7 +334,7 @@ mod tests {
     #[test]
     fn the_menus_rows_send_the_key_they_show() {
         let rows: Vec<_> = commands().filter_map(|c| Some((c.name?, c.key, c.send?))).collect();
-        assert_eq!(rows.len(), 48);
+        assert_eq!(rows.len(), 50);
         for (name, key, send) in rows {
             assert_eq!(shown(send), key, "{name}");
             assert_eq!(named(send.0, send.1), Some((name.to_string(), key.to_string())));
@@ -341,13 +342,13 @@ mod tests {
         assert!(commands().filter(|c| c.name.is_some()).all(|c| c.send.is_some()), "a row that sends nothing");
     }
 
-    /// the design's table (fig. 21) with what this build does not have left out (markup), its
-    /// words put right where the build differs, and other keys for the same commands beside theirs.
+    /// the design's table (fig. 21), its words put right where the build differs, and other keys for the same commands
+    /// beside theirs.
     #[test]
     fn the_table_of_keys_is_the_designs_as_built() {
         let keys: Vec<String> = lines().into_iter().map(|(keys, _)| keys).collect();
         let wanted = [
-            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "page up down", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "M ↑ ↓", "P shift P", "right-click", "?", "esc",
+            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "page up down", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "esc",
         ];
         assert_eq!(keys, wanted);
         assert_eq!(line(Key::Equals, SHIFT), Some(("slower / faster".to_string(), "shift - =".to_string())));

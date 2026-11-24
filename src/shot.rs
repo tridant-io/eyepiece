@@ -1,22 +1,23 @@
-//! screenshot files: png, in one local folder, never beside the media and never over an earlier screenshot.
+//! screenshot files: png, with the file's alpha when its frame has one, in one local folder, never beside the media
+//! and never over an earlier screenshot.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-/// `pixels` is red, green, blue, alpha, 16 bits each (65535 is 1.0), row by row. writes a png without alpha:
-/// 16 bits a channel when `deep`, else 8 (rounded to nearest). never overwrites: `stem.png`, then `stem (2).png`, and so on.
-/// creates the folder if it is missing. returns the file written.
-pub fn save(pixels: &[u16], width: u32, height: u32, deep: bool, folder: &Path, stem: &str) -> Result<PathBuf, String> {
+/// `pixels` is red, green, blue, alpha, 16 bits each (65535 is 1.0), row by row. writes a png with its alpha when
+/// `alpha`, else without: 16 bits a channel when `deep`, else 8 (rounded to nearest). never overwrites: `stem.png`, then
+/// `stem (2).png`, and so on. creates the folder if it is missing. returns the file written.
+pub fn save(pixels: &[u16], width: u32, height: u32, deep: bool, alpha: bool, folder: &Path, stem: &str) -> Result<PathBuf, String> {
     if pixels.len() != width as usize * height as usize * 4 {
         return Err(format!("{} values for a {width} × {height} picture", pixels.len()));
     }
-    let rgb = pixels.as_chunks::<4>().0.iter().flat_map(|p| &p[..3]);
-    let data: Vec<u8> = if deep { rgb.flat_map(|v| v.to_be_bytes()).collect() } else { rgb.map(|&v| ((v as u32 * 255 + 32767) / 65535) as u8).collect() };
+    let kept = pixels.as_chunks::<4>().0.iter().flat_map(|p| &p[..if alpha { 4 } else { 3 }]);
+    let data: Vec<u8> = if deep { kept.flat_map(|v| v.to_be_bytes()).collect() } else { kept.map(|&v| ((v as u32 * 255 + 32767) / 65535) as u8).collect() };
     // encoded before any file exists, so a failure leaves none
     let mut png = Vec::new();
     let mut encoder = png::Encoder::new(&mut png, width, height);
-    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_color(if alpha { png::ColorType::Rgba } else { png::ColorType::Rgb });
     encoder.set_depth(if deep { png::BitDepth::Sixteen } else { png::BitDepth::Eight });
     let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
     writer.write_image_data(&data).map_err(|e| e.to_string())?;
@@ -37,6 +38,12 @@ pub fn save(pixels: &[u16], width: u32, height: u32, deep: bool, folder: &Path, 
             }
         }
     }
+}
+
+/// true when some pixel of `pixels` (as `save` takes them) is not wholly opaque: an alpha that is 1 everywhere says
+/// nothing, and is left out.
+pub fn transparent(pixels: &[u16]) -> bool {
+    pixels.as_chunks::<4>().0.iter().any(|p| p[3] < u16::MAX)
 }
 
 /// where screenshots go when the settings name no folder: the system's Pictures folder, in `eyepiece`.
@@ -88,7 +95,7 @@ mod tests {
         fs::remove_dir(dir).unwrap();
     }
 
-    // two pixels. 128 is just under half an 8-bit step and 129 just over; the alphas are not written
+    // two pixels. 128 is just under half an 8-bit step and 129 just over; the first is opaque, the second clear
     const PIXELS: [u16; 8] = [0, 128, 129, 65535, 65535, 25828, 1000, 0];
 
     fn read_back(path: &Path) -> (png::ColorType, png::BitDepth, Vec<u8>) {
@@ -102,20 +109,32 @@ mod tests {
     #[test]
     fn both_depths_read_back() {
         let dir = scratch("depths");
-        assert!(save(&PIXELS[..4], 2, 1, true, &dir, "short").is_err());
-        let deep = save(&PIXELS, 2, 1, true, &dir, "deep").unwrap();
+        assert!(save(&PIXELS[..4], 2, 1, true, false, &dir, "short").is_err());
+        let deep = save(&PIXELS, 2, 1, true, false, &dir, "deep").unwrap();
         let rgb = [0u16, 128, 129, 65535, 25828, 1000];
         assert_eq!(read_back(&deep), (png::ColorType::Rgb, png::BitDepth::Sixteen, rgb.iter().flat_map(|v| v.to_be_bytes()).collect()));
-        let plain = save(&PIXELS, 2, 1, false, &dir, "plain").unwrap();
+        let plain = save(&PIXELS, 2, 1, false, false, &dir, "plain").unwrap();
         // 25828 is 100.498 steps of 257, and 1000 is 3.89
         assert_eq!(read_back(&plain), (png::ColorType::Rgb, png::BitDepth::Eight, vec![0, 0, 1, 255, 100, 4]));
+        tidy(&dir, &[deep, plain]);
+    }
+
+    /// a picture with alpha keeps it, at either depth; asked to leave it out, the file has none
+    #[test]
+    fn alpha_is_kept_when_asked() {
+        let dir = scratch("alpha");
+        assert!(transparent(&PIXELS) && !transparent(&[1, 2, 3, 65535, 4, 5, 6, 65535]));
+        let deep = save(&PIXELS, 2, 1, true, true, &dir, "deep").unwrap();
+        assert_eq!(read_back(&deep), (png::ColorType::Rgba, png::BitDepth::Sixteen, PIXELS.iter().flat_map(|v| v.to_be_bytes()).collect()));
+        let plain = save(&PIXELS, 2, 1, false, true, &dir, "plain").unwrap();
+        assert_eq!(read_back(&plain), (png::ColorType::Rgba, png::BitDepth::Eight, vec![0, 0, 1, 255, 255, 100, 4, 0]));
         tidy(&dir, &[deep, plain]);
     }
 
     #[test]
     fn never_overwrites() {
         let dir = scratch("names");
-        let written: Vec<PathBuf> = (0..3).map(|_| save(&PIXELS, 2, 1, false, &dir, "clip.f000007").unwrap()).collect();
+        let written: Vec<PathBuf> = (0..3).map(|_| save(&PIXELS, 2, 1, false, false, &dir, "clip.f000007").unwrap()).collect();
         assert_eq!(written, ["clip.f000007.png", "clip.f000007 (2).png", "clip.f000007 (3).png"].map(|n| dir.join(n)));
         tidy(&dir, &written);
     }

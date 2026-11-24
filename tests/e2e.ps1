@@ -238,7 +238,7 @@ Send-Key 0x1B; Start-Sleep -Milliseconds 500
 Confirm-That 'and the next esc leaves fullscreen' (Test-Framed) "framed: $(Test-Framed)"
 # a right click on the picture opens every command, at the pointer; choosing a row does what its key does. the menu
 # is too tall for any window here and scrolls: in a 900 x 700 window, at the end of its list, the mirror row's middle
-# is 387 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges)
+# is 435 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges)
 [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
 RightClick-At 120 100
 Confirm-That 'a right click opens the menu and chooses nothing' (Test-Framed) "framed: $(Test-Framed)"
@@ -247,11 +247,11 @@ Move-Pointer 200 200
 foreach ($i in 1..40) { [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536 + 0x8000), [IntPtr]0); Start-Sleep -Milliseconds 20 }
 Start-Sleep -Milliseconds 1000
 Assert-Frame 'the wheel over the menu turns its list and does not scrub' 0 3
-Click-At 200 -387; Click-At 200 -387 -Again; Start-Sleep -Milliseconds 500
+Click-At 200 -435; Click-At 200 -435 -Again; Start-Sleep -Milliseconds 500
 Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
 Confirm-That 'and a click at once on the picture under it makes no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
 Send-Key 0x48; Assert-Frame 'H shows it as the file has it again' 0 3
-RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -387
+RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -435
 Assert-Frame 'esc closes the menu: a click where the row was chooses nothing' 0 3
 
 # fullscreen: the frame goes and the picture area is a whole display; escape puts the window back
@@ -418,6 +418,75 @@ Send-Key 0x53
 Confirm-That 'a second S never writes over the first: it gets a name of its own' (Wait-File (Join-Path $shots 'hapq_64.f000000 (2).png')) 'no second file'
 Stop-Player
 foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $shots) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
+# ---- markup (fig. 19), and what a saved screenshot carries (figs 18, 20). E turns the pointer into a pen: a drag on
+# the picture draws a rectangle on the frame on screen, and control + Z takes it back. the screenshot menu's three
+# switches put the marks, the guides and a caption into a saved frame, and are kept between runs
+Set-Content -LiteralPath $settings -Value 'mute = on', "browser_folder = $env:APPDATA", "screenshot_folder = $shots"
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class EyepieceMarkup {
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+}
+'@
+function Get-WindowPlace { $r = New-Object EyepieceMarkup+RECT; [void][EyepieceMarkup]::GetWindowRect($script:h, [ref]$r); "$($r.L),$($r.T)" }
+# a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other
+function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
+    Move-Pointer $x0 $y0
+    [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]0x8001, (Get-Place $x0 $y0)); Start-Sleep -Milliseconds 100
+    foreach ($t in 0.25, 0.5, 0.75, 1) { [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0x8001, (Get-Place ($x0 + ($x1 - $x0) * $t) ($y0 + ($y1 - $y0) * $t))); Start-Sleep -Milliseconds 100 }
+    [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr]0x8000, (Get-Place $x1 $y1)); Start-Sleep -Milliseconds 300
+}
+# a png's color type, from its header: 2 is red, green and blue; 6 is with alpha
+function Get-PngColor([string]$file) { [IO.File]::ReadAllBytes($file)[25] }
+Start-Player (Join-Path $media 'h264_320.mp4')
+Assert-Frame 'the clip is open' 0 24
+Send-Key 0x45; Assert-Title 'E turns markup mode on, and the title says so' ' fps . markup$'
+# the picture fills the window here; the drag is in its middle, where the pointer does not bring the controls up.
+# (posted input never holds the real button, which a move of the window needs: the headless test of the controls is
+# the one that tells a drag that draws from one that moves the window)
+$place = Get-WindowPlace
+Drag-On 200 120 300 200
+Assert-Title 'a drag on the picture draws a mark on the frame' ' fps . 1 mark . markup$'
+Confirm-That 'and the window stays where it was' ((Get-WindowPlace) -eq $place) "it was at $place, now $(Get-WindowPlace)"
+Send-Key 0x5A 1 4; Assert-Title 'control + Z takes it back' ' fps . markup$'
+Drag-On 200 120 300 200; Assert-Title 'a mark again' ' fps . 1 mark . markup$'
+Send-Key 0x47; Assert-Title 'a mark sits on its frame: the next one has none' '^h264_320\.mp4 . 1 / 24 .* fps . markup$'
+Send-Key 0x46; Assert-Title 'and back on its frame, there it is' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'
+Send-Key 0x4E; Send-Key 0xDB; Assert-Title 'it stays while another tab is up' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'
+# markup is on in the screenshot menu by default: S saves the frame with the mark. the menu stands over the
+# screenshot button (87 from the right); its switches, from the bottom: markup 120 up, guides 146, the caption 173
+$marked = Join-Path $shots 'h264_320.f000000.png'
+Send-Key 0x53
+Confirm-That 'S saves the frame at its own size, opaque' ((Wait-File $marked) -and (Get-PngSize $marked) -eq '320 x 180' -and (Get-PngColor $marked) -eq 2) "no $marked of 320 x 180 without alpha"
+Click-At -87 -32; Click-At -250 -120; Send-Key 0x1B
+$plain = Join-Path $shots 'h264_320.f000000 (2).png'
+Send-Key 0x53
+Confirm-That 'with the markup switch off, the saved frame is another picture' ((Wait-File $plain) -and (Get-FileHash -LiteralPath $plain).Hash -ne (Get-FileHash -LiteralPath $marked).Hash) "no $plain, or the same picture"
+Click-At -87 -32; Click-At -250 -173; Send-Key 0x1B
+$captioned = Join-Path $shots 'h264_320.f000000 (3).png'
+Send-Key 0x53
+Confirm-That 'with the caption switch on, the saved frame has the caption under it: as wide, and taller' ((Wait-File $captioned) -and (Get-PngSize $captioned) -match '^320 x (\d+)$' -and [int]$Matches[1] -gt 180) "$captioned is $(if (Test-Path -LiteralPath $captioned) { Get-PngSize $captioned })"
+Send-Key 0x45; Assert-Title 'E again ends markup mode, and the mark stays' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark$'
+Stop-Player
+$kept = Get-Content -LiteralPath $settings
+Confirm-That 'the switches are kept between runs' (($kept -contains 'screenshot_caption = on') -and ($kept -contains 'screenshot_markup = off') -and ($kept -contains 'screenshot_guides = off')) "the settings say: $($kept -match 'screenshot_')"
+# a still with clear pixels: its saved frame keeps its alpha
+Add-Type -AssemblyName System.Drawing
+$clear = Join-Path $env:APPDATA 'clear.png'
+$bmp = New-Object Drawing.Bitmap 16, 16
+foreach ($x in 0..15) { foreach ($y in 0..15) { $bmp.SetPixel($x, $y, [Drawing.Color]::FromArgb($(if ($y -lt 8) { 0 } else { 255 }), 200, 100, 50)) } }
+$bmp.Save($clear, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+Start-Player $clear
+Assert-Title 'a still with clear pixels opens' '^clear\.png . 0 / 1 . 16 . 16 . png . still$'
+$alpha = Join-Path $shots 'clear.f000000.png'
+Send-Key 0x53
+Confirm-That 'S keeps its alpha, and the caption switch, kept from the last run, puts the caption under it' ((Wait-File $alpha) -and (Get-PngColor $alpha) -eq 6 -and (Get-PngSize $alpha) -match '^16 x (\d+)$' -and [int]$Matches[1] -gt 16) "$alpha is $(if (Test-Path -LiteralPath $alpha) { "$(Get-PngSize $alpha), color type $(Get-PngColor $alpha)" })"
+Stop-Player
+foreach ($made in $marked, $plain, $captioned, $alpha, $shots, $clear) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
