@@ -323,6 +323,11 @@ pub struct Ui {
     facts_button: Rect,
     /// where the mute button and its slider were drawn: the slider is out while the pointer is on either
     volume_rect: Rect,
+    /// how far the strip's tabs are scrolled, when there are more than fit; the tab that was up, how many there
+    /// were and the room they had when it was last drawn; and where the tabs are, while they overflow
+    tab_scroll: f32,
+    tab_seen: (usize, usize, i32),
+    tabs_over: Option<Rect>,
     /// the frame under the pointer on the timebar, and the picture last had for the timebar with the frame it is of
     time_hover: Option<usize>,
     time_picture: Option<(usize, egui::TextureHandle)>,
@@ -372,6 +377,9 @@ impl Ui {
             facts_rect: Rect::NOTHING,
             facts_button: Rect::NOTHING,
             volume_rect: Rect::NOTHING,
+            tab_scroll: 0.0,
+            tab_seen: (0, 0, 0),
+            tabs_over: None,
             time_hover: None,
             time_picture: None,
             keys: false,
@@ -466,6 +474,11 @@ impl Ui {
     /// the wheel, when the pointer is over the metadata panel or the right-click menu: it turns their list. false when
     /// the pointer is elsewhere and the wheel is the player's.
     pub fn wheel(&mut self, notches: i32) -> bool {
+        // over a strip with more tabs than fit, the wheel moves the tabs: a tab's least width a notch
+        if self.ctx.pointer_latest_pos().is_some_and(|p| self.tabs_over.is_some_and(|tabs| tabs.contains(p))) {
+            self.tab_scroll -= notches as f32 * TAB_MIN;
+            return true;
+        }
         let over = self.ctx.pointer_latest_pos().is_some_and(|p| (self.menu == Some(Menu::List) && self.menu_rect.contains(p)) || ((self.facts_pinned || self.facts_up) && self.facts_rect.contains(p)) || (self.commands.is_some() && self.commands_rect.contains(p)));
         if over {
             self.events.push(egui::Event::MouseWheel {
@@ -845,12 +858,25 @@ impl Ui {
             let each = (room / widths.len() as f32).max(TAB_MIN);
             widths.iter_mut().for_each(|w| *w = w.min(each));
         }
-        let clipped = painter.with_clip_rect(Rect::from_min_max(strip.min, Pos2::new(x, strip.bottom())));
-        let mut left = strip.left();
+        // narrowed as far as they go and still too many, the tabs scroll under the + (the design's rule)
+        let total: f32 = widths.iter().sum();
+        // (a window made narrower can push the tab that is up out of view as well)
+        let seen = (screen.current, widths.len(), room as i32);
+        let came_up = std::mem::replace(&mut self.tab_seen, seen) != seen;
+        self.tab_scroll = tab_scroll(self.tab_scroll, &widths, screen.current, room, came_up);
+        let view = Rect::from_min_max(strip.min, Pos2::new(if total > room { strip.left() + room } else { x }, strip.bottom()));
+        self.tabs_over = (total > room).then_some(view);
+        let clipped = painter.with_clip_rect(view);
+        let mut left = strip.left() - self.tab_scroll;
         for (i, (name, width)) in screen.tabs.iter().zip(widths).enumerate() {
             let tab = Rect::from_min_size(Pos2::new(left, strip.top()), Vec2::new(width, STRIP - 1.0));
+            left = tab.right();
+            // a tab scrolled out of view is neither drawn nor clicked
+            if !tab.intersects(view) {
+                continue;
+            }
             let up = i == screen.current;
-            let clicked = ui.interact(tab, ui.scope_id().with(("tab", i)), Sense::click()).clicked();
+            let clicked = ui.interact(tab.intersect(view), ui.scope_id().with(("tab", i)), Sense::click()).clicked();
             if clicked && !up {
                 actions.push(Action::SelectTab(i));
             } else if clicked && screen.list.is_some() && screen.clip.is_some() && !screen.browsing {
@@ -861,7 +887,7 @@ impl Ui {
             if up {
                 clipped.rect_filled(tab, 0.0, TAB_ON);
                 let close = Rect::from_center_size(Pos2::new(tab.right() - 8.0 - 6.0, tab.center().y), Vec2::splat(16.0));
-                let mark = ui.interact(close, ui.scope_id().with(("tab-close", i)), Sense::click());
+                let mark = ui.interact(close.intersect(view), ui.scope_id().with(("tab-close", i)), Sense::click());
                 if mark.clicked() {
                     actions.push(Action::CloseTab(i));
                 }
@@ -872,7 +898,6 @@ impl Ui {
             let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
             let galley = cut_middle(&clipped, name, font(family, 11.5), color, width - TAB_PAD);
             clipped.galley(Pos2::new(tab.left() + 12.0, text_top(&clipped, font(family, 11.5), tab.center().y)), galley, color);
-            left = tab.right();
         }
         // the + that opens a new tab
         let plus = Rect::from_min_size(Pos2::new(left.min(x - PLUS), strip.top()), Vec2::new(PLUS, STRIP - 1.0));
@@ -1139,6 +1164,15 @@ impl Ui {
     }
 }
 
+/// how far the strip's tabs are scrolled: no further than their end, and, when another tab has just come up, far
+/// enough for that tab to be in view, moving as little as that takes.
+fn tab_scroll(scroll: f32, widths: &[f32], up: usize, room: f32, came_up: bool) -> f32 {
+    let before: f32 = widths[..up.min(widths.len())].iter().sum();
+    let width = widths.get(up).copied().unwrap_or(0.0);
+    let scroll = if came_up { scroll.max(before + width - room).min(before) } else { scroll };
+    scroll.clamp(0.0, (widths.iter().sum::<f32>() - room).max(0.0))
+}
+
 /// a name cut in its middle to fit `width`, so what ends it (a version, a frame range) stays in view.
 fn cut_middle(painter: &egui::Painter, name: &str, font_id: FontId, color: Color32, width: f32) -> Arc<egui::Galley> {
     let whole = painter.layout_no_wrap(name.to_string(), font_id.clone(), color);
@@ -1332,6 +1366,24 @@ mod tests {
             }
         });
         out.textures_delta.clear();
+    }
+
+    /// thirty tabs at their least width in room for five: the strip scrolls to the tab that comes up, and stays
+    /// where the wheel puts it until another does.
+    #[test]
+    fn more_tabs_than_fit_scroll_to_the_one_that_is_up() {
+        let widths = [TAB_MIN; 30];
+        let room = 5.0 * TAB_MIN;
+        // tabs that fit do not scroll
+        assert_eq!(tab_scroll(40.0, &widths[..5], 4, room, true), 0.0);
+        // the first tab up: no scroll. the last: scrolled to the end. one in the middle, from there: just into view
+        assert_eq!(tab_scroll(0.0, &widths, 0, room, true), 0.0);
+        assert_eq!(tab_scroll(0.0, &widths, 29, room, true), 25.0 * TAB_MIN);
+        assert_eq!(tab_scroll(25.0 * TAB_MIN, &widths, 10, room, true), 10.0 * TAB_MIN);
+        assert_eq!(tab_scroll(0.0, &widths, 10, room, true), 6.0 * TAB_MIN);
+        // the wheel's scroll stands while the same tab is up, within the tabs' ends
+        assert_eq!(tab_scroll(3.0 * TAB_MIN, &widths, 29, room, false), 3.0 * TAB_MIN);
+        assert_eq!((tab_scroll(-50.0, &widths, 29, room, false), tab_scroll(9999.0, &widths, 0, room, false)), (0.0, 25.0 * TAB_MIN));
     }
 
     /// a sign the chip's font does not have is drawn as an empty box.
