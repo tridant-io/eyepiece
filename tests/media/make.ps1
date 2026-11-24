@@ -64,6 +64,7 @@ for ($y = 0; $y -lt 16; $y++) {
         }
     }
 }
+# left in the temp folder afterwards: 4 KB, written over on each run
 $rawPath = Join-Path $env:TEMP 'eyepiece-exr-pattern.raw'
 [IO.File]::WriteAllBytes($rawPath, $raw)
 # the float one states its rate, as exr can. ffmpeg stores it premultiplied, as exr is: red x/16, green y/32, blue 1.25
@@ -71,7 +72,6 @@ ffmpeg -v error -y -f rawvideo -pix_fmt gbrapf32le -s 16x16 -framerate 30000/100
 # the half one has no alpha: the same planes but the last, rather than an ffmpeg conversion, which clips floats to 0..1
 [IO.File]::WriteAllBytes($rawPath, [byte[]]$raw[0..3071])
 ffmpeg -v error -y -f rawvideo -pix_fmt gbrpf32le -s 16x16 -i $rawPath -frames:v 1 -format half -compression rle (Out-Clip 'still_half.exr')
-Remove-Item -LiteralPath $rawPath
 # a numbered run with its third frame left out: frame n (from 1) is red 40n, all else 0
 ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp,geq=r='(N+1)*40':g='0':b='0'" -frames:v 2 -start_number 1 -pix_fmt rgb24 (Out-Clip 'seq.%04d.png')
 ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp,geq=r='(N+4)*40':g='0':b='0'" -frames:v 2 -start_number 4 -pix_fmt rgb24 (Out-Clip 'seq.%04d.png')
