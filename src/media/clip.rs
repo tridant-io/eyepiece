@@ -1,7 +1,7 @@
 //! one open clip: what the container says about it, its exact frame times, and where its frames come from.
 
 use super::dec::Hardware;
-use super::ff::{self, Input, Sample};
+use super::ff::{self, Input, Sample, Video};
 use super::hap_source::HapLane;
 use super::timeline::Timeline;
 use super::video_source::VideoLane;
@@ -36,7 +36,7 @@ pub struct Waiting {
 }
 
 /// hap's variants by their container tag. ffmpeg knows only the first three; the rest it reports as no codec at all.
-fn hap_variant(tag: &str) -> Option<&'static str> {
+pub(super) fn hap_variant(tag: &str) -> Option<&'static str> {
     Some(match tag {
         "Hap1" => "hap",
         "Hap5" => "hap alpha",
@@ -49,47 +49,66 @@ fn hap_variant(tag: &str) -> Option<&'static str> {
     })
 }
 
+/// what to call a codec that plays, as a person would. None for one that does not play yet.
+pub(super) fn codec_name(video: &Video) -> Option<&'static str> {
+    hap_variant(&ff::fourcc(video.tag)).or(match video.codec_name.as_str() {
+        "h264" => Some("h.264"),
+        "hevc" => Some("hevc"),
+        "prores" => Some("prores"),
+        _ => None,
+    })
+}
+
+/// a clip's frames, from the container's own sample table: the samples in the order they are read, the times of the
+/// frames shown, and how long every frame lasts when they all last the same.
+pub(super) fn frames(video: &Video, mut samples: Vec<Sample>) -> (Vec<Sample>, Timeline, Option<i64>) {
+    if hap_variant(&ff::fourcc(video.tag)).is_some() {
+        // every hap frame stands alone, so file order is free to differ from time order: time order is what plays.
+        // what an edit list hides is not part of the clip
+        samples.retain(|s| !s.hidden);
+        samples.sort_by_key(|s| s.time);
+        let timeline = Timeline::new(video.time_base, &samples);
+        let step = timeline.step();
+        return (samples, timeline, step);
+    }
+    // the samples stay in decode order. their decode times are evenly spaced exactly when the frames are
+    let step = Timeline::new(video.time_base, &samples).step();
+    // the clip's frames are the samples that are shown: what an edit list hides is decoded and never counted
+    let shown: Vec<Sample> = samples.iter().filter(|s| !s.hidden).copied().collect();
+    let timeline = match step {
+        Some(step) => Timeline::even(video.time_base, shown.len(), step),
+        None => Timeline::new(video.time_base, &shown),
+    };
+    (samples, timeline, step)
+}
+
 impl Clip {
     /// reads the header. a hap clip starts reading at once; any other waits for `start`.
     pub fn open(path: &str) -> Result<Clip, String> {
         let input = Input::open(path)?;
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
         let tag = ff::fourcc(video.tag);
-        let mut samples = input.samples(video.index);
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
-        let (codec, timeline, lane) = if let Some(codec) = hap_variant(&tag) {
-            // every hap frame stands alone, so file order is free to differ from time order: time order is what plays.
-            // what an edit list hides is not part of the clip
-            samples.retain(|s| !s.hidden);
-            samples.sort_by_key(|s| s.time);
-            let timeline = Timeline::new(video.time_base, &samples);
-            (codec, timeline, Lane::Hap(HapLane::open(path, samples, video.width, video.height)?))
+        let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, prores, h.264 and hevc.", video.codec_name))?;
+        let (samples, timeline, step) = frames(&video, input.samples(video.index));
+        let lane = if hap_variant(&tag).is_some() {
+            Lane::Hap(HapLane::open(path, samples, video.width, video.height)?)
         } else {
-            let codec = match video.codec_name.as_str() {
-                "h264" => "h.264",
-                "hevc" => "hevc",
-                "prores" => "prores",
-                other => return Err(format!("{path}: {other} ({tag}) does not play yet. this build plays hap, prores, h.264 and hevc.")),
-            };
-            // the samples stay in decode order. their decode times are evenly spaced exactly when the frames are
-            let step = match (Timeline::new(video.time_base, &samples).step(), samples.len()) {
+            let step = match (step, samples.len()) {
                 (Some(step), _) => step,
                 // mkv and fragmented mp4 carry no table of frames: they have to be counted by reading the file, which is not built
                 (None, 0) => return Err(format!("{path}: this kind of file does not list its frames up front. it does not play yet.")),
                 (None, 1) => 1,
                 (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates do not play yet.")),
             };
-            // the clip's frames are the samples that are shown: what an edit list hides is decoded and never counted
-            let timeline = Timeline::even(video.time_base, samples.iter().filter(|s| !s.hidden).count(), step);
             let size = (video.width, video.height);
-            let lane = if codec == "prores" {
+            if codec == "prores" {
                 // prores decodes in software here, so it need not wait for the graphics device: its first frame is
                 // being decoded while the device is made, which takes longer than anything else in a start
                 Lane::Video(VideoLane::open(path, video.index, samples, step, size, None)?)
             } else {
                 Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, step, size })
-            };
-            (codec, timeline, lane)
+            }
         };
         Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane })
     }

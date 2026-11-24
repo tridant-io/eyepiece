@@ -179,6 +179,72 @@ impl Input {
                 .collect()
         }
     }
+
+    /// the container's kind as ffmpeg names it, such as "mov,mp4,m4a,3gp,3g2,mj2" or "matroska,webm".
+    pub fn format_name(&self) -> String {
+        unsafe { CStr::from_ptr((*(*self.ctx).iformat).name).to_string_lossy().into_owned() }
+    }
+
+    pub fn streams(&self) -> usize {
+        unsafe { (*self.ctx).nb_streams as usize }
+    }
+
+    /// a value from a stream's metadata, or from the container's with no stream.
+    pub fn tag(&self, stream: Option<usize>, key: &str) -> Option<String> {
+        let key = CString::new(key).ok()?;
+        unsafe {
+            let dict = match stream {
+                Some(i) => (**(*self.ctx).streams.add(i)).metadata,
+                None => (*self.ctx).metadata,
+            };
+            let e = ffi::av_dict_get(dict, key.as_ptr(), ptr::null(), 0);
+            (!e.is_null()).then(|| CStr::from_ptr((*e).value).to_string_lossy().into_owned())
+        }
+    }
+
+    /// a stream's color tags as h.273 codes: primaries, transfer, matrix, then range (0 not stated, 1 video, 2 full).
+    /// after `open` they are the container's; after `probe`, also what the decoder took from the stream or assumed
+    pub fn color(&self, stream: usize) -> [i32; 4] {
+        unsafe {
+            let par = (**(*self.ctx).streams.add(stream)).codecpar;
+            [(*par).color_primaries as i32, (*par).color_trc as i32, (*par).color_space as i32, (*par).color_range as i32]
+        }
+    }
+
+    /// every audio stream, as the container describes it. read before `probe`, which fills a missing length with a guess.
+    pub fn audio(&self) -> Vec<Audio> {
+        (0..self.streams())
+            .filter_map(|i| unsafe {
+                let st = *(*self.ctx).streams.add(i);
+                let par = (*st).codecpar;
+                ((*par).codec_type == AVMediaType::AVMEDIA_TYPE_AUDIO).then(|| Audio {
+                    codec_name: CStr::from_ptr(ffi::avcodec_get_name((*par).codec_id)).to_string_lossy().into_owned(),
+                    channels: (*par).ch_layout.nb_channels.max(0) as usize,
+                    sample_rate: (*par).sample_rate.max(0) as usize,
+                    seconds: ((*st).duration != ffi::AV_NOPTS_VALUE).then(|| (*st).duration as f64 * (*st).time_base.num as f64 / (*st).time_base.den as f64),
+                })
+            })
+            .collect()
+    }
+
+    /// reads and decodes the first packets until every stream's parameters are filled in. what it fills mixes the
+    /// file's own values with the decoder's defaults (adr 0003), so callers take only what they can tell apart.
+    pub fn probe(&mut self) -> Result<(), String> {
+        match unsafe { ffi::avformat_find_stream_info(self.ctx, ptr::null_mut()) } {
+            r if r < 0 => Err(err(r)),
+            _ => Ok(()),
+        }
+    }
+
+    /// after `probe`: bits per sample and the chroma subsampling (as powers of two) of the pixels the decoder puts out.
+    pub fn depth(&self, stream: usize) -> Option<(u32, (u32, u32))> {
+        unsafe {
+            let par = (**(*self.ctx).streams.add(stream)).codecpar;
+            // the format is a plain int in the c struct
+            let d = ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ffi::AVPixelFormat>((*par).format));
+            (!d.is_null()).then(|| ((*d).comp[0].depth as u32, ((*d).log2_chroma_w as u32, (*d).log2_chroma_h as u32)))
+        }
+    }
 }
 
 impl Drop for Input {
@@ -190,4 +256,13 @@ impl Drop for Input {
             drop(Box::from_raw(self.io));
         }
     }
+}
+
+/// one audio stream as the container describes it.
+pub struct Audio {
+    pub codec_name: String,
+    pub channels: usize,
+    pub sample_rate: usize,
+    /// how long the container says the track is, when it says
+    pub seconds: Option<f64>,
 }

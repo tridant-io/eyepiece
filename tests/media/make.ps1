@@ -24,3 +24,10 @@ ffmpeg -v error -y -i (Out-Clip 'h264_64.mp4') -c copy (Out-Clip 'h264_64.mkv')
 # a clip cut from a longer one without re-encoding, starting between key frames: 24 samples stored, an edit list
 # hides the first 6, 18 are shown
 ffmpeg -v error -y -ss 0.2 -i (Out-Clip 'h264_320.mp4') -c copy (Out-Clip 'h264_cut_320.mp4')
+
+# for the metadata panel. 12 frames at 30000/1001 (0.4004 s) with a drop-frame timecode track and two audio
+# tracks: one 0.4 s long, within a frame of the picture, and one 0.3 s long, three frames short
+ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30000/1001' -f lavfi -i 'sine=f=440:r=8000:d=0.4' -f lavfi -i 'sine=f=880:r=8000:d=0.3' -map 0:v -map 1:a -map 2:a -frames:v 12 -c:v libx264 -g 4 -pix_fmt yuv420p -c:a pcm_s16le -ac:a:0 2 -timecode '01:00:00;00' (Out-Clip 'av_tc_64.mov')
+# tagged bt.709 in the stream and the container, and untagged at 720 lines, where the assumption is bt.709
+ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709' -frames:v 2 -c:v libx264 -pix_fmt yuv420p -an (Out-Clip 'h264_709_64.mp4')
+ffmpeg -v error -y -f lavfi -i 'color=c=gray:s=1280x720:r=30' -frames:v 2 -c:v libx264 -pix_fmt yuv420p -an (Out-Clip 'h264_720.mp4')
