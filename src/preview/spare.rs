@@ -121,7 +121,9 @@ impl Strip {
 }
 
 /// the spare reader's work, for a thread of its own. the clip asked about stays open from one asking to the next,
-/// until another is asked about, it is forgotten, or nothing is asked or made for a while. of the frames asked for
+/// until another is asked about, it is forgotten, or nothing is asked or made for a while; and then not while a
+/// clip plays: a 4K hevc decoder let go took the gpu from the picture, and 3 s of play lost 8 to 11 refreshes when
+/// it fell inside them, 1 to 3 when it did not (three runs each, 2026-11-24). of the frames asked for
 /// while it was busy only the newest is read; every seam asked about is answered. the strip is made a frame at a
 /// time while nothing is asked and `busy` (a clip plays) is not set, and a picture the window already has (one of
 /// the strip, or the one answered last) is not read again. `told` is called after each answer but a picture of the
@@ -177,7 +179,7 @@ pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &Ato
                 continue;
             }
             Err(RecvTimeoutError::Timeout) => {
-                if since.elapsed() >= IDLE {
+                if since.elapsed() >= IDLE && !busy.load(Ordering::Relaxed) {
                     held = None;
                 }
                 continue;
@@ -287,6 +289,7 @@ mod tests {
     struct Counts {
         opened: AtomicUsize,
         reads: AtomicUsize,
+        let_go: AtomicUsize,
         busy: AtomicBool,
     }
 
@@ -297,6 +300,12 @@ mod tests {
         same: bool,
         long: bool,
         counts: Arc<Counts>,
+    }
+
+    impl Drop for Flat {
+        fn drop(&mut self) {
+            self.counts.let_go.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     impl Reader for Flat {
@@ -443,6 +452,22 @@ mod tests {
         spare.ask(Ask::Frame { path: at("long"), frame: 5, playing: false });
         std::thread::sleep(Duration::from_millis(200));
         assert!(spare.take().is_none());
+        drop(spare);
+        worker.join().unwrap();
+    }
+
+    /// the clip the reader holds is let go when nothing was asked of it for a while, but never while a clip plays:
+    /// letting a hardware decoder go took time from the picture (see `serve`).
+    #[test]
+    fn the_clip_held_is_let_go_when_idle_but_not_while_a_clip_plays() {
+        let (spare, counts, worker) = spare();
+        assert!(matches!(answer(&spare, Ask::Frame { path: at("ten"), frame: 3, playing: false }), Answer::Frame { .. }));
+        counts.busy.store(true, Ordering::Relaxed);
+        std::thread::sleep(IDLE + Duration::from_secs(1));
+        assert_eq!(count(&counts.let_go), 0, "let go while a clip played");
+        counts.busy.store(false, Ordering::Relaxed);
+        std::thread::sleep(IDLE + Duration::from_secs(1));
+        assert_eq!(count(&counts.let_go), 1);
         drop(spare);
         worker.join().unwrap();
     }

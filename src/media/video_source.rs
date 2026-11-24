@@ -20,8 +20,12 @@ const KEPT_RANGE: (usize, usize) = (8, 32);
 const KEPT_ALONE: usize = 4;
 
 /// how many decoded pictures to keep for a clip of this size. sized for the largest layout a gpu decodes (two bytes a
-/// sample, 4:2:0), since the layout is not known until the first frame is decoded.
-fn kept(width: usize, height: usize, alone: bool) -> usize {
+/// sample, 4:2:0), since the layout is not known until the first frame is decoded. none without `keep`: a reader
+/// that never steps back (`Clip::keep_nothing`).
+fn kept(width: usize, height: usize, alone: bool, keep: bool) -> usize {
+    if !keep {
+        return 0;
+    }
     if alone {
         return KEPT_ALONE;
     }
@@ -88,13 +92,13 @@ fn splits_frames(input: &Input, stream: usize) -> bool {
 
 impl VideoLane {
     /// opens the file for decoding and decodes the first frame, which says how pictures are stored. `times` says which
-    /// frame a decoded picture is.
-    pub fn open(path: &str, stream: usize, samples: Vec<Sample>, times: Times, size: (usize, usize), hardware: Option<Hardware>) -> Result<VideoLane, String> {
+    /// frame a decoded picture is. without `keep` no decoded pictures are kept for a step back.
+    pub fn open(path: &str, stream: usize, samples: Vec<Sample>, times: Times, size: (usize, usize), hardware: Option<Hardware>, keep: bool) -> Result<VideoLane, String> {
         let input = Input::open(path)?;
         // when every sample is a key frame the frames stand alone: in software, decode one at a time, so a step
         // never waits behind other frames
         let alone = samples.iter().all(|s| s.key);
-        let kept = kept(size.0, size.1, alone);
+        let kept = kept(size.0, size.1, alone, keep);
         let mut decoder = Decoder::open(&input, stream, hardware.as_ref(), alone, kept)?;
         let mut first = decoder.next(&input)?.ok_or("no picture in this file")?;
         if hardware.is_some() && !first.hardware() {
@@ -284,11 +288,13 @@ mod tests {
     #[test]
     fn kept_frames_follow_the_memory_budget() {
         // 4K: 25 MB a picture at most, so about twenty fit in the budget
-        assert_eq!(kept(3840, 2160, false), 21);
+        assert_eq!(kept(3840, 2160, false, true), 21);
+        // a reader that never steps back keeps none
+        assert_eq!((kept(3840, 2160, false, false), kept(3840, 2160, true, false)), (0, 0));
         // small pictures stop at the cap, huge ones at the floor
-        assert_eq!(kept(1920, 1080, false), 32);
-        assert_eq!(kept(7680, 4320, false), 8);
+        assert_eq!(kept(1920, 1080, false, true), 32);
+        assert_eq!(kept(7680, 4320, false, true), 8);
         // frames that stand alone need none kept for decoding
-        assert_eq!(kept(3840, 2160, true), 4);
+        assert_eq!(kept(3840, 2160, true, true), 4);
     }
 }

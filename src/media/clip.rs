@@ -102,6 +102,8 @@ pub struct Waiting {
     samples: Vec<Sample>,
     times: Times,
     size: (usize, usize),
+    /// decoded pictures are kept for a step back (`Clip::keep_nothing`)
+    keep: bool,
 }
 
 /// hap's variants by their container tag. ffmpeg knows only the first three; the rest it reports as no codec at all.
@@ -267,9 +269,9 @@ impl Clip {
             if codec == "notchlc" || (codec == "prores" && !system_prores) {
                 // these decode in software here, so they need not wait for the graphics device: the first frame is
                 // being decoded while the device is made, which takes longer than anything else in a start
-                Lane::Video(VideoLane::open(path, video.index, samples, times, size, None)?)
+                Lane::Video(VideoLane::open(path, video.index, samples, times, size, None, true)?)
             } else {
-                Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, times, size })
+                Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, times, size, keep: true })
             }
         };
         let clock = clock(&timeline, meta::timecode_tag(&input, video.index).map(|text| (text, input.timecode_base())));
@@ -296,10 +298,19 @@ impl Clip {
     pub fn start(&mut self, hardware: Option<Hardware>) -> Result<(), String> {
         if let Lane::Waiting(w) = &mut self.lane {
             let times = std::mem::replace(&mut w.times, Times::Even(1));
-            let lane = VideoLane::open(&w.path, w.stream, std::mem::take(&mut w.samples), times, w.size, hardware)?;
+            let lane = VideoLane::open(&w.path, w.stream, std::mem::take(&mut w.samples), times, w.size, hardware, w.keep)?;
             self.lane = Lane::Video(lane);
         }
         Ok(())
+    }
+
+    /// for a reader that never steps back (a card's pictures, the timebar's): its decoder, once started, keeps no
+    /// pictures behind it, so a hardware decoder's pool is that many surfaces smaller: 25 of them where the player's
+    /// own has 46 at 4K, each 25 MB at 10 bits. a clip that does not wait to start (prores, notchlc) is as it was.
+    pub fn keep_nothing(&mut self) {
+        if let Lane::Waiting(w) = &mut self.lane {
+            w.keep = false;
+        }
     }
 
     /// the frame rate as text: the file's own ratio, one derived from rounded times, the one assumed, or that it has

@@ -63,7 +63,9 @@ impl Drop for Open<'_> {
 impl<'a> Open<'a> {
     fn new(gpu: &'a Gpu, path: &Path) -> Option<Open<'a>> {
         // a file that would have to be read through to count its frames gets no picture for that
-        let clip = Clip::open_known(path.to_str()?).ok()?;
+        let mut clip = Clip::open_known(path.to_str()?).ok()?;
+        // one picture at a time and never a step back
+        clip.keep_nothing();
         // the rate of the display is nothing to a clip that never plays
         let view = View::new(gpu, clip, 60.0).ok()?;
         // one frame at a time, and none kept: 24 frames of a 4K float sequence would be 3 GB
