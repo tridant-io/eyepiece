@@ -212,7 +212,13 @@ Confirm-That 'resting on the play button brings its tooltip' ($before -eq 0 -and
 Click-At -256 -32; Move-Pointer 55 -32; Start-Sleep -Milliseconds 900
 Confirm-That 'no tooltip while a menu is open' ((Get-Bright @tip) -eq 0) "bright pixels: $(Get-Bright @tip)"
 Send-Key 0x1B
-# ? (shift + slash) lays the table over the clip: bright keys in the black beside the picture
+# ? (shift + slash) lays the table of keys over the clip. a click takes it away and does nothing else: the next-frame
+# button is clicked twice and steps once
+Send-Key 0xBF 1 1; Click-At 87 -32
+Assert-Frame 'a click takes the table of keys away and does nothing else' 0 3
+Click-At 87 -32; Assert-Frame 'the next click is the button''s' 1 3
+Send-Key 0x24
+# the table is bright keys in the black beside the picture
 $band = 20, 60, 130, 250
 Move-Pointer 300 150; Start-Sleep -Milliseconds 300
 $before = Get-Bright @band
@@ -226,11 +232,6 @@ Send-Key 0x50; Start-Sleep -Milliseconds 500; Send-Key 0xBF 1 1; Send-Key 0x1B; 
 Confirm-That 'esc over the table in fullscreen takes the table away and stays fullscreen' (-not (Test-Framed)) "framed: $(Test-Framed)"
 Send-Key 0x1B; Start-Sleep -Milliseconds 500
 Confirm-That 'and the next esc leaves fullscreen' (Test-Framed) "framed: $(Test-Framed)"
-# a click takes it away and does nothing else: the next-frame button is clicked twice and steps once
-Send-Key 0xBF 1 1; Click-At 87 -32
-Assert-Frame 'a click takes the table away and does nothing else' 0 3
-Click-At 87 -32; Assert-Frame 'the next click is the button''s' 1 3
-Send-Key 0x24
 # a right click on the picture opens every command, at the pointer; choosing a row does what its key does. the menu
 # is too tall for any window here and scrolls: in a 900 x 700 window, at the end of its list, the mirror row's middle
 # is 387 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges)
@@ -242,8 +243,9 @@ Move-Pointer 200 200
 foreach ($i in 1..40) { [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536 + 0x8000), [IntPtr]0); Start-Sleep -Milliseconds 20 }
 Start-Sleep -Milliseconds 1000
 Assert-Frame 'the wheel over the menu turns its list and does not scrub' 0 3
-Click-At 200 -387; Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
-Confirm-That 'and nothing else: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
+Click-At 200 -387; Click-At 200 -387 -Again; Start-Sleep -Milliseconds 500
+Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
+Confirm-That 'and a click at once on the picture under it makes no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
 Send-Key 0x48; Assert-Frame 'H shows it as the file has it again' 0 3
 RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -387
 Assert-Frame 'esc closes the menu: a click where the row was chooses nothing' 0 3

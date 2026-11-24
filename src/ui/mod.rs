@@ -304,6 +304,8 @@ pub struct Ui {
     keys: bool,
     commands: Option<Pos2>,
     commands_rect: Rect,
+    /// whether each of the last two presses went to the right-click menu or the table of keys, the earlier first
+    taken: [bool; 2],
     /// the button the pointer is on in this pass, where it is and what its tooltip says; and the one it came onto,
     /// and when
     hinted: Option<(egui::Id, Rect, (String, String))>,
@@ -349,6 +351,7 @@ impl Ui {
             keys: false,
             commands: None,
             commands_rect: Rect::NOTHING,
+            taken: [false; 2],
             hinted: None,
             tip: None,
             browser: browser::Browser::new(folder, pictures),
@@ -542,9 +545,10 @@ impl Ui {
                     },
                 }
                 self.strip(ui, strip, screen, true, actions);
+                // tooltips are the clip's
+                (self.hinted, self.tip) = (None, None);
             }
         }
-        self.tooltip(ui, full, now);
         if let Some(said) = screen.toast {
             toast(ui, full, said);
         }
@@ -568,17 +572,22 @@ impl Ui {
         } else if picture.drag_started_by(egui::PointerButton::Primary) && !screen.fullscreen {
             actions.push(Action::MoveWindow);
         }
-        if picture.double_clicked() {
+        let pointer = ui.ctx().pointer_latest_pos();
+        let pressed = ui.input(|i| i.pointer.any_pressed());
+        // egui counts a double click by time and place, not by what was hit: one whose first press chose a row of the
+        // right-click menu or took the table of keys away is not one on the picture
+        if pressed {
+            self.taken = [self.taken[1], self.keys || (self.commands.is_some() && pointer.is_some_and(|p| self.commands_rect.contains(p)))];
+        }
+        if picture.double_clicked() && !self.taken[0] {
             actions.push(Action::Fullscreen);
         }
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
-        let pointer = ui.ctx().pointer_latest_pos();
         let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)));
         let held = ui.input(|i| i.pointer.any_down());
 
         // a press anywhere but on the open menu or its button closes the menu
-        let pressed = ui.input(|i| i.pointer.any_pressed());
         if self.menu.is_some() && pressed && !pointer.is_some_and(|p| self.menu_rect.contains(p) || self.menu_button.contains(p)) {
             self.menu = None;
         }
@@ -605,7 +614,7 @@ impl Ui {
             self.shown = !self.shown || self.moved;
             self.awake_until = now + IDLE;
         }
-        if self.menu.is_some() {
+        if self.menu.is_some() || self.commands.is_some() {
             self.shown = true;
         } else {
             if !self.inside && !held {
@@ -619,11 +628,13 @@ impl Ui {
                 }
             }
         }
+        // the table of keys takes the window, as the design draws it: the strip and the bar step aside while it is up,
+        // and the chips stay
+        self.shown &= !self.keys;
         let alpha = ui.ctx().animate_bool_with_time(ui.scope_id().with("chrome"), self.shown, FADE);
 
         self.guides(ui, model);
-        // the table of keys: over the picture, and under the chips and the controls, which still say what is not as
-        // the file has it
+        // the table of keys: over the picture, and under the chips, which still say what is not as the file has it
         if self.keys {
             keys::table(ui, full);
         }
@@ -672,6 +683,7 @@ impl Ui {
             // what a menu changes about the view is said by the chip
             self.view_changed |= actions.iter().any(|a| matches!(a, Action::Zoom(_)));
         }
+        self.tooltip(ui, full, now);
     }
 
     /// the lines over the picture: the grid of tiles, the center lines and circle. one display pixel wide at 100%.
@@ -1342,19 +1354,43 @@ mod tests {
         actions
     }
 
+    /// a right click and the passes after it, at one place
+    fn right_click(x: f32, y: f32) -> [(f32, f32, Option<(crate::event::Button, bool)>); 5] {
+        use crate::event::Button::Right;
+        [(x, y, None), (x, y, Some((Right, true))), (x, y, Some((Right, false))), (x, y, None), (x, y, None)]
+    }
+
     /// a right click on the picture opens every command where it was made; a click on a row sends that row's key and
-    /// does nothing else (the window neither moves nor fills the display), and the menu closes.
+    /// does nothing else (the window neither moves nor fills the display), and the menu closes. a second click at once
+    /// on the picture under it is no double click.
     #[test]
     fn a_row_of_the_right_click_menu_sends_its_key_and_nothing_else() {
-        use crate::event::Button::{Left, Right};
+        use crate::event::Button::Left;
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         // the menu is laid out once unseen, then stands 8 in from the top, too tall for the window: its third row (next
         // frame) is 89 to 113 down
-        let mut actions = drive(&mut ui, &[(100.0, 60.0, None), (100.0, 60.0, Some((Right, true))), (100.0, 60.0, Some((Right, false))), (100.0, 60.0, None), (100.0, 60.0, None)]);
+        let mut actions = drive(&mut ui, &right_click(100.0, 60.0));
         assert!(ui.commands.is_some(), "the right click opened the menu");
+        // long enough for the right click not to count with the clicks after it
+        std::thread::sleep(Duration::from_millis(350));
         actions.extend(drive(&mut ui, &[(200.0, 101.0, None), (200.0, 101.0, Some((Left, true))), (200.0, 101.0, Some((Left, false)))]));
         assert_eq!(actions, vec![Action::Key(Key::G, keys::NONE)]);
         assert!(ui.commands.is_none(), "the menu closes once a row is chosen");
+        let again = drive(&mut ui, &[(200.0, 101.0, None), (200.0, 101.0, Some((Left, true))), (200.0, 101.0, Some((Left, false)))]);
+        assert_eq!(again, vec![]);
+    }
+
+    /// the right-click menu stands where the right click was made when the window has room for it, and inside the
+    /// window when it has not.
+    #[test]
+    fn the_right_click_menu_stands_at_the_pointer_and_inside_the_window() {
+        let mut ui = Ui::new((900, 1600), 1.0, false, None, None);
+        drive(&mut ui, &right_click(100.0, 60.0));
+        assert_eq!(ui.commands_rect.min, Pos2::new(100.0, 60.0));
+        assert!(ui.commands_rect.height() < 1600.0 - 16.0, "the whole list shows, unscrolled: {:?}", ui.commands_rect);
+        drive(&mut ui, &right_click(850.0, 1500.0));
+        let room = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 1600.0)).shrink(8.0);
+        assert!(ui.commands.is_some() && room.contains_rect(ui.commands_rect), "{:?} is not inside {room:?}", ui.commands_rect);
     }
 
     /// the click that takes the table of keys away does nothing else; the next one does what it does.
@@ -1371,6 +1407,13 @@ mod tests {
         assert!(!ui.keys);
         let actions = drive(&mut ui, &[(next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
         assert_eq!(actions, vec![Action::Step(1)]);
+        // nor does a double click on the picture whose first click took the table away fill the display
+        ui.show_keys();
+        // long enough for the clicks before not to count with these
+        std::thread::sleep(Duration::from_millis(350));
+        let mid = (320.0, 180.0, None);
+        let actions = drive(&mut ui, &[mid, mid, (mid.0, mid.1, Some((Left, true))), (mid.0, mid.1, Some((Left, false))), (mid.0, mid.1, Some((Left, true))), (mid.0, mid.1, Some((Left, false)))]);
+        assert_eq!(actions, vec![]);
     }
 
     #[test]
