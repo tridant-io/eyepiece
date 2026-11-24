@@ -15,9 +15,9 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | # | question | passes when | windows | macos |
 |---|---|---|---|---|
-| 1 | does a hardware-decoded 10-bit hevc frame reach the screen with no cpu copy? | the renderer samples the decoder's own texture on the same device. no transfer to system memory anywhere in the path. the picture matches a software decode of the same frame within 1 code value at 10-bit. | **pass** 2026-11-23 | not run |
+| 1 | does a hardware-decoded 10-bit hevc frame reach the screen with no cpu copy? | the renderer samples the decoder's own texture on the same device. no transfer to system memory anywhere in the path. the picture matches a software decode of the same frame within 1 code value at 10-bit. | **pass** 2026-11-23 | **pass** 2026-11-23, into a texture, not yet a window |
 | 2 | can we learn when a frame reached the screen? | the os returns present counts and vsync timestamps that advance once per refresh, and the measured refresh rate is stable to 0.01 Hz. a 59.94 clip on a 60 Hz display shows the expected repeat cadence in those numbers, confirmed from outside the app. | **pass** on its own numbers 2026-11-23. not yet confirmed from outside the app | not run |
-| 3 | does 10-bit survive to the swapchain? | a 1024-step ramp drawn into a 10-bit back buffer reads back with every code value exact. | **pass** 2026-11-23 | not run |
+| 3 | does 10-bit survive to the swapchain? | a 1024-step ramp drawn into a 10-bit back buffer reads back with every code value exact. | **pass** 2026-11-23 | **pass** 2026-11-23 |
 | 4 | how long is a cold start, stage by stage? | measured, not judged: process start, window visible, gpu ready, file open, first frame decoded, first present. twenty warm runs (p50, p95) and one run after a reboot. target for warm: 250 ms on a local hap or prores file. | **measured** 2026-11-23: 220 to 310 ms warm. target missed. after-reboot run owed | not run |
 | 5 | can a render overwrite a file we have open? | with our handle open, another process can overwrite in place, rename a new file over it, and delete and recreate it. we notice each change from size and modified time. | **pass** 2026-11-23 | **pass** 2026-11-23 |
 | 6 | does browsing a share open nothing? | on a scratch share that logs opens, listing a folder and reading names, sizes and dates logs zero opens. recorded alongside: which of list, stat and open changes ctime. never run against the owner's nas. | **pass** 2026-11-23, against samba 4.23.8 | **pass** 2026-11-23 |
@@ -31,6 +31,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | **measured** 2026-11-23: 76 ms | not run |
 | prores 4444 xq at 4K60 in software | no hardware prores decode on windows | **measured** 2026-11-23: 30 to 37 fps on worst-case content | n/a |
 | can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | not run: this pc has no touchpad (the hid entry is its logitech receiver). needs another windows machine | n/a |
+| does the gpu take hap's block formats (bc1, bc3, bc4, bc5, bc6h, bc7) as stored? | hap's lane uploads blocks undecoded; a gpu without them would need a cpu decode | yes, by construction of direct3d 11 | **yes** 2026-11-23, apple m2, at 8K |
 | sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | **pass** 2026-11-23 | **pass** 2026-11-23, signed and notarized with ffmpeg inside |
 
 ## log
@@ -139,13 +140,13 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | the display is the clock for silent clips; audio is the clock otherwise | holds, with one rule added: choose the frame by counting refreshes from the os's statistics, never by reading the wall clock at the call. |
 | one frame step is one refresh for hap, prores and notchlc | true for hap. prores needs a slice-threaded stepping decoder and decoded neighbors. notchlc is unmeasured. |
 | on a network folder, use the folder listing and nothing else (adr 0004) | holds, and the line is exact. the listing sends one open, of the folder, and no read. asking for one file's details by path (`std::fs::metadata`) opened a file even straight after a listing. so names, sizes and dates come from the listing's own entries, never from a call per file. |
-| rust with a native direct3d 11 renderer (adr 0001, 0002) | holds on windows. zero-copy hardware frames, present statistics and 10-bit output all work through the windows crate with no surprises. nothing measured so far argues for c++. macos is untested. |
+| rust with a native direct3d 11 renderer (adr 0001, 0002) | holds on windows: zero-copy hardware frames, present statistics and 10-bit output all work through the windows crate with no surprises. the metal half holds as far as tested: device, shaders, drawing, a 10-bit layer and videotoolbox frames sampled in place, through the objc2 crates. present timing on the mac is untested. nothing measured argues for c++. |
 
 ## what is blocked, and on whom
 
 | what | needs |
 |---|---|
-| gates 1 to 4 on macos | the programs (metal, videotoolbox) are not written yet. the timed ones also need the mac quiet and its screen free: it was in use when first reached. |
+| gates 2 and 4 on macos, gate 1 in a window, and the hap and decode speeds there | the owner's word on when the mac is free: these are timings and they put a window on its screen, and it was in use. also their ok to copy about 3 GB of clips to a disk with 17 GB free. the programs are not written yet. |
 | the name on the mac build | the owner. the mac's only signing identity is personal, "Developer ID Application: Dylan Roscover"; windows signs as "Tridant, Inc.". |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
@@ -237,3 +238,19 @@ tec-mba, apple m2, macos 26.6. the machine was in use throughout (load average 1
 - the signer is the mac's only identity, a personal developer id ("Dylan Roscover"). windows signs as "Tridant, Inc.". which name the mac build carries is the owner's to say.
 
 **left on the mac.** `~/src/eyepiece` (sources, the ffmpeg install and build output, 152 MB), `/private/tmp/eyepiece-ffmpeg-src` (188 MB), `/private/tmp/eyepiece-signtest-*` (25 MB), `/private/tmp/eyepiece-g6` and `/private/tmp/eyepiece-tiny_hap.mov` (a few KB). the mac has 17 GB free. removing any of it waits for the owner's word.
+
+### 2026-11-23, night: the mac's graphics gates that need no window
+
+same machine and the same caveat: it was in use, so nothing here is a timing. each of these draws into a texture or an unshown layer and puts nothing on the screen.
+
+**the bindings.** the mac programs reach metal through the `objc2` crates (objc2 0.6; objc2-metal, objc2-quartz-core, objc2-foundation, objc2-core-foundation and objc2-io-surface 0.3). the four corevideo calls needed are declared by hand. every program below compiled and ran on its first build. this is the spike's choice; for the player it is the proposal, not yet agreed.
+
+**hap's block formats: yes.** `metal_caps`: the m2 reports block-compressed textures as supported and makes a 7680 × 4320 texture in each of bc1, bc3, bc4, bc5, bc6h and bc7. so the hap lane can upload blocks as stored on this mac, as on windows. (not every metal device has these formats; the player has to ask and fall back.)
+
+**gate 3 on macos: pass.** `gate3_ramp`: a 1024-step ramp drawn into the 10-bit drawable of a metal layer (pixel format bgr10a2) reads back exact: 0 wrong of 49,152 values.
+
+**gate 1 on macos: pass, into a texture.** `gate1_zerocopy hevc10_4k_5994.mp4`, 8 frames at 3840 × 2160:
+- videotoolbox hands ffmpeg its own pixel buffer (format 'x420', 10-bit, two planes). two metal textures are made directly on that buffer's surface, one per plane, and the draw samples them. both textures report the decoder's own surface as their memory.
+- the decoder's planes, read back through the gpu, against a software decode: 0 samples differ.
+- the drawn picture against the same math on the cpu: 49,766,400 values, worst difference 1 code value, none over 1.
+- not shown here: the same path presenting to a window. that is gate 2's job.

@@ -42,7 +42,7 @@ sh spike/mac/setup.sh
 sh spike/mac/gate.sh gate5_share some-small-clip.mov
 ```
 
-so far: `gate5_share`, `gate6_browse` (driven from windows by `spike\gate6.ps1 -Mac user@host`) and `sign-test.sh`, the signing and notarization gate. gates 1 to 4 are not written for macos yet.
+so far: `gate1_zerocopy` and `gate3_ramp` (both draw off screen), `metal_caps`, `gate5_share`, `gate6_browse` (driven from windows by `spike\gate6.ps1 -Mac user@host`) and `sign-test.sh`, the signing and notarization gate. gates 2 and 4 are not written for macos yet.
 
 ## deploy
 
