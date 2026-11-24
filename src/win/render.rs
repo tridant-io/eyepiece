@@ -4,6 +4,7 @@
 use super::d3d::{Constants, Gpu, CONSTANTS_HLSL};
 use super::ui_paint::UiPainter;
 use super::window::{self, Handle};
+use crate::audio::Audio;
 use crate::event::{Event, Key, Mods};
 use crate::media::clip::{Clip, Lane};
 use crate::media::color;
@@ -132,6 +133,12 @@ struct View {
     look: Look,
     /// the last pixel read back for the zoom chip: the frame, the pixel, its red, green and blue
     probe: Option<(usize, (usize, usize), [u32; 3])>,
+    /// the clip's sound: None until it has been looked for, then what was found (a clip without is Some(None))
+    sound: Option<Option<Audio>>,
+    /// what the sound was last told: the transport's run and the speed while it plays, None while it is silent
+    sounding: Option<(u32, f64)>,
+    /// times the picture was moved to where the sound is
+    resynced: u64,
 }
 
 fn text(e: windows::core::Error) -> String {
@@ -198,7 +205,59 @@ impl View {
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new((clip.width, clip.height));
-        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None })
+        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0 })
+    }
+
+    /// looks for the clip's sound, once. stills have none. returns why, when there is sound that cannot be played.
+    fn open_sound(&mut self, path: &str, settings: &Settings) -> Option<String> {
+        self.sound = Some(None);
+        if matches!(self.clip.lane, Lane::Stills(_)) {
+            return None;
+        }
+        match Audio::open(path) {
+            Ok(Some(mut audio)) => {
+                audio.set_volume(settings.volume);
+                audio.set_muted(settings.mute);
+                self.sound = Some(Some(audio));
+                None
+            }
+            Ok(None) => None,
+            Err(why) => Some(why.strip_prefix(&format!("{path}: ")).unwrap_or(&why).to_string()),
+        }
+    }
+
+    /// keeps the clip's sound with its transport: it plays from the transport's frame whenever a run of forward play
+    /// starts, and is silent the rest of the time and whenever the clip is not `heard` (another tab is up, or the
+    /// browser is over it). while both run, play keeps to the sound. true while the picture should wait for the
+    /// sound to start.
+    fn sync_sound(&mut self, heard: bool) -> bool {
+        let Some(Some(audio)) = &mut self.sound else { return false };
+        let t = &mut self.transport;
+        // L pressed once is forward at 1×, whatever the speed is set to
+        let speed = match t.shuttle_rate() {
+            0 => Some(t.speed()),
+            1 => Some(1.0),
+            _ => None,
+        };
+        let wanted = speed.filter(|_| heard && t.playing() && t.seam().is_none()).map(|speed| (t.run(), speed));
+        let fps = self.clip.timeline.fps();
+        if wanted != self.sounding {
+            match wanted {
+                Some((_, speed)) => audio.play(t.frame() as f64 / fps, speed),
+                None => audio.pause(),
+            }
+            self.sounding = wanted;
+        }
+        if wanted.is_none() {
+            return false;
+        }
+        if audio.starting() {
+            return true;
+        }
+        if let Some(seconds) = audio.position() {
+            self.resynced += t.follow(seconds * fps) as u64;
+        }
+        false
     }
 
     /// puts the transport's frame into the painter, waiting up to `patience` for it. true when the picture changed.
@@ -432,6 +491,9 @@ impl View {
             facts,
             decoded: self.decoded(),
             shots_to,
+            sound: matches!(self.sound, Some(Some(_))),
+            volume: settings.volume,
+            muted: settings.mute,
             frame: self.transport.frame(),
             frames: self.clip.timeline.frames(),
             playing: self.transport.playing(),
@@ -480,7 +542,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
@@ -497,6 +559,9 @@ impl View {
         let mut state = String::new();
         if self.late > 0 {
             state += &format!(" · {} late", self.late);
+        }
+        if self.resynced > 0 {
+            state += &format!(" · {} resynced", self.resynced);
         }
         if self.unshowable > 0 {
             state += &format!(" · {} could not be shown", self.unshowable);
@@ -570,6 +635,11 @@ impl<T> Loaded<T> {
     }
 }
 
+/// a line for the window to say, and until when
+fn say(words: impl Into<String>) -> Option<(String, Instant)> {
+    Some((words.into(), Instant::now() + Duration::from_millis(2600)))
+}
+
 /// a tab that was closed: its file, the frame it was on and how the picture sat, for bringing it back
 type Closed = (String, usize, Framing, Look);
 
@@ -630,6 +700,14 @@ struct Tabs {
 impl Tabs {
     fn tab(&mut self) -> &mut Tab {
         &mut self.all[self.up]
+    }
+
+    /// every clip's sound as loud as the settings say
+    fn loudness(&mut self, settings: &Settings) {
+        for audio in self.all.iter_mut().filter_map(|tab| tab.view.as_mut()?.sound.as_mut()?.as_mut()) {
+            audio.set_volume(settings.volume);
+            audio.set_muted(settings.mute);
+        }
     }
 
     /// the clip on screen, when a clip is what is on screen.
@@ -859,7 +937,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     ui.pointer_leave();
                 }
                 Event::Open(path) => tabs.open(&gpu, window, path, settings, &wake, false),
-                Event::Toast(said) => toast = Some((said, Instant::now() + Duration::from_millis(2600))),
+                Event::Toast(said) => toast = say(said),
                 // what was read in the background is taken up below, with everything else
                 Event::Wake => {}
                 // a field being typed into takes the keys; escape closes it and its menu
@@ -902,8 +980,21 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Char(c) if browsing => ui.browser_char(c),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis
-                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I) => match key {
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::Up | Key::Down) => match key {
                     Key::N => tabs.new_tab(),
+                    Key::M => {
+                        settings.mute = !settings.mute;
+                        tabs.loudness(settings);
+                        toast = say(if settings.mute { "muted" } else { "sound on" });
+                    }
+                    // a tenth a press; turning it up ends a mute
+                    Key::Up | Key::Down => {
+                        let by = if matches!(key, Key::Up) { 10.0 } else { -10.0 };
+                        settings.volume = ((settings.volume * 100.0).round() + by).clamp(0.0, 100.0) / 100.0;
+                        settings.mute &= !matches!(key, Key::Up);
+                        tabs.loudness(settings);
+                        toast = say(format!("volume {}%", (settings.volume * 100.0).round()));
+                    }
                     // a screenshot: the file's frame at full size; with shift, the view as shown
                     Key::S => {
                         if let Some(v) = tabs.view() {
@@ -1015,7 +1106,16 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 Action::Copy(text) => {
                     let said = if window::copy_text(text) { "metadata copied" } else { "the clipboard could not be had" };
-                    toast = Some((said.to_string(), Instant::now() + Duration::from_millis(2600)));
+                    toast = say(said);
+                }
+                Action::Volume(to) => {
+                    settings.volume = (to * 100.0).round() / 100.0;
+                    settings.mute = settings.volume <= 0.0;
+                    tabs.loudness(settings);
+                }
+                Action::Mute => {
+                    settings.mute = !settings.mute;
+                    tabs.loudness(settings);
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
                 // folders do not play yet: until they do, the browser's shift + enter and play folder do nothing
@@ -1063,6 +1163,26 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             window::show_pointer(window, pointer_shown);
         }
 
+        // a clip's sound is looked for once its first frame is up: opening the file again, and the output device,
+        // must not hold the picture back
+        let tab = tabs.tab();
+        if let (Some(path), Some(v)) = (&tab.path, &mut tab.view) {
+            if v.sound.is_none() && v.shown.is_some() {
+                if let Some(why) = v.open_sound(path, settings) {
+                    toast = say(format!("no sound: {why}"));
+                }
+            }
+        }
+        // every clip's sound does what its transport does. only the tab that is up is heard, and not under the browser
+        let up = tabs.up;
+        let mut starting = false;
+        for (i, tab) in tabs.all.iter_mut().enumerate() {
+            let heard = i == up && !tab.browsing;
+            if let Some(v) = &mut tab.view {
+                starting |= v.sync_sound(heard) && heard;
+            }
+        }
+
         // a frame that is nearly there is worth a short wait: while playing, half a refresh, since showing the old
         // frame again skips this one for good. standing still, a few milliseconds between looks at the window
         let playing = tabs.view().is_some_and(|v| v.transport.playing());
@@ -1090,11 +1210,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             if let Some(v) = tabs.view() {
                 // the pause on black between rounds of loop analysis shows no frame: nothing to be late with
                 let black = v.transport.show() == Show::Black;
-                if playing && !black {
+                // nor is a refresh late while the picture waits for its sound to start
+                if playing && !black && !starting {
                     v.late += missed as u64 + v.waiting() as u64;
                 }
                 // only a refresh that showed what it was due counts toward the next one
-                if black || !v.waiting() {
+                if black || !(v.waiting() || starting) {
                     v.transport.tick();
                 }
                 // play that ended by itself (looping off, at the clip's end) is one more look, for the controls and

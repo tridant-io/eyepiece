@@ -94,6 +94,9 @@ pub struct Transport {
     /// where play started from (a frame, or a place in loop analysis), and the refreshes counted since
     from: usize,
     refreshes: u64,
+    /// counts the runs of play: a new one wherever play starts, stops or is sent somewhere, and each time round the
+    /// clip's end. a clip's sound starts again with each
+    run: u32,
 }
 
 impl Transport {
@@ -113,6 +116,7 @@ impl Transport {
             black: 0,
             from: 0,
             refreshes: 0,
+            run: 0,
         }
     }
 
@@ -165,6 +169,34 @@ impl Transport {
         frames
     }
 
+    pub fn run(&self) -> u32 {
+        self.run
+    }
+
+    /// a clip with sound takes its time from the sound: `at` is where the sound is, in frames. the two clocks part
+    /// slowly, and going by the sound at every refresh would make the cadence stumble, so the display's count is
+    /// kept while the sound is within a frame and a half's time of the middle of the frame on screen (more at a
+    /// speed that passes over frames). a little past that, one frame is held again or passed over: on a 60 Hz
+    /// display a 59.94 clip repeats one frame about every 17 s. far off, play goes on from the frame the sound is in.
+    /// true when the picture was moved. standing still, in reverse, shuttling faster and in loop analysis, which
+    /// are all silent, the sound has no say.
+    pub fn follow(&mut self, at: f64) -> bool {
+        let at = at.min(self.frames as f64 - 0.5);
+        let rate = if self.shuttle != 0 { 1.0 } else { self.speed };
+        let leeway = (self.fps * rate / self.hz + 0.5).max(1.5);
+        let off = self.frame as f64 + 0.5 - at;
+        if !self.playing || !matches!(self.shuttle, 0 | 1) || self.seam.is_some() || off.abs() <= leeway {
+            return false;
+        }
+        self.frame = match off {
+            far if far.abs() > leeway + 1.0 => at.max(0.0) as usize,
+            ahead if ahead > 0.0 => self.frame.saturating_sub(1),
+            _ => self.frame + 1,
+        };
+        (self.from, self.refreshes) = (self.frame, 0);
+        true
+    }
+
     /// plays at the speed, or stops. either ends a shuttle (prototype: space sets `S.sh = 0`).
     pub fn set_playing(&mut self, playing: bool) {
         self.shuttle = 0;
@@ -188,6 +220,7 @@ impl Transport {
     /// counts again from where play is, at the rate in force: a speed paces play as a clip of `speed × fps` would
     /// be, so it keeps a locked cadence locked (0.5× of 59.94 on 60 holds every frame two refreshes).
     fn anchor(&mut self) {
+        self.run = self.run.wrapping_add(1);
         self.from = if self.seam.is_some() { self.place } else { self.frame };
         self.refreshes = 0;
         let rate = if self.shuttle != 0 { self.shuttle.unsigned_abs() as f64 } else { self.speed };
@@ -258,7 +291,14 @@ impl Transport {
                 self.anchor();
             }
             Some(k) => self.put(to.rem_euclid(2 * k as i64) as usize, k),
-            None if self.looping == Loop::One => self.frame = to.rem_euclid(self.frames as i64) as usize,
+            None if self.looping == Loop::One => {
+                let round = to.rem_euclid(self.frames as i64) as usize;
+                // forward round the end is a new run (backward has no sound to start again)
+                if self.shuttle >= 0 && round < self.frame {
+                    self.run = self.run.wrapping_add(1);
+                }
+                self.frame = round;
+            }
             None if to < 0 || to > last => {
                 self.frame = to.clamp(0, last) as usize;
                 self.play(false);
@@ -716,6 +756,73 @@ mod tests {
         assert_eq!((t.seam(), t.seam_place()), (None, None));
         // the frame stays where loop analysis left it
         assert_eq!(t.frame(), 50);
+    }
+
+    #[test]
+    fn a_clip_with_sound_keeps_to_the_sound() {
+        // 60 on 60: a frame a refresh
+        let mut t = Transport::new(100, 60.0, 60.0);
+        t.set_playing(true);
+        let run = t.run();
+        // the sound within a frame and a half's time of the middle of the frame on screen: the display's count stands
+        assert!(!t.follow(0.0) && !t.follow(1.9));
+        (0..5).for_each(|_| t.tick());
+        assert_eq!(t.frame(), 5);
+        // the sound has fallen behind, as it does at 59.94 on a 60 Hz display: one frame repeats, and play counts on
+        // from it in the same run
+        assert!(t.follow(3.9));
+        assert_eq!(t.frame(), 4);
+        t.tick();
+        assert_eq!((t.frame(), t.run()), (5, run));
+        // far off, play goes on from where the sound is. sound that runs past the clip's end moves nothing
+        assert!(t.follow(50.2));
+        assert_eq!(t.frame(), 50);
+        t.go(98);
+        t.shuttle(1);
+        t.tick();
+        assert_eq!(t.frame(), 99);
+        assert!(!t.follow(250.0));
+        // standing still the sound has no say
+        t.set_playing(false);
+        assert!(!t.follow(50.0));
+        assert_eq!(t.frame(), 99);
+    }
+
+    #[test]
+    fn at_double_speed_the_sound_may_be_a_refresh_of_frames_away() {
+        let mut t = Transport::new(100, 60.0, 60.0);
+        t.set_speed(2.0);
+        t.set_playing(true);
+        t.tick();
+        assert_eq!(t.frame(), 2);
+        assert!(!t.follow(0.6) && !t.follow(4.9));
+        // a little further off, one frame more is passed over; far off, play goes on from where the sound is
+        assert!(t.follow(5.2));
+        assert_eq!(t.frame(), 3);
+        assert!(t.follow(9.0));
+        assert_eq!(t.frame(), 9);
+    }
+
+    #[test]
+    fn a_run_is_new_wherever_a_clips_sound_must_start_again() {
+        let mut t = Transport::new(10, 60.0, 60.0);
+        let mut last = t.run();
+        let mut new = |t: &Transport| t.run() != std::mem::replace(&mut last, t.run());
+        t.set_playing(true);
+        assert!(new(&t));
+        (0..9).for_each(|_| t.tick());
+        assert_eq!(t.frame(), 9);
+        assert!(!new(&t));
+        // round the end
+        t.tick();
+        assert_eq!(t.frame(), 0);
+        assert!(new(&t));
+        t.tick();
+        assert!(!new(&t));
+        t.set_speed(2.0);
+        assert!(new(&t));
+        t.go(3);
+        assert!(new(&t));
     }
 
     #[test]

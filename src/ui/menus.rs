@@ -1,7 +1,7 @@
 //! the menus that open over the bar, laid out as the design has them.
 
 use super::widgets::{self, ROW};
-use super::{font, Action, Facts, Menu, Model, Shot, DIM, MONO};
+use super::{font, Action, Facts, Menu, Model, Shot, ACCENT, DIM, MONO};
 use crate::play::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
 use egui::{Align2, Pos2, Rect};
@@ -72,7 +72,7 @@ fn shot(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
 fn slider_and_field(ui: &mut egui::Ui, name: &str, at: f32, shown: &str, unit: &str) -> (Option<f32>, Option<f32>) {
     let row = widgets::row(ui, ROW);
     let (field, typed) = widgets::field(ui, name, row.right_center(), shown, unit, false);
-    let slid = widgets::slider(ui, &format!("{name}-slider"), Rect::from_min_max(row.min, Pos2::new(field.left() - 10.0, row.bottom())), at);
+    let slid = widgets::slider(ui, &format!("{name}-slider"), Rect::from_min_max(row.min, Pos2::new(field.left() - 10.0, row.bottom())), at, ACCENT);
     (slid, typed.and_then(|t| t.parse().ok()))
 }
 

@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 /// how long the decode thread rests when the device has all the sound it can hold
 const REST: Duration = Duration::from_millis(5);
+/// how long the picture waits for a play's first sound to reach the speaker
+const START_WITHIN: Duration = Duration::from_millis(250);
 
 pub struct Info {
     /// ffmpeg's name for the codec
@@ -33,8 +35,9 @@ pub struct Audio {
     shared: Arc<Shared>,
     /// None when there is no device, or it would not open
     output: Option<Output>,
-    /// what is playing: its feed, the second it started from, and its speed. None while paused or silent
-    playing: Option<(Arc<Feed>, f64, f64)>,
+    /// what is playing: its feed, the second it started from, its speed, and when it was asked for. None while
+    /// paused or silent
+    playing: Option<(Arc<Feed>, f64, f64, Instant)>,
     volume: f32,
     muted: bool,
 }
@@ -78,7 +81,7 @@ impl Audio {
         let feed = Arc::new(Feed::new(output.rate, output.channels));
         self.send(Some(Play { feed: feed.clone(), seconds, speed, rate: output.rate, channels: output.channels }));
         self.shared.set_feed(Some(feed.clone()));
-        self.playing = Some((feed, seconds, speed));
+        self.playing = Some((feed, seconds, speed, Instant::now()));
     }
 
     pub fn pause(&mut self) {
@@ -101,9 +104,16 @@ impl Audio {
     /// where the sound is now, in seconds of the clip, from the device's own count of samples played.
     /// this is the clock when a clip has sound. None while paused or silent.
     pub fn position(&self) -> Option<f64> {
-        let (feed, start, speed) = self.playing.as_ref()?;
+        let (feed, start, speed, _) = self.playing.as_ref()?;
         let output = self.output.as_ref().filter(|o| !o.lost())?;
         Some(clip_seconds(*start, feed.heard(Instant::now(), output.rate), output.rate, *speed))
+    }
+
+    /// a play was asked for and none of it has reached the speaker yet. the picture waits for it, so the two start
+    /// together; a device that never starts holds it no longer than `START_WITHIN`.
+    pub fn starting(&self) -> bool {
+        let Some((feed, _, _, asked)) = &self.playing else { return false };
+        asked.elapsed() < START_WITHIN && self.output.as_ref().is_some_and(|o| !o.lost() && feed.heard(Instant::now(), o.rate) == 0)
     }
 
     fn send(&self, play: Option<Play>) {

@@ -28,6 +28,9 @@ $env:EYEPIECE_POSTED_POINTER = '1'
 # the player keeps its settings under APPDATA. the tests give it a folder of their own, so every run starts from the
 # defaults and the owner's own settings are left alone
 $env:APPDATA = Join-Path $env:TEMP "eyepiece-e2e-$PID"
+# and muted, so nothing the tests play is heard
+New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on'
 # one player per user: a launch hands its file to a player already running. players started with the same
 # EYEPIECE_INSTANCE find each other and no other, so these never hand a file to one of the owner's
 $env:EYEPIECE_INSTANCE = "e2e-$PID"
@@ -117,13 +120,13 @@ Move-Pointer $mid[0] $mid[1]
 Send-Key 0x31; Assert-Title '1 is 1:1, and the title names the pixel under the pointer with its values' ' . 100% . x 32 y 32 . \d+ \d+ \d+$'
 [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536 + 0x8004), [IntPtr]0); Assert-Title 'shift + wheel zooms in one stop, about the pointer' ' . 200% . x 32 y 32 . '
 Send-Key 0x30; Assert-Frame '0 fits the picture again' 0 3
-# the bar, from the right: fullscreen, screenshots, metadata and the view (30 wide each), then the zoom, the speed
+# the bar, from the right: fullscreen, sound, screenshots, metadata and the view (30 wide each), then the zoom, the speed
 # and the loop by name.
 # a menu stands over its own button, its right edge 4 past the button's. the zoom menu's choices are 181 up from the
 # bottom, 1:1 the second of five; its field is 143 up
-Click-At -171 -32; Click-At -314 -181; Assert-Title 'the zoom menu''s 1:1 choice' ' . 100%'
-Click-At -187 -143; Send-Key 0x41 1 4; Send-Char '250'; Send-Key 0x0D; Assert-Title 'a zoom typed into the menu''s field' ' . 250%'
-Click-At -187 -143; Send-Key 0x41 1 4; Send-Char '1600'; Send-Key 0x0D; Send-Key 0x1B
+Click-At -203 -32; Click-At -346 -181; Assert-Title 'the zoom menu''s 1:1 choice' ' . 100%'
+Click-At -219 -143; Send-Key 0x41 1 4; Send-Char '250'; Send-Key 0x0D; Assert-Title 'a zoom typed into the menu''s field' ' . 250%'
+Click-At -219 -143; Send-Key 0x41 1 4; Send-Char '1600'; Send-Key 0x0D; Send-Key 0x1B
 Move-Pointer $mid[0] $mid[1]; Assert-Title 'escape closes the menu; at 1600% the middle of the picture is still under the middle of the window' ' . 1600% . x 32 y 32 . '
 Send-Key 0x25 1 2; Assert-Title 'alt + left moves the picture right by an eighth of the window' ' . 1600% . x 2\d y 32 . '
 Send-Key 0x30; Assert-Frame '0 fits the picture' 0 3
@@ -141,11 +144,11 @@ Send-Key 0x41; Assert-Title 'A starts loop analysis on the frame before the seam
 Send-Key 0x47; Assert-Title 'a step crosses the seam to the first frame' '^hapq_64\.mov . 0 / 3 . .* . loop analysis$'
 Send-Key 0x41; Assert-Frame 'A leaves loop analysis' 0 3
 # and by pointer: the speed menu's 2x is the fourth of five choices, 122 up; the loop menu's off is the first of two
-Click-At -224 -32; Click-At -291 -122; Assert-Title 'the speed menu''s 2x choice' ' . 2.$'
+Click-At -256 -32; Click-At -323 -122; Assert-Title 'the speed menu''s 2x choice' ' . 2.$'
 Send-Key 0x1B; Send-Key 0x08; Assert-Frame 'backspace is 1x again, with the menu closed' 0 3
-Click-At -270 -32; Click-At -431 -181; Assert-Title 'the loop menu''s off choice' ' . loop off$'
-Click-At -479 -143; Assert-Title 'the loop menu''s switch starts loop analysis' ' . loop analysis$'
-Click-At -479 -143; Click-At -311 -181; Send-Key 0x1B; Send-Key 0x24; Assert-Frame 'the switch again, then the one choice: looping as before' 0 3
+Click-At -302 -32; Click-At -463 -181; Assert-Title 'the loop menu''s off choice' ' . loop off$'
+Click-At -511 -143; Assert-Title 'the loop menu''s switch starts loop analysis' ' . loop analysis$'
+Click-At -511 -143; Click-At -343 -181; Send-Key 0x1B; Send-Key 0x24; Assert-Frame 'the switch again, then the one choice: looping as before' 0 3
 
 # the view: guides, the look, one channel
 Send-Key 0x44; Assert-Title 'D shows the grid' ' . grid$'
@@ -158,9 +161,9 @@ Send-Key 0x51; Assert-Title 'Q turns it a quarter' ' . rotated 90.$'
 Send-Key 0x56; Assert-Title 'V flips it' ' . flipped . rotated 90.$'
 Send-Key 0x56; Send-Key 0x51 3; Assert-Frame 'three more quarters and it is upright' 0 3
 # the view menu: the channels are 126 up from the bottom, r the second of five; mirror is the first button, 86 up
-Click-At -119 -32; Click-At -282 -126; Assert-Title 'the view menu''s r choice shows red alone' ' . red only$'
-Click-At -330 -126; Click-At -315 -86; Assert-Title 'rgb again, and the mirror button' ' . mirrored$'
-Click-At -315 -86; Send-Key 0x1B; Assert-Frame 'the mirror button again' 0 3
+Click-At -151 -32; Click-At -314 -126; Assert-Title 'the view menu''s r choice shows red alone' ' . red only$'
+Click-At -362 -126; Click-At -347 -86; Assert-Title 'rgb again, and the mirror button' ' . mirrored$'
+Click-At -347 -86; Send-Key 0x1B; Assert-Frame 'the mirror button again' 0 3
 
 # fullscreen: the frame goes and the picture area is a whole display; escape puts the window back
 $before = Get-Width
@@ -338,7 +341,7 @@ New-Item -ItemType Directory $wrap, $above, $tree, $shots | Out-Null
 foreach ($to in $copies.Keys) { Copy-Item -LiteralPath (Join-Path $media $copies[$to]) -Destination $to }
 Set-Content -LiteralPath (Join-Path $tree 'notes.txt') -Value 'not a clip'
 # the browser starts in the folder it was last in, which the settings name
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree"
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
 Start-Player
 Assert-Title 'started with no file, the browser is up' '^eyepiece$'
 # folders are listed off the drawing thread: each gets a moment to arrive before the keys move in it
@@ -379,6 +382,23 @@ Stop-Player
 foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), $shots, $tree, $above, $wrap) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
+
+# ---- sound: the keys and the bar's button set how loud the player is, and that is kept. the tests' settings are
+# muted, and the clip stands still while they are not, so nothing is heard
+$settings = Join-Path $env:APPDATA 'eyepiece\settings.txt'
+Start-Player (Join-Path $media 'tone48_stereo.mov')
+Assert-Frame 'a clip with sound is open' 0 24
+# the sound button is the second from the right
+Send-Key 0x28; Click-At -55 -32
+Stop-Player
+$kept = Get-Content -LiteralPath $settings
+Confirm-That 'down turns the volume down a tenth, and a click on the sound button ends the mute' (($kept -contains 'volume = 0.7') -and ($kept -contains 'mute = off')) "the settings say: $($kept -match 'volume|mute')"
+($kept -replace '^mute = off$', 'mute = on') | Set-Content -LiteralPath $settings
+Start-Player (Join-Path $media 'tone48_stereo.mov')
+Send-Key 0x20; Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'muted, it plays with its sound as its clock, and stops when asked' '^tone48_stereo\.mov . \d+ / 24 '
+Stop-Player
+Confirm-That 'and the mute is kept' ((Get-Content -LiteralPath $settings) -contains 'mute = on') 'the settings do not say mute = on'
 
 # ---- what cannot be opened says why, and the window stays
 Start-Player (Join-Path $media 'h264_64.mkv')

@@ -13,6 +13,8 @@ pub enum Icon {
     Guides,
     Info,
     Shot,
+    Sound,
+    Mute,
     Full,
     Close,
 }
@@ -83,6 +85,16 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Shot => {
             painter.add(Shape::closed_line([(2.5, 5.5), (4.7, 5.5), (5.7, 4.0), (10.3, 4.0), (11.3, 5.5), (13.5, 5.5), (13.5, 12.5), (2.5, 12.5)].iter().map(|&(x, y)| p(x, y)).collect(), stroke));
             painter.circle_stroke(p(8.0, 8.9), 2.2 * unit, stroke);
+        }
+        Icon::Sound | Icon::Mute => {
+            painter.add(Shape::closed_line([(2.5, 6.3), (4.7, 6.3), (8.0, 3.7), (8.0, 12.3), (4.7, 9.7), (2.5, 9.7)].iter().map(|&(x, y)| p(x, y)).collect(), stroke));
+            if icon == Icon::Sound {
+                line(&arc(8.524, 8.0, 2.6, -43.8, 43.8));
+                line(&arc(8.334, 8.0, 5.0, -42.8, 42.8));
+            } else {
+                line(&[(10.6, 6.3), (13.8, 9.7)]);
+                line(&[(13.8, 6.3), (10.6, 9.7)]);
+            }
         }
         Icon::Full => {
             line(&[(2.8, 6.0), (2.8, 2.8), (6.0, 2.8)]);

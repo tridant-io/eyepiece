@@ -178,6 +178,10 @@ pub struct Model<'a> {
     pub facts: Facts<'a>,
     /// how the clip is decoded, in the panel's words
     pub decoded: &'a str,
+    /// the clip has sound; how loud the player is set, 0 to 1; and whether it is muted
+    pub sound: bool,
+    pub volume: f32,
+    pub muted: bool,
     /// where screenshots go, as the menu names it
     pub shots_to: &'a str,
 }
@@ -213,6 +217,9 @@ pub enum Action {
     Shot(Shot),
     /// this text to the clipboard
     Copy(String),
+    /// how loud, 0 to 1; and mute, or sound again
+    Volume(f32),
+    Mute,
     Fullscreen,
     /// the window: move it with the pointer, whose button is down; minimize; maximize or put back; close
     MoveWindow,
@@ -275,6 +282,8 @@ pub struct Ui {
     facts_left: Option<f64>,
     facts_rect: Rect,
     facts_button: Rect,
+    /// where the mute button and its slider were drawn: the slider is out while the pointer is on either
+    volume_rect: Rect,
     browser: browser::Browser,
 }
 
@@ -310,6 +319,7 @@ impl Ui {
             facts_left: None,
             facts_rect: Rect::NOTHING,
             facts_button: Rect::NOTHING,
+            volume_rect: Rect::NOTHING,
             browser: browser::Browser::new(folder),
         }
     }
@@ -762,8 +772,8 @@ impl Ui {
             self.toggle_timecode();
         }
 
-        // from the right, in the design's order (volume, not built yet, leaves no gap): fullscreen, screenshots,
-        // metadata, the view, and the three that say what they are set to: zoom, speed, loop
+        // from the right, in the design's order: fullscreen, sound, screenshots, metadata, the view, and the three
+        // that say what they are set to: zoom, speed, loop
         let mut right = bar.right() - PAD;
         let mut place = |w: f32, h: f32| {
             right -= w;
@@ -773,6 +783,26 @@ impl Ui {
         };
         if icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No).clicked() {
             actions.push(Action::Fullscreen);
+        }
+        // sound: the button mutes, and shows when nothing is to be heard. its slider comes out to its left while
+        // the pointer is on either, or holds the slider. plain, like everything on the bar
+        let button = place(ICON_BUTTON.x, ICON_BUTTON.y);
+        let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
+        if icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No).clicked() {
+            actions.push(Action::Mute);
+        }
+        let slider = ui.scope_id().with("volume");
+        let over = ui.ctx().pointer_latest_pos().is_some_and(|p| self.volume_rect.contains(p)) || ui.ctx().is_being_dragged(slider);
+        let out = ui.ctx().animate_bool_with_time(ui.scope_id().with("volume-out"), over, 0.12);
+        self.volume_rect = button;
+        if out > 0.0 {
+            let room = place(68.0 * out, 16.0);
+            if out >= 1.0 {
+                if let Some(to) = widgets::slider(ui, "volume", room.shrink2(Vec2::new(4.0, 0.0)), if model.muted { 0.0 } else { model.volume }, FG) {
+                    actions.push(Action::Volume(to));
+                }
+            }
+            self.volume_rect = self.volume_rect.union(room);
         }
         let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
         if icon_button(ui, rect, "shot", Icon::Shot, if self.menu == Some(Menu::Shot) { Lit::Open } else { Lit::No }).clicked() {
@@ -953,11 +983,21 @@ fn seam_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
 /// what the speed chip says, when the clip is not running at its own rate: "2× speed", "−4× reverse".
 fn speed_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
     let number = |rate: f64| format!("{}× ", (rate * 100.0).round() / 100.0);
+    // a clip with sound says when its sound is off for the speed
+    let off = if model.sound && !carries_sound(model) { " · audio off" } else { "" };
     if model.shuttle != 0 && (model.shuttle != 1 || model.speed != 1.0) {
         let sign = if model.shuttle < 0 { "−" } else { "" };
-        return Some(vec![(format!("{sign}{}", number(model.shuttle.abs() as f64)), FG), ((if model.shuttle < 0 { "reverse" } else { "shuttle" }).to_string(), DIM)]);
+        return Some(vec![(format!("{sign}{}", number(model.shuttle.abs() as f64)), FG), (format!("{}{off}", if model.shuttle < 0 { "reverse" } else { "shuttle" }), DIM)]);
     }
-    (model.speed != 1.0).then(|| vec![(number(model.speed), FG), ("speed".to_string(), DIM)])
+    (model.speed != 1.0).then(|| vec![(number(model.speed), FG), (format!("speed{off}"), DIM)])
+}
+
+/// whether play as it is set carries a clip's sound: forward, from half speed to double. L pressed once is 1×.
+fn carries_sound(model: &Model) -> bool {
+    match model.shuttle {
+        0 => (0.5..=2.0).contains(&model.speed),
+        shuttle => shuttle == 1,
+    }
 }
 
 /// a chip: a few words in a dark box, placed by one of its corners. returns the box.
