@@ -1,0 +1,473 @@
+//! the data behind the file browser: the sidebar's places, what kind of volume a path is on, and one folder's entries.
+//! a folder is read from its listing alone: on a network volume nothing else may be asked (adr 0004).
+
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::fs::{self, Metadata};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Volume {
+    Local,
+    Removable,
+    Network,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Place {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kind {
+    Folder,
+    Clip,
+    /// a numbered run of image files shown as one entry: name.0001.exr .. name.0240.exr.
+    /// each file's number is written `{n:0pad$}`: pad is the zero-padded width, 0 when the numbers are not padded.
+    Sequence { first: u64, last: u64, missing: Vec<u64>, pad: usize },
+    Other,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub path: PathBuf,
+    pub kind: Kind,
+    pub size: Option<u64>,
+    pub modified: Option<SystemTime>,
+}
+
+const CLIPS: &[&str] = &["mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm"];
+const STILLS: &[&str] = &["exr", "dpx", "png", "jpg", "jpeg", "tif", "tiff", "tga"];
+/// a numbered run wider than this is unrelated numbers (dates, timestamps), not frames. it also bounds `missing`.
+const SPAN: u64 = 1_000_000;
+
+/// what kind of volume a path is on. a unc path is network; anything that cannot be told is network too
+/// (unknown counts as network: the careful choice).
+#[cfg(windows)]
+pub fn volume_of(path: &Path) -> Volume {
+    use std::path::{Component, Prefix};
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows::Win32::System::WindowsProgramming::{DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE};
+    // a unc path, or any prefix but a drive letter, is decided here without asking the system
+    let Some(Component::Prefix(prefix)) = path.components().next() else { return Volume::Network };
+    let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else { return Volume::Network };
+    // the root needs its backslash: "C:" alone is not a root
+    match unsafe { GetDriveTypeW(&HSTRING::from(format!("{}:\\", letter as char))) } {
+        DRIVE_FIXED | DRIVE_RAMDISK => Volume::Local,
+        DRIVE_REMOVABLE | DRIVE_CDROM => Volume::Removable,
+        // a mapped share, an unknown type, or no such drive
+        _ => Volume::Network,
+    }
+}
+
+/// macos comes later: until then every path counts as network.
+#[cfg(not(windows))]
+pub fn volume_of(_path: &Path) -> Volume {
+    Volume::Network
+}
+
+/// the sidebar's shortcuts: downloads first (the browser opens there), then desktop, documents, pictures,
+/// videos, then every drive. from the system's known folders, not guessed paths.
+#[cfg(windows)]
+pub fn places() -> Vec<Place> {
+    use windows::Win32::Storage::FileSystem::GetLogicalDrives;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{
+        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Videos, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+    };
+    let known = [
+        ("downloads", FOLDERID_Downloads),
+        ("desktop", FOLDERID_Desktop),
+        ("documents", FOLDERID_Documents),
+        ("pictures", FOLDERID_Pictures),
+        ("videos", FOLDERID_Videos),
+    ];
+    let folders = known.into_iter().filter_map(|(name, id)| {
+        // without KF_FLAG_DONT_VERIFY the call fails when the folder is not there, so no probe of our own
+        let at = unsafe { SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None) }.ok()?;
+        let path = PathBuf::from(unsafe { at.to_hstring() }.to_os_string());
+        unsafe { CoTaskMemFree(Some(at.0 as _)) };
+        Some(Place { name: name.into(), path })
+    });
+    // a label would mean asking each volume, shares included, so drives go by letter
+    let used = unsafe { GetLogicalDrives() };
+    let drives = (0..26u8).filter(|i| used & (1 << i) != 0).map(|i| {
+        let root = format!("{}:\\", (b'A' + i) as char);
+        Place { name: root[..2].into(), path: root.into() }
+    });
+    folders.chain(drives).collect()
+}
+
+/// macos comes later.
+#[cfg(not(windows))]
+pub fn places() -> Vec<Place> {
+    Vec::new()
+}
+
+/// one folder's entries: folders first, then files, each in natural name order. hidden and system files
+/// are left out. image files that form a numbered run of two or more become one Sequence entry, with its
+/// gaps recorded. sizes and dates come from the listing alone.
+pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
+    let (mut folders, mut files) = (Vec::new(), Vec::new());
+    for item in fs::read_dir(dir)? {
+        let item = item?;
+        // on windows this comes with the listing; fs::metadata would open the file (phase 0, gate 6)
+        let meta = item.metadata()?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        let (folder, hidden) = flags(&name, &meta);
+        if hidden {
+            continue;
+        }
+        let modified = meta.modified().ok();
+        if folder {
+            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified });
+        } else {
+            let kind = if is_media(&name) { Kind::Clip } else { Kind::Other };
+            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified });
+        }
+    }
+    let mut files = fold_sequences(files);
+    folders.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    files.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    folders.append(&mut files);
+    Ok(folders)
+}
+
+/// (folder, hidden), from what the listing says.
+#[cfg(windows)]
+fn flags(name: &str, meta: &Metadata) -> (bool, bool) {
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+    let a = meta.file_attributes();
+    // the directory bit also marks junctions and folder links, which std's is_dir() counts as symlinks.
+    // a leading dot hides the ._ and .DS_Store files a mac leaves on shared drives
+    (a & FILE_ATTRIBUTE_DIRECTORY.0 != 0, a & (FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0) != 0 || name.starts_with('.'))
+}
+
+#[cfg(not(windows))]
+fn flags(name: &str, meta: &Metadata) -> (bool, bool) {
+    (meta.is_dir(), name.starts_with('.'))
+}
+
+pub fn is_media(name: &str) -> bool {
+    has_ext(name, CLIPS) || has_ext(name, STILLS)
+}
+
+fn has_ext(name: &str, exts: &[&str]) -> bool {
+    Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+/// one still that may belong to a run
+struct Frame<'a> {
+    n: u64,
+    digits: &'a str,
+    /// its place in the folder's files
+    at: usize,
+}
+
+/// a still's name split at the last run of digits before its extension: ((before, extension with its dot), frame)
+fn numbered(name: &str, at: usize) -> Option<((&str, &str), Frame<'_>)> {
+    if !has_ext(name, STILLS) {
+        return None;
+    }
+    let (stem, ext) = name.split_at(name.rfind('.')?);
+    let before = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+    let digits = &stem[before.len()..];
+    // no digits, or too many for a u64: a name, not a frame number
+    Some(((before, ext), Frame { n: digits.parse().ok()?, digits, at }))
+}
+
+/// the width that writes every frame's digits back as `{n:0pad$}`, 0 when nothing is zero-padded.
+/// None when no one width does: a.1.exr beside a.01.exr.
+fn pad_of(run: &[Frame]) -> Option<usize> {
+    let zero_led = |f: &&Frame| f.digits.len() > 1 && f.digits.starts_with('0');
+    let width = run.iter().map(|f| f.digits.len()).min()?;
+    if run.iter().filter(zero_led).any(|f| f.digits.len() != width) {
+        return None;
+    }
+    Some(if run.iter().any(|f| zero_led(&f)) { width } else { 0 })
+}
+
+/// folds each numbered run of stills into one entry; everything else stays as it is.
+fn fold_sequences(files: Vec<Entry>) -> Vec<Entry> {
+    let mut runs: HashMap<(&str, &str), Vec<Frame>> = HashMap::new();
+    for (at, file) in files.iter().enumerate() {
+        if let Some((key, frame)) = numbered(&file.name, at) {
+            runs.entry(key).or_default().push(frame);
+        }
+    }
+    let mut taken = vec![false; files.len()];
+    let mut out = Vec::new();
+    for ((before, ext), run) in runs {
+        let parts = if pad_of(&run).is_some() {
+            vec![run]
+        } else {
+            // mixed padding: each width is its own run
+            let mut widths: HashMap<usize, Vec<Frame>> = HashMap::new();
+            for frame in run {
+                widths.entry(frame.digits.len()).or_default().push(frame);
+            }
+            widths.into_values().collect()
+        };
+        for mut part in parts {
+            if let Some(seq) = sequence(before, ext, &mut part, &files) {
+                for f in &part {
+                    taken[f.at] = true;
+                }
+                out.push(seq);
+            }
+        }
+    }
+    out.extend(files.into_iter().zip(taken).filter(|(_, taken)| !taken).map(|(file, _)| file));
+    out
+}
+
+/// one run as a single entry, or None when it is not a sequence after all: one frame, or numbers too far apart.
+fn sequence(before: &str, ext: &str, run: &mut [Frame], files: &[Entry]) -> Option<Entry> {
+    let pad = pad_of(run)?;
+    run.sort_unstable_by_key(|f| f.n);
+    let (first, last) = (run.first()?.n, run.last()?.n);
+    if run.len() < 2 || last - first >= SPAN {
+        return None;
+    }
+    let missing = run.windows(2).flat_map(|p| p[0].n + 1..p[1].n).collect();
+    let members = || run.iter().map(|f| &files[f.at]);
+    Some(Entry {
+        name: format!("{before}[{first:0pad$}-{last:0pad$}]{ext}"),
+        path: files[run[0].at].path.clone(),
+        kind: Kind::Sequence { first, last, missing, pad },
+        size: Some(members().filter_map(|f| f.size).sum()),
+        modified: members().filter_map(|f| f.modified).max(),
+    })
+}
+
+/// names in the order a person expects: numbers by value (v9 before v10), letters without case.
+/// names that differ only in case or leading zeros still get a fixed order.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut x, mut y) = (a, b);
+    while let (Some(p), Some(q)) = (x.chars().next(), y.chars().next()) {
+        let order = if p.is_ascii_digit() && q.is_ascii_digit() {
+            let (m, rest) = split_digits(x);
+            x = rest;
+            let (n, rest) = split_digits(y);
+            y = rest;
+            let (m, n) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+            // length first: a run of any length compares without becoming an integer
+            m.len().cmp(&n.len()).then(m.cmp(n))
+        } else {
+            x = &x[p.len_utf8()..];
+            y = &y[q.len_utf8()..];
+            p.to_lowercase().cmp(q.to_lowercase())
+        };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+    y.is_empty().cmp(&x.is_empty()).then_with(|| a.cmp(b))
+}
+
+fn split_digits(s: &str) -> (&str, &str) {
+    s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// a folder under the temp folder that removes what it made one item at a time, never recursively
+    struct Scratch {
+        dir: PathBuf,
+        /// (path, is a folder), in the order made
+        made: Vec<(PathBuf, bool)>,
+    }
+
+    impl Scratch {
+        fn new(tag: &str) -> Scratch {
+            let dir = std::env::temp_dir().join(format!("eyepiece-browse-{tag}-{}", std::process::id()));
+            fs::create_dir(&dir).unwrap();
+            Scratch { made: vec![(dir.clone(), true)], dir }
+        }
+
+        fn file(&mut self, name: &str, bytes: usize) {
+            let path = self.dir.join(name);
+            fs::write(&path, vec![0u8; bytes]).unwrap();
+            self.made.push((path, false));
+        }
+
+        fn files(&mut self, names: &[&str]) {
+            names.iter().for_each(|name| self.file(name, 10));
+        }
+
+        fn folder(&mut self, name: &str) {
+            let path = self.dir.join(name);
+            fs::create_dir(&path).unwrap();
+            self.made.push((path, true));
+        }
+
+        fn names(&self) -> Vec<String> {
+            list(&self.dir).unwrap().into_iter().map(|e| e.name).collect()
+        }
+
+        fn entry(&self, name: &str) -> Entry {
+            list(&self.dir).unwrap().into_iter().find(|e| e.name == name).unwrap_or_else(|| panic!("no entry {name}"))
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            for (path, folder) in self.made.iter().rev() {
+                let removed = if *folder { fs::remove_dir(path) } else { fs::remove_file(path) };
+                if let Err(why) = removed {
+                    // a second panic while a failed test unwinds would abort the run, so then it is only reported
+                    if std::thread::panicking() {
+                        eprintln!("left behind {}: {why}", path.display());
+                    } else {
+                        panic!("could not remove {}: {why}", path.display());
+                    }
+                }
+            }
+        }
+    }
+
+    fn seq(first: u64, last: u64, missing: &[u64], pad: usize) -> Kind {
+        Kind::Sequence { first, last, missing: missing.to_vec(), pad }
+    }
+
+    #[test]
+    fn folders_first_then_files_in_natural_order() {
+        let mut s = Scratch::new("order");
+        for name in ["dir10", "b_dir", "dir9", "A_dir"] {
+            s.folder(name);
+        }
+        s.file("z.txt", 3);
+        s.file("clip_v10.mov", 7);
+        s.files(&["clip_v9.mov", "B.png", "a.mov"]);
+        assert_eq!(s.names(), ["A_dir", "b_dir", "dir9", "dir10", "a.mov", "B.png", "clip_v9.mov", "clip_v10.mov", "z.txt"]);
+        let dir = s.entry("dir9");
+        assert_eq!((dir.kind, dir.size, dir.path), (Kind::Folder, None, s.dir.join("dir9")));
+        let clip = s.entry("clip_v10.mov");
+        assert_eq!((clip.kind, clip.size), (Kind::Clip, Some(7)));
+        assert!(clip.modified.is_some());
+        assert_eq!(s.entry("B.png").kind, Kind::Clip);
+        assert_eq!(s.entry("z.txt").kind, Kind::Other);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hidden_and_system_files_are_left_out() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+        let mut s = Scratch::new("hidden");
+        s.files(&["shown.mov", ".DS_Store", "._shown.mov"]);
+        for (name, attributes) in [("hidden.mov", FILE_ATTRIBUTE_HIDDEN), ("system.mov", FILE_ATTRIBUTE_SYSTEM)] {
+            let path = s.dir.join(name);
+            fs::OpenOptions::new().write(true).create_new(true).attributes(attributes.0).open(&path).unwrap();
+            s.made.push((path, false));
+        }
+        assert_eq!(s.names(), ["shown.mov"]);
+    }
+
+    #[test]
+    fn a_numbered_run_of_stills_is_one_sequence_with_its_gaps() {
+        let mut s = Scratch::new("sequence");
+        s.files(&["shot_010.0001.exr", "shot_010.0002.exr", "shot_010.0004.exr", "shot_010.0005.exr"]);
+        // beside it: another run, other separators, another extension, a lone numbered still, numbered clips
+        s.files(&["shot_020_0001.exr", "shot_020_0002.exr", "plate-1001.dpx", "plate-1002.dpx", "ref1.png", "ref2.png"]);
+        s.files(&["shot_010.0003.jpg", "frame_0042.png", "take_v001.mov", "take_v002.mov"]);
+        assert_eq!(
+            s.names(),
+            [
+                "frame_0042.png",
+                "plate-[1001-1002].dpx",
+                "ref[1-2].png",
+                "shot_010.0003.jpg",
+                "shot_010.[0001-0005].exr",
+                "shot_020_[0001-0002].exr",
+                "take_v001.mov",
+                "take_v002.mov",
+            ]
+        );
+        let run = s.entry("shot_010.[0001-0005].exr");
+        assert_eq!(run.kind, seq(1, 5, &[3], 4));
+        assert_eq!((run.size, run.path), (Some(40), s.dir.join("shot_010.0001.exr")));
+        assert!(run.modified.is_some());
+        assert_eq!(s.entry("plate-[1001-1002].dpx").kind, seq(1001, 1002, &[], 0));
+        assert_eq!(s.entry("frame_0042.png").kind, Kind::Clip);
+        assert_eq!(s.entry("shot_010.0003.jpg").kind, Kind::Clip);
+        assert_eq!(s.entry("take_v001.mov").kind, Kind::Clip);
+    }
+
+    #[test]
+    fn padding_is_the_width_that_writes_every_number_back() {
+        let mut s = Scratch::new("padding");
+        // not padded, one sequence
+        s.files(&["a.8.exr", "a.9.exr", "a.10.exr"]);
+        // padded to four, with a number that outgrew it
+        s.files(&["b.0999.exr", "b.10000.exr"]);
+        // two paddings side by side: two sequences, never one with frame 1 twice
+        s.files(&["c.1.exr", "c.2.exr", "c.01.exr", "c.02.exr"]);
+        assert_eq!(s.names(), ["a.[8-10].exr", "b.[0999-10000].exr", "c.[01-02].exr", "c.[1-2].exr"]);
+        assert_eq!(s.entry("a.[8-10].exr").kind, seq(8, 10, &[], 0));
+        let Kind::Sequence { first, last, missing, pad } = s.entry("b.[0999-10000].exr").kind else { panic!("not a sequence") };
+        assert_eq!((first, last, missing.len(), pad), (999, 10000, 9000, 4));
+        assert_eq!(s.entry("c.[1-2].exr").kind, seq(1, 2, &[], 0));
+        assert_eq!(s.entry("c.[01-02].exr").kind, seq(1, 2, &[], 2));
+    }
+
+    #[test]
+    fn numbers_too_far_apart_are_not_a_sequence() {
+        let mut s = Scratch::new("span");
+        s.files(&["scan_1.png", "scan_20261123.png"]);
+        assert_eq!(s.names(), ["scan_1.png", "scan_20261123.png"]);
+        assert_eq!(s.entry("scan_1.png").kind, Kind::Clip);
+    }
+
+    #[test]
+    fn natural_order() {
+        let mut names = vec!["v10", "x100", "V9", "file2", "v9b", "B", "file02", "a", "x20", "file1", "n100000000000000000000", "n99999999999999999999"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["a", "B", "file1", "file02", "file2", "n99999999999999999999", "n100000000000000000000", "V9", "v9b", "v10", "x20", "x100"]);
+        assert_eq!(natural_cmp("a", "A"), "a".cmp("A"));
+    }
+
+    #[test]
+    fn media_by_extension_without_case() {
+        assert!(is_media("a.MOV") && is_media("b.Exr") && is_media("c.webm") && is_media("d.jpeg"));
+        assert!(!is_media("e.pdf") && !is_media("mov") && !is_media(".mov"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn volume_of_drives_and_shares() {
+        use windows::Win32::Storage::FileSystem::GetLogicalDrives;
+        assert_eq!(volume_of(Path::new(r"C:\")), Volume::Local);
+        // a folder that does not exist is on the drive its path names
+        assert_eq!(volume_of(Path::new(r"C:\no\such\folder")), Volume::Local);
+        // decided from the string alone: nothing is asked of a network
+        assert_eq!(volume_of(Path::new(r"\\server\share\x")), Volume::Network);
+        assert_eq!(volume_of(Path::new(r"\\?\UNC\server\share\x")), Volume::Network);
+        assert_eq!(volume_of(Path::new("relative")), Volume::Network);
+        let used = unsafe { GetLogicalDrives() };
+        let free = (0..26u8).find(|i| used & (1 << i) == 0).expect("a drive letter nothing is on");
+        assert_eq!(volume_of(&PathBuf::from(format!("{}:\\x", (b'A' + free) as char))), Volume::Network);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn places_start_at_downloads_and_end_with_the_drives() {
+        let places = places();
+        assert_eq!(places[0].name, "downloads");
+        let order = ["downloads", "desktop", "documents", "pictures", "videos"];
+        let named: Vec<&str> = places.iter().map(|p| p.name.as_str()).filter(|n| order.contains(n)).collect();
+        let expected: Vec<&str> = order.into_iter().filter(|n| named.contains(n)).collect();
+        assert_eq!(named, expected);
+        let drives = &places[named.len()..];
+        assert!(drives.iter().all(|p| p.name.len() == 2 && p.path == Path::new(&format!("{}\\", p.name))), "{drives:?}");
+        assert!(drives.iter().any(|p| p.path == Path::new(r"C:\")));
+    }
+}

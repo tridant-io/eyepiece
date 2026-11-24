@@ -4,6 +4,7 @@
 // no console window behind the player in a release build
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod browse;
 mod event;
 mod media;
 mod play;
