@@ -629,14 +629,14 @@ impl Ui {
         painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width(), 1.0)), 0.0, LINE);
         // a press on the bar is not a press on the picture under it
         ui.interact(bar, ui.scope_id().with("bar"), Sense::click_and_drag());
-        let row = Rect::from_min_size(Pos2::new(bar.left(), bar.top() + 1.0), Vec2::new(bar.width(), ROW));
+        let middle = row_middle(bar);
         let narrow = bar.width() < NARROW;
 
         // from the left: previous frame, play, next frame, the readout
-        let mut x = row.left() + PAD;
+        let mut x = bar.left() + PAD;
         // the next item in the row, `lead` further along than the usual gap
         let mut place = |lead: f32, w: f32, h: f32| {
-            let r = Rect::from_min_size(Pos2::new(x + lead, row.center().y - h / 2.0), Vec2::new(w, h));
+            let r = Rect::from_min_size(Pos2::new(x + lead, middle - h / 2.0), Vec2::new(w, h));
             x += lead + w + GAP;
             r
         };
@@ -658,10 +658,10 @@ impl Ui {
 
         // from the right, in the design's order (those not built yet leave no gap): fullscreen, the view, and the
         // three that say what they are set to: zoom, speed, loop
-        let mut right = row.right() - PAD;
+        let mut right = bar.right() - PAD;
         let mut place = |w: f32, h: f32| {
             right -= w;
-            let r = Rect::from_min_size(Pos2::new(right, row.center().y - h / 2.0), Vec2::new(w, h));
+            let r = Rect::from_min_size(Pos2::new(right, middle - h / 2.0), Vec2::new(w, h));
             right -= GAP;
             r
         };
@@ -695,7 +695,7 @@ impl Ui {
             }
         }
 
-        self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), row.bottom()), bar.max), model, actions);
+        self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), middle + TEXT_BUTTON / 2.0), bar.max), bar.top(), model, actions);
     }
 
     /// opens a menu over its button, or closes it when it is the one open.
@@ -706,7 +706,8 @@ impl Ui {
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
     /// in loop analysis it is the round: the clip's last seconds, the seam marked in the middle, its first seconds.
-    fn timebar(&mut self, ui: &mut egui::Ui, area: Rect, model: &Model, actions: &mut Vec<Action>) {
+    /// `over` is the top of the bar, which the box naming the frame under the pointer stands above.
+    fn timebar(&mut self, ui: &mut egui::Ui, area: Rect, over: f32, model: &Model, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
         let response = ui.interact(area, ui.scope_id().with("timebar"), Sense::click_and_drag());
         let (at, last) = match model.seam {
@@ -744,7 +745,7 @@ impl Ui {
             let galley = painter.layout_no_wrap(format!("{:06}", stop_at(p.x)), font(MONO_MEDIUM, 10.5), FG);
             let size = galley.size() + Vec2::new(16.0, 10.0);
             let left = (p.x - size.x / 2.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0);
-            let rect = Rect::from_min_size(Pos2::new(left, area.top() - ROW - 8.0 - size.y), size);
+            let rect = Rect::from_min_size(Pos2::new(left, over - 7.0 - size.y), size);
             painter.rect_filled(rect, 0.0, SOLID);
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
             painter.galley(rect.center() - galley.size() / 2.0, galley, FG);
@@ -777,6 +778,12 @@ fn message(ui: &egui::Ui, area: Rect, title: &str, why: &str) {
     let under = top + title.size().y + 8.0;
     painter.galley(Pos2::new(area.center().x - title.size().x / 2.0, top), title, FG);
     painter.galley(Pos2::new(area.center().x - why.size().x / 2.0, under), why, DIM);
+}
+
+/// the height the bar's row of controls is centered on: the middle of what is seen of the bar, from the line along
+/// its top to the timebar's track at rest.
+fn row_middle(bar: Rect) -> f32 {
+    (bar.top() + 1.0 + bar.bottom() - TRACK_THIN) / 2.0
 }
 
 /// what the loop analysis chip says, while it is on.
@@ -876,4 +883,18 @@ fn banner(ui: &egui::Ui, at: Pos2, width: f32, text: &str) -> Rect {
     painter.rect_filled(Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())), 0.0, AMBER);
     painter.galley(rect.min + Vec2::new(12.0, 8.0), galley, DIM);
     rect
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// the row of controls sits in the middle of the bar as it is seen: as far under the line along the bar's top as
+    /// it is over the timebar's track at rest.
+    #[test]
+    fn the_bars_controls_are_centered_between_its_top_line_and_the_timebar() {
+        let bar = Rect::from_min_size(Pos2::new(0.0, 309.0), Vec2::new(640.0, 1.0 + ROW + TIME));
+        let middle = row_middle(bar);
+        assert_eq!(middle - (bar.top() + 1.0), (bar.bottom() - TRACK_THIN) - middle);
+    }
 }
