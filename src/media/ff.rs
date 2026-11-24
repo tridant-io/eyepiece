@@ -166,6 +166,12 @@ impl Input {
         })
     }
 
+    /// the index of the first sound stream.
+    pub fn first_audio(&self) -> Option<usize> {
+        let n = unsafe { (*self.ctx).nb_streams } as usize;
+        (0..n).find(|&i| unsafe { (*(**(*self.ctx).streams.add(i)).codecpar).codec_type == AVMediaType::AVMEDIA_TYPE_AUDIO })
+    }
+
     /// every stored sample of a stream, in file order, from the container's own table. the header alone gives this.
     pub fn samples(&self, stream: usize) -> Vec<Sample> {
         unsafe {
