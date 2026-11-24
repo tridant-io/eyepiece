@@ -366,7 +366,7 @@ pub fn caption(name: &str, frame: usize, rate: Option<(i64, i64)>, size: (usize,
 #[cfg(test)]
 mod tests {
     use super::super::tests::{drive, drive_with, model};
-    use super::super::Ui;
+    use super::super::{Extras, Ui};
     use super::*;
     use crate::event::Button::{self, Left};
     use crate::event::Mods;
@@ -460,6 +460,54 @@ mod tests {
         assert!(!ui.typing(), "the keys are the player's again");
         // the next escape ends markup mode
         assert!(ui.escape() && !ui.markup.on);
+    }
+
+    /// a click on the row of tools picks a tool or an ink, or does what undo, clear, save image and done say (their
+    /// keys, or the screenshot), and draws nothing.
+    #[test]
+    fn the_row_of_tools_does_what_it_says() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        // the pointer at the top brings the controls up, and the row down under the strip; it stays while the pointer
+        // is on the row
+        drive(&mut ui, &[(320.0, 20.0, None)]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drive(&mut ui, &[(320.0, 20.0, None)]);
+        // a click `along` from the row's left edge (or, negative, from its right), on the middle of its items
+        let mut press = |along: f32| {
+            let row = ui.markup.row.expect("the row of tools is up");
+            let x = if along < 0.0 { row.right() + along } else { row.left() + along };
+            drive(&mut ui, &click((x, row.top() + 4.0 + ITEM_HIGH / 2.0)))
+        };
+        // inside the line and the padding (4): the tools 32 apart, a rule 11, the inks 24 apart, a rule, undo, clear,
+        // a rule, then the words
+        assert_eq!(press(4.0 + 3.0 * 32.0 + 15.0), vec![]);
+        assert_eq!(press(4.0 + 4.0 * 32.0 + 11.0 + 24.0 + 11.0), vec![]);
+        assert_eq!(press(4.0 + 246.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL)]);
+        assert_eq!(press(4.0 + 246.0 + 32.0 + 15.0), vec![Action::ClearMarks]);
+        assert_eq!(press(4.0 + 246.0 + 64.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
+        assert_eq!(press(-14.0), vec![Action::Key(Key::E, keys::NONE)]);
+        assert_eq!((ui.markup.tool, ui.markup.ink), (Tool::Text, 1));
+    }
+
+    /// the screenshot menu's switches and its "markup mode" button.
+    #[test]
+    fn the_screenshot_menu_switches_what_a_saved_picture_carries_and_starts_markup() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        // the screenshot button: the third from the bar's right end, 32 up
+        drive(&mut ui, &[(553.0, 328.0, None), (553.0, 328.0, None)]);
+        drive(&mut ui, &click((553.0, 328.0)));
+        drive(&mut ui, &[(553.0, 328.0, None), (553.0, 328.0, None)]);
+        let menu = ui.menu_rect;
+        // inside its line and padding (13), from the bottom: the "markup mode" button 30 high, then the switches,
+        // 15.6 high and 11 apart: markup, guides, the caption
+        let switch = |n: f32| menu.bottom() - 13.0 - 30.0 - 11.0 - 7.8 - n * 26.6;
+        let guides = drive(&mut ui, &click((menu.left() + 60.0, switch(1.0))));
+        assert_eq!(guides, vec![Action::Extras(Extras { caption: false, guides: true, markup: true })]);
+        let caption = drive(&mut ui, &click((menu.left() + 60.0, switch(2.0))));
+        assert_eq!(caption, vec![Action::Extras(Extras { caption: true, guides: false, markup: true })]);
+        let mode = drive(&mut ui, &click((menu.left() + 40.0, menu.bottom() - 13.0 - 15.0)));
+        assert_eq!(mode, vec![Action::Key(Key::E, Mods::default())]);
     }
 
     #[test]

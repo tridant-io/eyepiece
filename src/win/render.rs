@@ -1717,9 +1717,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 // in the browser the keys move about it and letters select by name
                 Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key, mods),
-                // only the character of the command's own press: a key the player has no use for sends no key, only
-                // its character, which must still reach the browser
-                Event::Char(_) if command => command = false,
+                // the character a command's own press types is not typed. a field being typed into takes every
+                // character: one that comes without a key of its own, after a command chosen with the pointer (undo
+                // from the row of tools), is no command's
+                Event::Char(_) if command && !ui.typing() => command = false,
                 Event::Char(c) if browsing => ui.browser_char(c),
                 // ? (or the slash alone) shows the table of keys over the clip
                 Event::Key { key: Key::Slash, mods } if !mods.ctrl && !mods.alt => ui.show_keys(),
@@ -2219,6 +2220,30 @@ mod tests {
         assert!(close(at(&pixels, 1, 66), [0x11 * 257; 4]), "{:?}", at(&pixels, 1, 66));
         let (_, copy, with) = shot_pixels(&view, Some(&marks), &gpu, Shot::Copy, &settings, 1.0).expect("a copy");
         assert!(copy == plain && with.is_empty());
+    }
+
+    /// the view saved as shown carries the marks where the window shows them, mirrored with the picture, and the
+    /// guides: here the center line, down the middle.
+    #[test]
+    fn a_saved_view_carries_the_marks_and_the_guides_as_the_window_shows_them() {
+        use crate::markup::{Mark, Shape, INKS};
+        let (gpu, mut view) = view("hap_64.mov");
+        view.set_look(Look { mirror: true, ..Look::default() });
+        let mut marks = Marks::default();
+        marks.add(0, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] });
+        let settings = Settings { center: true, screenshot_guides: true, screenshot_markup: true, ..Settings::default() };
+        let ((w, h), pixels, with) = shot_pixels(&view, Some(&marks), &gpu, Shot::View, &settings, 1.0).expect("a picture");
+        assert_eq!((w, h, with), (64, 64, vec!["guides", "markup"]));
+        let at = |x: usize, y: usize| -> [i32; 3] { std::array::from_fn(|c| pixels[(y * 64 + x) * 4 + c] as i32) };
+        let close = |a: [i32; 3], b: [i32; 3]| (0..3).all(|c| (a[c] - b[c]).abs() < 700);
+        // the rectangle's left side, x = 10 of the file, is shown mirrored at x = 54 of the window
+        let side = Placing { picture: view.framing.rect((64.0, 64.0)), look: view.look, size: view.size() }.to_window((10.0, 25.0));
+        assert_eq!(side, (54.0, 25.0));
+        let red = [65535, 0x3b * 257, 0x30 * 257];
+        assert!(close(at(53, 25), red) && close(at(54, 25), red), "{:?} {:?}", at(53, 25), at(54, 25));
+        assert!(!close(at(9, 25), red) && !close(at(10, 25), red), "nothing where the file has it unmirrored");
+        // the center line, one pixel wide at 100%, in the guides' color
+        assert!(close(at(32, 5), [0x3d * 257, 0xf0 * 257, 0xff * 257]), "{:?}", at(32, 5));
     }
 
     /// what a frame read back holds of the file's alpha, by lane: a still's own (here a png with clear pixels), which a
