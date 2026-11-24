@@ -1,11 +1,15 @@
-//! windows: the window, the direct3d renderer and the render thread.
+//! windows: the window and the direct3d renderer, as the player (`crate::player`) knows them.
 
 mod d3d;
 mod instance;
-mod pictures;
-mod render;
+mod paint;
+pub mod pictures;
 mod ui_paint;
-mod window;
+pub mod window;
+
+pub use d3d::Gpu;
+pub use paint::Paint;
+pub use ui_paint::UiPainter;
 
 use crate::media::clip::Clip;
 use std::sync::mpsc;
@@ -32,7 +36,7 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     // the render thread's way to wake itself: what it has read or written in the background says when it is done
     let wake = tx.clone();
     let handle = window::create(client, tx).map_err(|e| e.to_string())?;
-    let render = std::thread::Builder::new().name("render".into()).spawn(move || render::run(handle, rx, wake, first)).map_err(|e| e.to_string())?;
+    let render = std::thread::Builder::new().name("render".into()).spawn(move || crate::player::run(handle, rx, wake, first)).map_err(|e| e.to_string())?;
     window::run();
     let _ = render.join();
     Ok(())

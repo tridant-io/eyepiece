@@ -1,22 +1,19 @@
-//! the render thread: it owns the gpu and the clip, takes events from the window, and draws. while a clip plays, each
-//! turn of the loop is one display refresh. while it stands still, the thread sleeps until something happens.
+//! the player: the render thread, which owns the gpu and the clips, takes events from the window, and draws. while a
+//! clip plays, each turn of the loop is one display refresh. while it stands still, the thread sleeps until
+//! something happens. nothing here knows the system it runs on: the window, the device, the painter of a clip's
+//! frames and of the controls are `crate::sys`, one module for each system with the same things in it.
 
-use super::d3d::{Constants, Gpu, CONSTANTS_HLSL};
-use super::pictures;
-use super::ui_paint::UiPainter;
-use super::window::{self, Handle};
+use crate::sys::window::{self, Handle};
+use crate::sys::{pictures, Gpu, Paint, UiPainter};
 use crate::audio::{Audio, Speaker};
 use crate::browse;
 use crate::event::{Event, Key, Mods};
 use crate::folder;
 use crate::markup::{Marks, Placing};
 use crate::media::clip::{Clip, Lane};
-use crate::media::color;
-use crate::media::dec::{Layout, Picture};
 use crate::media::hap::Tex;
 use crate::media::meta::Meta;
 use crate::media::watch::{Change, Watch};
-use crate::media::source::Frame;
 use crate::media::still::Samples;
 use crate::play::{Show, Transport};
 use crate::preview::spare::{Answer, Ask, Seam};
@@ -30,106 +27,17 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use windows::Win32::Graphics::Direct3D11::{ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11Texture2D};
-use windows::Win32::Graphics::Dxgi::Common::*;
-
-/// every picture shader ends with this. the lane's own code in front of it defines `texel`, one of the file's texels
-/// as red, green, blue and alpha. `shown` is a texel of the picture as it is shown: mirrored, flipped and turned.
-/// at 100% and above every screen pixel is one texel, read by integer address: no filter. from ten screen pixels a
-/// texel, a dark line marks each texel's edge. below 100% the four nearest texels are converted first and then
-/// blended, because stored samples cannot be blended before they are converted.
-const MAIN: &str = "
-float4 shown(int2 p) {
-    float2 c = p + 0.5;
-    return texel(int2(floor(float2(dot(to_source.xy, c), dot(to_source.zw, c)) + to_source_add)));
-}
-float4 main(float4 pos : SV_Position) : SV_Target {
-    float2 at = (pos.xy - origin) * texels_per_pixel;
-    float4 c;
-    if (texels_per_pixel.x <= 1.0) {
-        c = shown(int2(at));
-        float2 into = frac(at) / texels_per_pixel;
-        if (texels_per_pixel.x <= 0.1 && (into.x < 1.0 || into.y < 1.0)) c.rgb *= 0.58;
-    } else {
-        float2 f = at - 0.5;
-        int2 p = int2(floor(f));
-        float2 w = f - floor(f);
-        float4 top = lerp(shown(p), shown(p + int2(1, 0)), w.x);
-        float4 bottom = lerp(shown(p + int2(0, 1)), shown(p + int2(1, 1)), w.x);
-        c = lerp(top, bottom, w.y);
-    }
-    if (channel == 1) c.rgb = float3(c.r, 0, 0);
-    if (channel == 2) c.rgb = float3(0, c.g, 0);
-    if (channel == 3) c.rgb = float3(0, 0, c.b);
-    if (channel == 4) c.rgb = c.aaa;
-    return c;
-}";
-
-/// one texture holding the whole picture: hap's block-compressed one, or a still's red, green, blue and alpha.
-/// `CONVERT` says what is stored. linear light (exr) goes through the srgb curve; what is above 1.0 stops at white.
-const ONE_TEXTURE: &str = "
-Texture2D<float4> t : register(t0);
-float3 srgb(float3 v) {
-    v = max(v, 0);
-    return lerp(v * 12.92, 1.055 * pow(v, 1.0 / 2.4) - 0.055, step(0.0031308, v));
-}
-float3 ycocg(float4 v) {
-    v.xy -= 0.50196078431373;
-    float scale = v.z * (255.0 / 8.0) + 1.0;
-    float co = v.x / scale, cg = v.y / scale, y = v.w;
-    return float3(y + co - cg, y + cg, y - co - cg);
-}
-float4 texel(int2 p) { return CONVERT(t.Load(int3(clamp(p, int2(0, 0), int2(size) - 1), 0))); }";
-
-/// y'cbcr pictures, from a hardware decoder's surface (luma plane and a plane of chroma pairs, one slice of an array)
-/// or from three planes in ordinary memory. the numbers come from `media::color`. chroma is the nearest sample for
-/// now; blending it at the file's stated siting is the design's default and is not built yet.
-const YCBCR: &str = "
-#ifdef SURFACE
-Texture2DArray<float> ty : register(t0);
-Texture2DArray<float2> tc : register(t1);
-float luma(int2 p) { return ty.Load(int4(p, 0, 0)); }
-float2 chroma(int2 p) { return tc.Load(int4(p, 0, 0)); }
-#else
-Texture2D<float> ty : register(t0);
-Texture2D<float> tu : register(t1);
-Texture2D<float> tv : register(t2);
-float luma(int2 p) { return ty.Load(int3(p, 0)); }
-float2 chroma(int2 p) { return float2(tu.Load(int3(p, 0)), tv.Load(int3(p, 0))); }
-#endif
-float4 texel(int2 p) {
-    p = clamp(p, int2(0, 0), int2(size) - 1);
-    float y = luma(p) * scale_offset.x + scale_offset.y;
-    float2 c = chroma(int2(p * chroma_per_luma)) * scale_offset.z + scale_offset.w;
-    return float4(y + matrix_.x * c.y, y + matrix_.y * c.x + matrix_.z * c.y, y + matrix_.w * c.x, 1);
-}";
-
-/// where the current frame's samples are, for the shader.
-enum Painter {
-    /// hap: one texture of blocks, rewritten every frame
-    Blocks { tex: ID3D11Texture2D, view: ID3D11ShaderResourceView },
-    /// stills: one texture of red, green, blue and alpha, rewritten every frame. `bits` is the scale pixel values
-    /// are given on
-    Image { tex: ID3D11Texture2D, view: ID3D11ShaderResourceView, bits: u32 },
-    /// software pictures: luma, cb and cr textures, rewritten every frame
-    Planes { planes: Vec<(ID3D11Texture2D, ID3D11ShaderResourceView)>, layout: Layout },
-    /// hardware pictures: views onto the decoder's own surface. the picture is held with them, so the decoder does
-    /// not decode into that surface again while it is on screen
-    Surface { held: Option<(Arc<Picture>, ID3D11ShaderResourceView, ID3D11ShaderResourceView)>, layout: Layout },
-}
 
 /// a clip on screen.
-pub(super) struct View {
-    pub(super) clip: Clip,
-    pub(super) transport: Transport,
-    ps: ID3D11PixelShader,
-    painter: Painter,
-    /// the color half of what the shader is told; the placement half is filled in at each draw
-    constants: Constants,
+pub(crate) struct View {
+    pub(crate) clip: Clip,
+    pub(crate) transport: Transport,
+    /// its shader, and the frame that is in it
+    paint: Paint,
     /// the frame that is in the painter now
     shown: Option<usize>,
     /// why the current frame cannot be shown, if it cannot
-    pub(super) fault: Option<String>,
+    pub(crate) fault: Option<String>,
     /// refreshes, while playing, on which no new frame was shown when one was due: the frame was not ready, or the
     /// display missed it. the clip runs that much late; no frame is skipped to make it up
     late: u64,
@@ -153,71 +61,16 @@ pub(super) struct View {
     seam_change: Option<Seam>,
 }
 
-fn text(e: windows::core::Error) -> String {
-    e.to_string()
-}
-
 impl View {
-    pub(super) fn new(gpu: &Gpu, mut clip: Clip, hz: f64) -> Result<View, String> {
+    pub(crate) fn new(gpu: &Gpu, mut clip: Clip, hz: f64) -> Result<View, String> {
         // a clip ffmpeg decodes starts here, now that there is a device for a hardware decoder to write into
         clip.start(Some(gpu.hardware()))?;
-        let (source, painter, constants) = match &clip.lane {
-            Lane::Hap(hap) => {
-                let format = match hap.tex {
-                    Tex::Bc1 => DXGI_FORMAT_BC1_UNORM,
-                    Tex::Bc3 | Tex::YCoCgBc3 => DXGI_FORMAT_BC3_UNORM,
-                    Tex::Bc7 => DXGI_FORMAT_BC7_UNORM,
-                    Tex::Bc4 => DXGI_FORMAT_BC4_UNORM,
-                    Tex::Bc6u => DXGI_FORMAT_BC6H_UF16,
-                    Tex::Bc6s => DXGI_FORMAT_BC6H_SF16,
-                };
-                let convert = match hap.tex {
-                    Tex::YCoCgBc3 => "float4(ycocg(v), 1)",
-                    // a lone alpha plane is shown as gray
-                    Tex::Bc4 => "v.rrrr",
-                    _ => "v",
-                };
-                let (tex, view) = gpu.dynamic_texture(hap.padded.0 as u32, hap.padded.1 as u32, format).map_err(text)?;
-                (format!("#define CONVERT(v) {convert}\n{CONSTANTS_HLSL}\n{ONE_TEXTURE}\n{MAIN}"), Painter::Blocks { tex, view }, Constants::default())
-            }
-            Lane::Video(video) => {
-                let layout = video.layout;
-                let c = color::conversion(layout.stored, layout.matrix);
-                let constants = Constants {
-                    chroma_per_luma: [1.0 / (1 << layout.chroma_shift.0) as f32, 1.0 / (1 << layout.chroma_shift.1) as f32],
-                    scale_offset: [c.y_scale, c.y_offset, c.c_scale, c.c_offset],
-                    matrix: [c.cr_to_r, c.cb_to_g, c.cr_to_g, c.cb_to_b],
-                    ..Default::default()
-                };
-                if layout.hardware {
-                    (format!("#define SURFACE\n{CONSTANTS_HLSL}\n{YCBCR}\n{MAIN}"), Painter::Surface { held: None, layout }, constants)
-                } else {
-                    let format = if layout.stored.texel_bits > 8 { DXGI_FORMAT_R16_UNORM } else { DXGI_FORMAT_R8_UNORM };
-                    let chroma = (clip.width.div_ceil(1 << layout.chroma_shift.0), clip.height.div_ceil(1 << layout.chroma_shift.1));
-                    let planes = [(clip.width, clip.height), chroma, chroma].iter().map(|&(w, h)| gpu.dynamic_texture(w as u32, h as u32, format).map_err(text)).collect::<Result<Vec<_>, _>>()?;
-                    (format!("{CONSTANTS_HLSL}\n{YCBCR}\n{MAIN}"), Painter::Planes { planes, layout }, constants)
-                }
-            }
-            Lane::Waiting(_) => return Err("the clip did not start".into()),
-            Lane::Stills(stills) => {
-                let (format, convert, bits) = match stills.samples {
-                    Samples::U8 => (DXGI_FORMAT_R8G8B8A8_UNORM, "v", stills.bits),
-                    Samples::U16 => (DXGI_FORMAT_R16G16B16A16_UNORM, "v", stills.bits),
-                    // exr holds linear light. what the pixel readout gives for it is what the screen is sent
-                    Samples::F32 => (DXGI_FORMAT_R32G32B32A32_FLOAT, "float4(srgb(v.rgb), v.a)", 16),
-                };
-                let (tex, view) = gpu.dynamic_texture(clip.width as u32, clip.height as u32, format).map_err(text)?;
-                (format!("#define CONVERT(v) {convert}\n{CONSTANTS_HLSL}\n{ONE_TEXTURE}\n{MAIN}"), Painter::Image { tex, view, bits }, Constants::default())
-            }
-        };
-        let ps = gpu.pixel_shader(&source).map_err(text)?;
-        // the picture as the file has it: the look changes these two at each draw
-        let constants = Constants { size: [clip.width as f32, clip.height as f32], to_source: [1.0, 0.0, 0.0, 1.0], ..constants };
+        let paint = Paint::new(gpu, &clip)?;
         let mut transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz).with_starts(clip.timeline.starts());
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new((clip.width, clip.height));
-        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, seam_asked: false, seam_change: None })
+        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, seam_asked: false, seam_change: None })
     }
 
     /// looks for the clip's sound, once. stills have none. returns why, when there is sound that cannot be played.
@@ -286,7 +139,7 @@ impl View {
     }
 
     /// `load`, with the reader told to keep just `want` ready: the transport's frame first.
-    pub(super) fn load_wanting(&mut self, gpu: &Gpu, patience: Duration, want: &[usize]) -> bool {
+    pub(crate) fn load_wanting(&mut self, gpu: &Gpu, patience: Duration, want: &[usize]) -> bool {
         let frame = self.transport.frame();
         match &self.clip.lane {
             Lane::Hap(hap) => hap.source.want(want),
@@ -298,51 +151,7 @@ impl View {
             return false;
         }
         // the frame, into the painter. Ok(false) while it is still on its way
-        let loaded: Result<bool, String> = match (&self.clip.lane, &mut self.painter) {
-            (Lane::Hap(hap), Painter::Blocks { tex, .. }) => match hap.source.get(frame, patience) {
-                Frame::Ready(blocks) => {
-                    let row_bytes = hap.padded.0 / 4 * hap.tex.block_bytes();
-                    let _lock = gpu.locked();
-                    gpu.fill(tex, &blocks, hap.padded.1 / 4, row_bytes, row_bytes).map(|()| true).map_err(text)
-                }
-                Frame::Failed(why) => Err(why),
-                Frame::Pending => Ok(false),
-            },
-            (Lane::Stills(stills), Painter::Image { tex, .. }) => match stills.source.get(frame, patience) {
-                Frame::Ready(image) => {
-                    let row_bytes = image.data.len() / image.height.max(1);
-                    let _lock = gpu.locked();
-                    gpu.fill(tex, &image.data, image.height, row_bytes, row_bytes).map(|()| true).map_err(text)
-                }
-                Frame::Failed(why) => Err(why),
-                Frame::Pending => Ok(false),
-            },
-            (Lane::Video(video), painter) => match video.source.get(frame, patience) {
-                Frame::Ready(picture) => {
-                    let _lock = gpu.locked();
-                    match painter {
-                        Painter::Surface { held, layout } => {
-                            let (texture, slice) = picture.surface();
-                            gpu.surface_views(texture, slice, layout.stored.texel_bits > 8).map(|(y, c)| *held = Some((picture, y, c))).map(|()| true).map_err(text)
-                        }
-                        Painter::Planes { planes, layout } => {
-                            let bytes = layout.stored.texel_bits as usize / 8;
-                            let widths = [self.clip.width, self.clip.width.div_ceil(1 << layout.chroma_shift.0)];
-                            (0..3).try_for_each(|i| {
-                                let (data, stride, rows) = picture.plane(i, layout.chroma_shift);
-                                gpu.fill(&planes[i].0, data, rows, widths[i.min(1)] * bytes, stride)
-                            })
-                            .map(|()| true)
-                            .map_err(text)
-                        }
-                        Painter::Blocks { .. } | Painter::Image { .. } => Err("the clip and its painter disagree".into()),
-                    }
-                }
-                Frame::Failed(why) => Err(why),
-                Frame::Pending => Ok(false),
-            },
-            _ => Err("the clip and its painter disagree".into()),
-        };
+        let loaded = self.paint.put(gpu, &self.clip, frame, patience);
         match loaded {
             Ok(false) => false,
             result => {
@@ -355,21 +164,13 @@ impl View {
     }
 
     /// true while the frame the transport is on has not reached the painter.
-    pub(super) fn waiting(&self) -> bool {
+    pub(crate) fn waiting(&self) -> bool {
         self.shown != Some(self.transport.frame())
     }
 
-    /// the frame in the painter, as the shader reads it. None when there is nothing to draw.
-    fn views(&self) -> Option<Vec<Option<ID3D11ShaderResourceView>>> {
-        if self.fault.is_some() {
-            return None;
-        }
-        Some(match &self.painter {
-            Painter::Blocks { view, .. } | Painter::Image { view, .. } => vec![Some(view.clone())],
-            Painter::Planes { planes, .. } => planes.iter().map(|p| Some(p.1.clone())).collect(),
-            Painter::Surface { held: Some((_, y, c)), .. } => vec![Some(y.clone()), Some(c.clone())],
-            Painter::Surface { held: None, .. } => return None,
-        })
+    /// true when there is a frame to draw.
+    fn drawable(&self) -> bool {
+        self.fault.is_none() && self.paint.ready()
     }
 
     fn size(&self) -> (usize, usize) {
@@ -378,7 +179,7 @@ impl View {
 
     /// the picture, turned as the look has it, where the framing puts it. nothing during the pause on black.
     fn draw(&self, gpu: &Gpu) {
-        let (Some(views), Show::Frame(_)) = (self.views(), self.transport.show()) else { return };
+        let (true, Show::Frame(_)) = (self.drawable(), self.transport.show()) else { return };
         let (to_source, to_source_add) = self.look.to_source(self.size());
         let channel = match self.look.channel {
             Channel::Rgb => 0.0,
@@ -388,12 +189,12 @@ impl View {
             Channel::Alpha => 4.0,
         };
         let shown = self.look.shown(self.size());
-        gpu.draw(&self.ps, &views, self.framing.rect((gpu.w as f32, gpu.h as f32)), (shown.0 as f32, shown.1 as f32), Constants { to_source, to_source_add, channel, ..self.constants });
+        self.paint.draw(gpu, self.framing.rect((gpu.w as f32, gpu.h as f32)), (shown.0 as f32, shown.1 as f32), Some((to_source, to_source_add, channel)));
     }
 
     /// the frame in the painter, drawn `w` x `h` into a picture of our own and read back (`Gpu::read_pixels`): the
     /// file's own frame as it is stored, whatever the window shows.
-    pub(super) fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
+    pub(crate) fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
         self.picture(gpu, (w, h), Some((0.0, 0.0, w as f32, h as f32)), |_| {})
     }
 
@@ -401,12 +202,14 @@ impl View {
     /// it: the file's own frame as it is stored, at `at`; or with no place, the window's picture as it is shown (zoom,
     /// pan and look) without the controls.
     fn picture(&self, gpu: &Gpu, size: (u32, u32), at: Option<(f32, f32, f32, f32)>, over: impl FnOnce(&Gpu)) -> Option<Vec<u16>> {
-        let views = self.views()?;
+        if !self.drawable() {
+            return None;
+        }
         let file = (self.clip.width as f32, self.clip.height as f32);
         let _lock = gpu.locked();
         gpu.read_pixels(size.0, size.1, |gpu| {
             match at {
-                Some(rect) => gpu.draw(&self.ps, &views, rect, file, self.constants),
+                Some(rect) => self.paint.draw(gpu, rect, file, None),
                 None => self.draw(gpu),
             }
             over(gpu);
@@ -427,19 +230,21 @@ impl View {
 
     /// how the clip is decoded, in the metadata panel's words.
     fn decoded(&self) -> &'static str {
-        match &self.painter {
-            Painter::Blocks { .. } => "blocks to the gpu as stored",
-            Painter::Surface { .. } => "hardware, drawn from the decoder's own surface",
-            Painter::Planes { .. } | Painter::Image { .. } => "software",
+        match &self.clip.lane {
+            Lane::Hap(_) => "blocks to the gpu as stored",
+            Lane::Video(video) if video.layout.hardware => "hardware, drawn from the decoder's own surface",
+            Lane::Video(_) | Lane::Stills(_) | Lane::Waiting(_) => "software",
         }
     }
 
     /// bits a sample: the top of the scale pixel values are given on.
     fn depth(&self) -> u32 {
-        match &self.painter {
-            Painter::Blocks { .. } => 8,
-            Painter::Image { bits, .. } => *bits,
-            Painter::Planes { layout, .. } | Painter::Surface { layout, .. } => layout.stored.bits,
+        match &self.clip.lane {
+            Lane::Hap(_) | Lane::Waiting(_) => 8,
+            // exr's linear light is given on a scale of 16 bits
+            Lane::Stills(stills) if stills.samples == Samples::F32 => 16,
+            Lane::Stills(stills) => stills.bits,
+            Lane::Video(video) => video.layout.stored.bits,
         }
     }
 
@@ -452,10 +257,10 @@ impl View {
             return false;
         }
         self.probe = None;
-        let (Some((frame, pixel)), Some(views)) = (wanted, self.views()) else { return false };
+        let (Some((frame, pixel)), true) = (wanted, self.drawable()) else { return false };
         let _lock = gpu.locked();
         let size = (self.clip.width as f32, self.clip.height as f32);
-        let read = gpu.read_pixels(1, 1, |gpu| gpu.draw(&self.ps, &views, (-(pixel.0 as f32), -(pixel.1 as f32), size.0, size.1), size, self.constants));
+        let read = gpu.read_pixels(1, 1, |gpu| self.paint.draw(gpu, (-(pixel.0 as f32), -(pixel.1 as f32), size.0, size.1), size, None));
         let Ok(read) = read else { return false };
         let top = ((1u32 << self.depth()) - 1) as f32;
         self.probe = Some((frame, pixel, [0, 1, 2].map(|i| (read[i] as f32 / 65535.0 * top).round() as u32)));
@@ -598,10 +403,10 @@ impl View {
     fn title(&self, window: (f32, f32), settings: &Settings, tab: (&str, &str)) -> String {
         let c = &self.clip;
         // the panel will have to admit whether the gpu or the cpu decodes; until then the title does
-        let decoded = match &self.painter {
-            Painter::Blocks { .. } | Painter::Image { .. } => "",
-            Painter::Surface { .. } => ", hardware",
-            Painter::Planes { .. } => ", software",
+        let decoded = match &c.lane {
+            Lane::Video(video) if video.layout.hardware => ", hardware",
+            Lane::Video(_) => ", software",
+            Lane::Hap(_) | Lane::Stills(_) | Lane::Waiting(_) => "",
         };
         // what went wrong stays in the title: late refreshes, frames that could not be shown, and the one on screen
         let mut state = String::new();
@@ -2157,7 +1962,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     }
 }
 
-#[cfg(test)]
+// these make a device and a hidden window of the system's own
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use windows::core::w;

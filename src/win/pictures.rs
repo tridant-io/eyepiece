@@ -1,8 +1,8 @@
 //! the maker of the browser's pictures, on windows: a thread with a graphics device of its own and no window, and
-//! one clip open at a time, read through the same lanes and shaders as the window's clips (`render::View`).
+//! one clip open at a time, read through the same lanes and shaders as the window's clips (`player::View`).
 
 use super::d3d::Gpu;
-use super::render::View;
+use crate::player::View;
 use crate::media::clip::{Clip, Lane};
 use crate::event::Event;
 use crate::preview::make::{self, Pictures, Reader};

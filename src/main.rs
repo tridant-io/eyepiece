@@ -11,6 +11,7 @@ mod folder;
 mod markup;
 mod media;
 mod play;
+mod player;
 mod preview;
 mod settings;
 mod shot;
@@ -19,6 +20,9 @@ mod ui;
 mod view;
 #[cfg(windows)]
 mod win;
+// the system's half of the player: its window, its device and its painters
+#[cfg(windows)]
+use win as sys;
 
 fn main() {
     let first = std::env::args().nth(1);
