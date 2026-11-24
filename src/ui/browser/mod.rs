@@ -153,12 +153,18 @@ struct State {
     revealed: Option<PathBuf>,
     /// cards across the grid when it was last drawn: up and down move by it
     per_row: usize,
+    /// what a double click asks for, should the next press make one: the last press's, as that press may have moved
+    /// what is under the pointer (a selected card brings in the metadata column)
+    twice: Option<Click>,
     chosen: Option<Chosen>,
     /// the pass it was last drawn in
     drawn: u64,
 }
 
-/// what a press in the browser asked for, done once everything is drawn
+/// a press in the browser: what it asks for, done once everything is drawn, and what a double click on the same thing
+/// asks for
+type Press = (Click, Option<Click>);
+
 enum Click {
     Place(PathBuf),
     /// an entry of the drawn column at this place on the path; true for a folder
@@ -227,6 +233,7 @@ impl State {
             grid_folder: PathBuf::new(),
             revealed: None,
             per_row: 1,
+            twice: None,
             chosen: None,
             drawn: 0,
         }
@@ -274,6 +281,16 @@ impl State {
         if let Some(rect) = layout.meta {
             self.metadata(ui, rect, &mut clicks);
         }
+        // a double click acts on what its first press was on, not on what its second one lands on
+        let double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary) && i.pointer.interact_pos().is_some_and(|p| area.contains(p)));
+        let clicks: Vec<Click> = if double {
+            self.twice.take().into_iter().collect()
+        } else {
+            if let Some((_, twice)) = clicks.last_mut() {
+                self.twice = twice.take();
+            }
+            clicks.into_iter().map(|(click, _)| click).collect()
+        };
         // what a press changed is drawn at once, not with the next thing the window says
         if !clicks.is_empty() {
             ui.ctx().request_repaint();
@@ -343,7 +360,7 @@ impl State {
     }
 
     /// the sidebar: the places, then the volumes, a network one tagged.
-    fn side(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Click>) {
+    fn side(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, PANEL);
         rule(&painter, rect.right() - 1.0, rect);
@@ -380,7 +397,7 @@ impl State {
                 }
                 text(&painter, row.left() + 14.0, row.center().y, &place.name, font(SANS, 12.5), if on { FG } else { DIM }, room);
                 if ui.interact(row.intersect(rect), ui.scope_id().with(("brw-place", drives, i)), Sense::click()).clicked() {
-                    clicks.push(Click::Place(place.path.clone()));
+                    clicks.push((Click::Place(place.path.clone()), None));
                 }
             }
         }
@@ -388,7 +405,7 @@ impl State {
     }
 
     /// one folder on the path as a column: its entries, the selected one lit.
-    fn column(&mut self, ui: &egui::Ui, at: usize, rect: Rect, clicks: &mut Vec<Click>) {
+    fn column(&mut self, ui: &egui::Ui, at: usize, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         rule(&painter, rect.right() - 1.0, rect);
         let inner = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 1.0, rect.bottom()));
@@ -437,20 +454,15 @@ impl State {
                 painter.galley(Pos2::new(row.right() - 10.0 - arrow.size().x, middle - arrow.size().y / 2.0), arrow, GRAY);
             }
             text(&painter, row.left() + 31.0, middle, &entry.name, font(SANS, 12.5), color, room);
-            let response = ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click());
-            if response.clicked() {
-                clicks.push(Click::Row(at, entry.path.clone(), folder));
-            }
-            if response.double_clicked() && folder {
-                clicks.push(Click::Enter);
-            } else if response.double_clicked() && is_card(entry) {
-                clicks.push(Click::Open(entry.path.clone()));
+            if ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click()).clicked() {
+                let twice = if folder { Some(Click::Enter) } else { is_card(entry).then(|| Click::Open(entry.path.clone())) };
+                clicks.push((Click::Row(at, entry.path.clone(), folder), twice));
             }
         }
     }
 
     /// the main area: the path line, the note on a network folder, and the grid of cards.
-    fn main_area(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Click>) {
+    fn main_area(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         let folder = self.nav.main().folder.clone();
         // the path line: the folder's name and what it holds, and at the right the button that plays it
@@ -462,7 +474,7 @@ impl State {
         let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
         let play = Rect::from_min_size(Pos2::new(line.right() - 14.0 - size.x, middle - size.y / 2.0), size);
         if button(ui, &painter, play, "brw-play", label, false) {
-            clicks.push(Click::PlayFolder);
+            clicks.push((Click::PlayFolder, None));
         }
         let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
         painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
@@ -498,7 +510,7 @@ impl State {
     }
 
     /// the cards of the folder shown, as many across as fit; the selected one outlined.
-    fn grid(&mut self, ui: &egui::Ui, rect: Rect, folder: &Path, clicks: &mut Vec<Click>) {
+    fn grid(&mut self, ui: &egui::Ui, rect: Rect, folder: &Path, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         if self.grid_folder != folder {
             (self.grid_folder, self.grid_scroll, self.revealed) = (folder.to_path_buf(), 0.0, None);
@@ -542,18 +554,14 @@ impl State {
             }
             let area = Rect::from_min_size(Pos2::new(rect.left() + 14.0 + (i % per_row) as f32 * (width + 12.0), top), Vec2::new(width, height));
             draw_card(&painter, area, thumb, card, at == Some(i));
-            let response = ui.interact(area.intersect(rect), ui.scope_id().with(("brw-card", i)), Sense::click());
-            if response.clicked() {
-                clicks.push(Click::Card(card.path.clone()));
-            }
-            if response.double_clicked() {
-                clicks.push(Click::Open(card.path.clone()));
+            if ui.interact(area.intersect(rect), ui.scope_id().with(("brw-card", i)), Sense::click()).clicked() {
+                clicks.push((Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))));
             }
         }
     }
 
     /// the folder shown could not be listed: why, and the places to go to instead.
-    fn cannot_read(&self, ui: &egui::Ui, rect: Rect, why: &str, clicks: &mut Vec<Click>) {
+    fn cannot_read(&self, ui: &egui::Ui, rect: Rect, why: &str, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         let (left, width) = (rect.left() + 14.0, rect.width() - 28.0);
         let mut y = rect.top() + 14.0;
@@ -571,14 +579,14 @@ impl State {
                 (x, y) = (left, y + size.y + 6.0);
             }
             if button(ui, &painter, Rect::from_min_size(Pos2::new(x, y), size), ("brw-go", i), label, false) {
-                clicks.push(Click::Place(place.path.clone()));
+                clicks.push((Click::Place(place.path.clone()), None));
             }
             x += size.x + 6.0;
         }
     }
 
     /// the selected card's metadata: a place for its picture, then its facts, and at the foot what can be done with it.
-    fn metadata(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Click>) {
+    fn metadata(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, PANEL);
         rule(&painter, rect.left(), rect);
@@ -594,7 +602,7 @@ impl State {
             let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), if strong { ON_STRONG } else { FG });
             let button_rect = Rect::from_min_size(Pos2::new(x, foot), Vec2::new(galley.size().x + 18.0, 25.0));
             if button(ui, &painter, button_rect, ("brw-act", i), galley, strong) {
-                clicks.push(click);
+                clicks.push((click, None));
             }
             x = button_rect.right() + 6.0;
         }
@@ -612,7 +620,11 @@ impl State {
                 let rest = match meta {
                     _ if !readable => fact("everything else", "not read for stills and sequences yet.".to_string(), Tone::Assumed),
                     _ if !reads => fact("everything else", "not read. opening the file reads it.".to_string(), Tone::Assumed),
-                    Some((file, Err(why))) if file == &card.path => fact("everything else", why.clone(), Tone::Fault),
+                    // not amber: a file locked or out of reach is no fault of the file's
+                    Some((file, Err(why))) if file == &card.path => {
+                        let why = why.strip_prefix(&format!("{}: ", file.to_string_lossy())).unwrap_or(why);
+                        fact("everything else", format!("could not be read: {}", why.to_lowercase()), Tone::Assumed)
+                    }
                     _ => fact("everything else", "reading…".to_string(), Tone::Assumed),
                 };
                 listed = vec![listed_facts(card), vec![rest]];

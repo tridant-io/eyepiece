@@ -896,7 +896,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 // in the browser the keys move about it and letters select by name
                 Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key, mods),
-                Event::Char(_) if command => {}
+                // only the character of the command's own press: a key the player has no use for sends no key, only
+                // its character, which must still reach the browser
+                Event::Char(_) if command => command = false,
                 Event::Char(c) if browsing => ui.browser_char(c),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis
