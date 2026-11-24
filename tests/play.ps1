@@ -2,7 +2,7 @@
 # title carries once the clip is paused: " . n late" (refreshes without the frame that was due) and
 # " . n could not be shown".
 #   powershell -NoProfile -ExecutionPolicy Bypass -Command "& tests\play.ps1 -Clips a.mov,b.mov [-Seconds 10] [-MaxLate 5]"
-# big clips are not in the repo: pass your own. a window opens for each. a clip fails when it did not open, when any
+# big clips are not in the repo: pass your own. a window opens for each, on top of everything while it plays. a clip fails when it did not open, when any
 # frame could not be shown, or when it was later than -MaxLate. exits 1 if any clip fails.
 param([Parameter(Mandatory = $true)][string[]]$Clips, [int]$Seconds = 10, [int]$MaxLate = 5,
     [string]$Exe)
@@ -13,6 +13,7 @@ using System; using System.Runtime.InteropServices; using System.Text;
 public static class EyepiecePlay {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
 }
 '@
 function Get-Title($h) { $s = New-Object Text.StringBuilder 512; [void][EyepiecePlay]::GetWindowText($h, $s, 512); $s.ToString() }
@@ -22,6 +23,9 @@ foreach ($clip in $Clips) {
     $h = [IntPtr]::Zero
     foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle; break } }
     if ($h -eq [IntPtr]::Zero) { Write-Host "FAIL  ${clip}: no window"; $failed++; continue }
+    # on top of everything, without taking the keyboard: windows shows a covered window less often than the display
+    # refreshes, which would be counted here as late
+    [void][EyepiecePlay]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x13)
     Start-Sleep -Milliseconds 1000
     [void][EyepiecePlay]::PostMessage($h, 0x100, [IntPtr]0x20, [IntPtr]0)
     Start-Sleep -Seconds $Seconds

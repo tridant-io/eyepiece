@@ -2,7 +2,9 @@
 
 a review player for vfx and install content, by tridant. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.
 
-**status: phase 1, in progress, windows.** it plays hap, prores, h.264 and hevc from the command line or a file dropped on the window. no controls yet: the title bar carries the readout. the control row, zoom and the pixel readout, the metadata panel and screenshots are the rest of phase 1. macos comes after.
+**status: phase 1, in progress, windows.** it plays hap, prores, h.264 and hevc from the command line or a file dropped on the window. the window has no title bar: the controls are drawn by the player to the approved design, and come up when the pointer moves. so far those are the strip along the top (the clip's tab, minimize, maximize, close), and the bar along the bottom (previous frame, play, next frame, the frame or timecode readout, the full-width timebar). zoom and the pixel readout, the metadata panel and screenshots are the rest of phase 1; loop, speed, guides, volume, fullscreen and tabs come after. macos comes after that.
+
+the look follows `docs/design/plan.html`: its colors, measurements, icons and type (ibm plex mono and archivo, in `assets/fonts` with their licenses). checked by putting the window's own pixels beside the design's mock at the same scale. not yet looked at by a person on a real screen: the shadow, resizing from the edges, snapping, and display scales other than 100%.
 
 what has been played on real files, at 4K and 60 frames a second:
 
@@ -57,7 +59,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\backstep.ps1 -Clip a.m
 
 keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. drop a file on the window to open it.
 
-while a clip plays the title bar is left alone; standing still it reads `name · frame / count · size · codec, how it is decoded · rate`.
+with the pointer: move it and the controls come up; they go 2.4 s after it rests off them, or when it leaves the window. a plain click on the picture shows or hides them. a drag on the picture or on the strip moves the window; a double click on the strip maximizes it. a click or a drag on the timebar goes to that frame, and a click on the readout switches between frames and timecode (counted from 00:00:00:00; the file's own timecode is not read yet).
+
+the window's title, which the taskbar shows and the tests read, is `name · frame / count · size · codec, how it is decoded · rate`; it is left alone while a clip plays.
+
+the tests drive the controls with posted pointer messages, not the real pointer. `EYEPIECE_POSTED_POINTER=1` tells the player so: it then does not ask windows when the real pointer leaves.
+
+the timing checks (`play.ps1`, `launch.ps1`, `backstep.ps1`) mean nothing on a busy machine: on 2026-11-23, with other test suites holding this pc at 97% cpu, a clip that had run with 2 late refreshes in 10 s showed 246 in 6 s, with the same build.
 
 ## deploy
 

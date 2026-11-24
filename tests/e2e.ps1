@@ -12,9 +12,34 @@ public static class EyepieceE2e {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int how);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 '@
+# the controls are driven by a posted pointer, not the real one: the player is told, so it does not ask windows
+# where the real pointer is
+$env:EYEPIECE_POSTED_POINTER = '1'
 $script:failed = 0
+# the pointer, in the design's pixels. a negative place counts from the right or the bottom edge of the picture area
+function Get-Place([double]$x, [double]$y) {
+    $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c)
+    $scale = [EyepieceE2e]::GetDpiForWindow($script:h) / 96.0
+    $px = if ($x -lt 0) { $c.R + $x * $scale } else { $x * $scale }
+    $py = if ($y -lt 0) { $c.B + $y * $scale } else { $y * $scale }
+    [IntPtr][int64](([int]$py -shl 16) -bor ([int]$px -band 0xffff))
+}
+function Move-Pointer([double]$x, [double]$y) { [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0, (Get-Place $x $y)); Start-Sleep -Milliseconds 350 }
+# a click: the pointer goes there, the controls come up, the button goes down and up. -Again clicks where the pointer
+# already is, with no wait
+function Click-At([double]$x, [double]$y, [switch]$Again) {
+    $at = Get-Place $x $y
+    if (-not $Again) { [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0, $at); Start-Sleep -Milliseconds 350 }
+    [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]1, $at); Start-Sleep -Milliseconds 60
+    [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr]0, $at)
+    if (-not $Again) { Start-Sleep -Milliseconds 200 }
+}
+function Get-Width { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.R / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 function Get-Title { $s = New-Object Text.StringBuilder 512; [void][EyepieceE2e]::GetWindowText($script:h, $s, 512); $s.ToString() }
 function Send-Key([int]$vk, [int]$times = 1) { foreach ($i in 1..$times) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]$vk, [IntPtr]0); Start-Sleep -Milliseconds 200 } }
 function Confirm-That([string]$what, [bool]$holds, [string]$detail = '') {
@@ -88,7 +113,26 @@ Send-Key 0x47 2; Assert-Frame 'h.264: and forward again, across it' 17 24 'hardw
 Send-Key 0x24; Assert-Frame 'h.264: home goes to the first frame' 0 24 'hardware'
 Send-Key 0x20; Start-Sleep -Milliseconds 1500; Send-Key 0x20
 Assert-Title 'h.264 plays and pauses on a real frame, none unshowable' '^h264_320\.mp4 . \d+ / 24 . .*, hardware . 15360/512 fps( . \d+ late)?$'
-Stop-Player
+
+# ---- the controls themselves, with a pointer: the bar's buttons, the timebar, the strip's close button.
+# places are from the design: the row's buttons are 30 wide from 8, 32 up from the bottom; the timebar is the bottom edge
+Send-Key 0x24; Assert-Frame 'back to the first frame for the pointer checks' 0 24
+Click-At 87 -32; Assert-Frame 'the next-frame button steps forward' 1 24
+Click-At 87 -32; Assert-Frame 'and again' 2 24
+Click-At 23 -32; Assert-Frame 'the previous-frame button steps back' 1 24
+# a quarter of the way along 24 frames is frame 6 (5.75, to the nearest frame)
+Click-At ((Get-Width) * 0.25) -3; Assert-Frame 'a click on the timebar goes to that frame' 6 24
+Click-At ((Get-Width) - 1) -3; Assert-Frame 'its right end is the last frame' 23 24
+Click-At 0 -3; Assert-Frame 'its left end is the first' 0 24
+# the play button: the clip is 24 frames and 0.8 s long. a third of a second of play ends inside it, past frame 0,
+# however busy the machine is
+Click-At 55 -32; Start-Sleep -Milliseconds 80; Click-At 55 -32 -Again
+Wait-Title 'the play button plays, and pauses' { param($t) $t -match ' (\d+) / 24 ' -and [int]$Matches[1] -ge 1 } 'a frame past 0'
+# the close mark at the right end of the strip closes the window
+Move-Pointer 100 100
+Click-At -20 16
+Confirm-That 'the strip''s close button closes the window' ($script:p.WaitForExit(3000) -and $script:p.ExitCode -eq 0) 'still running, or a bad exit code'
+if (-not $script:p.HasExited) { $script:p.Kill() }
 
 # ---- 10-bit hevc in hardware: its key frames have pictures that are shown before them
 Start-Player (Join-Path $media 'hevc10_320.mp4')

@@ -2,6 +2,7 @@
 //! turn of the loop is one display refresh. while it stands still, the thread sleeps until something happens.
 
 use super::d3d::{Constants, Gpu, CONSTANTS_HLSL};
+use super::ui_paint::UiPainter;
 use super::window::{self, Handle};
 use crate::event::{Event, Key};
 use crate::media::clip::{Clip, Lane};
@@ -10,9 +11,10 @@ use crate::media::dec::{Layout, Picture};
 use crate::media::hap::Tex;
 use crate::media::source::Frame;
 use crate::play::Transport;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use crate::ui::{Action, Model, Ui};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct3D11::{ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -243,7 +245,12 @@ impl View {
         }
     }
 
-    /// what the title bar says until the control row exists.
+    /// what the controls show.
+    fn model(&self) -> Model<'_> {
+        Model { name: &self.clip.name, frame: self.transport.frame(), frames: self.clip.timeline.frames(), playing: self.transport.playing(), rate: self.clip.timeline.rate(), fault: self.fault.as_deref() }
+    }
+
+    /// what the window's title says: the taskbar and the tests read it.
     fn title(&self) -> String {
         let c = &self.clip;
         // the panel will have to admit whether the gpu or the cpu decodes; until then the title does
@@ -291,13 +298,20 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
         Err(e) => return window::set_title(window, &format!("eyepiece · no graphics device: {e}")),
     };
     let hz = window::refresh_rate();
+    let mut ui = Ui::new((w, h), window::scale(window));
+    let mut ui_painter = match UiPainter::new(&gpu) {
+        Ok(p) => p,
+        Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
+    };
+    // when the controls want another look with nothing new from the window: they are due to fade
+    let mut ui_due: Option<Instant> = None;
     let mut view: Option<View> = None;
     if let Some(clip) = first {
         show(&gpu, window, clip, hz, &mut view);
     }
     let (mut redraw, mut titled) = (true, None);
     loop {
-        // with nothing moving and nothing owed, sleep until the window says something
+        // with nothing moving and nothing owed, sleep until the window says something or the controls are due
         let playing = view.as_ref().is_some_and(|v| v.transport.playing());
         let waiting = view.as_ref().is_some_and(|v| v.waiting());
         let mut next = if playing || waiting || redraw {
@@ -305,6 +319,15 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                 Ok(e) => Some(e),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => return,
+            }
+        } else if let Some(due) = ui_due {
+            match events.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                Ok(e) => Some(e),
+                Err(RecvTimeoutError::Timeout) => {
+                    redraw = true;
+                    None
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
             }
         } else {
             match events.recv() {
@@ -319,7 +342,12 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                     if let Err(e) = gpu.resize(w, h) {
                         return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
                     }
+                    ui.resize(w, h);
                 }
+                Event::Scale(scale) => ui.set_scale(scale),
+                Event::PointerMove { x, y } => ui.pointer_move(x, y),
+                Event::PointerButton { button, down, x, y } => ui.pointer_button(button, down, x, y),
+                Event::PointerLeave => ui.pointer_leave(),
                 Event::Open(path) => show(&gpu, window, Clip::open(&path), hz, &mut view),
                 Event::Key { key, shift } => {
                     if let Some(v) = &mut view {
@@ -337,6 +365,43 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
             next = events.try_recv().ok();
         }
 
+        // the controls: laid out against where the clip is now. what they ask for is done before the frame is
+        // fetched, so a click and its picture are one refresh apart
+        let controls = view.as_mut().map(|v| {
+            let out = ui.run(&v.model());
+            for action in &out.actions {
+                match action {
+                    Action::TogglePlay => v.transport.set_playing(!v.transport.playing()),
+                    Action::Step(by) => v.transport.step(*by),
+                    Action::Seek(frame) => v.transport.go(*frame as i64),
+                    Action::MoveWindow => window::begin_move(window),
+                    Action::Minimize => window::minimize(window),
+                    Action::ToggleMaximize => window::toggle_maximize(window),
+                    Action::Close => window::close(window),
+                }
+            }
+            out
+        });
+        // they are drawn again when they ask to be: at once while something of theirs is moving, later when a fade
+        // is due, and once more after a click so they show what it did
+        let mut again = false;
+        ui_due = None;
+        if let Some(out) = &controls {
+            let set = {
+                let _lock = gpu.locked();
+                ui_painter.set_textures(&gpu, &out.textures)
+            };
+            if let Err(e) = set {
+                return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
+            }
+            match out.again {
+                Some(wait) if wait.is_zero() => again = true,
+                Some(wait) => ui_due = Some(Instant::now() + wait),
+                None => {}
+            }
+            again |= !out.actions.is_empty();
+        }
+
         // a frame that is nearly there is worth a short wait: while playing, half a refresh, since showing the old
         // frame again skips this one for good. standing still, a few milliseconds between looks at the window
         let playing = view.as_ref().is_some_and(|v| v.transport.playing());
@@ -350,6 +415,11 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                 gpu.clear();
                 if let Some(v) = &view {
                     v.draw(&gpu);
+                }
+                if let Some(out) = &controls {
+                    if let Err(e) = ui_painter.paint(&gpu, &out.primitives, out.scale) {
+                        return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
+                    }
                 }
             }
             let missed = gpu.present(playing, Duration::from_secs_f64(1.0 / hz));
@@ -373,5 +443,9 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                 }
             }
         }
+        if let Some(out) = &controls {
+            ui_painter.free_textures(&out.textures);
+        }
+        redraw |= again;
     }
 }

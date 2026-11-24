@@ -79,7 +79,7 @@ fn shader_cache() -> Option<std::path::PathBuf> {
 }
 
 /// shader bytecode, compiled on first use and read from the cache after that, so a start does not pay for the compiler.
-fn compile(src: &str, target: &str) -> Result<Vec<u8>> {
+pub(super) fn compile(src: &str, target: &str) -> Result<Vec<u8>> {
     let mut hash = 0xcbf29ce484222325u64;
     for b in src.bytes().chain(target.bytes()) {
         hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);

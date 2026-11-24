@@ -2,6 +2,7 @@
 
 mod d3d;
 mod render;
+mod ui_paint;
 mod window;
 
 use crate::media::clip::Clip;

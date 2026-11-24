@@ -7,6 +7,7 @@
 mod event;
 mod media;
 mod play;
+mod ui;
 #[cfg(windows)]
 mod win;
 
