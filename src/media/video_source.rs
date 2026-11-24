@@ -168,9 +168,10 @@ impl VideoLoader {
         (0..=at.min(self.samples.len() - 1)).rev().find(|&i| self.samples[i].key).unwrap_or(0)
     }
 
-    /// a time to seek to for the key frame at place `key` alone: inside its group, past when it is shown. at its own
-    /// time ffmpeg's mov reader goes back to the key frame before one that is shown after its place (an open group),
-    /// for the pictures shown before it, and the whole group before would be decoded.
+    /// the time to seek to, to start decoding at the key frame at place `key`: inside its group, past when it is
+    /// shown. at its own decode time ffmpeg's mov reader goes back to the key frame before, whenever the key frame
+    /// is shown later than it is stored (frames out of order, or an open group), and the whole group before would be
+    /// decoded for nothing.
     fn inside(&self, key: usize) -> i64 {
         self.samples[(key + 1..self.samples.len()).take_while(|&at| !self.samples[at].key).take(NEAR).last().unwrap_or(key)].time
     }
@@ -197,7 +198,7 @@ impl Loader for VideoLoader {
         let near = if self.reopen.is_some() { 0 } else { NEAR };
         let walk = self.next.is_some_and(|next| next <= frame && (frame - next <= near || key <= next + self.hidden));
         if !walk {
-            self.decoder.seek(&self.input, if key_alone { self.inside(key) } else { self.samples[key].time })?;
+            self.decoder.seek(&self.input, self.inside(key))?;
             self.next = None;
         }
         let mut passed_earlier = walk;
@@ -233,7 +234,7 @@ impl Loader for VideoLoader {
             }
             // the key frame we started at is shown after the frame wanted: the frame belongs to the group before
             key = self.key_at_or_before(key - 1);
-            self.decoder.seek(&self.input, self.samples[key].time)?;
+            self.decoder.seek(&self.input, self.inside(key))?;
             self.next = None;
         }
     }
@@ -250,6 +251,35 @@ impl Loader for VideoLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a jump decodes from its own key frame and no earlier: the pictures decoded on the way to a frame are the ones
+    /// of its group before it. (at a key frame's own decode time ffmpeg's mov reader starts a group early whenever
+    /// frames are stored out of the order they are shown in, as in most h.264 and hevc.)
+    #[test]
+    fn a_jump_decodes_from_its_own_key_frame_and_no_earlier() {
+        for name in ["h264_320.mp4", "hevc10_320.mp4"] {
+            let input = Input::open(&format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            let video = input.first_video().unwrap();
+            let samples = input.samples(video.index);
+            let mut decoder = Decoder::open(&input, video.index, None, false, 4).unwrap();
+            let first = decoder.next(&input).unwrap().unwrap();
+            let groups: Vec<usize> = (0..samples.len()).filter(|&i| samples[i].key).collect();
+            let keys = Arc::new(Mutex::new(Keys { frames: Vec::new(), only: false }));
+            let mut loader = VideoLoader { input, decoder, first_time: first.time(), times: Times::Even(samples[1].time - samples[0].time), next: Some(1), recent: VecDeque::new(), kept: 4, hidden: 0, reopen: None, keys, samples };
+            // into the last group, four frames past its key frame's place; then back into the second. this h.264
+            // shows a key frame where it is stored. this hevc has open groups: a key frame is shown a frame or two
+            // after its place, so fewer come before a frame, and the frames just past its place are the group before's
+            for (frame, before) in [(groups[2] + 4, 4), (groups[1] + if name.starts_with("hevc") { 4 } else { 1 }, if name.starts_with("hevc") { 4 } else { 1 })] {
+                let passed = std::cell::Cell::new(0);
+                let got = loader.load(frame, &|| {
+                    passed.set(passed.get() + 1);
+                    false
+                });
+                assert!(matches!(got, Ok(Some(_))), "{name}: frame {frame}");
+                assert!(passed.get() <= before && (passed.get() == before || name.starts_with("hevc")), "{name}: {} pictures decoded on the way to frame {frame}, and its group has {before} before it", passed.get());
+            }
+        }
+    }
 
     #[test]
     fn kept_frames_follow_the_memory_budget() {
