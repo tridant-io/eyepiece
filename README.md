@@ -29,9 +29,23 @@ with the controls away, what a key did is said at the lower left for a moment, a
 **macos: the player builds, its renderer is tested, and its window has never been on a display.** `src/mac/` has the same things as `src/win/`: the metal device, the painters of a clip's frames and of the controls, and an appkit window with no title bar; the decoder takes videotoolbox. tried on the m2 macbook air (macos 26.6) over ssh with its screen locked, so only into pictures with no window, on the 64-pixel test clips, 2026-11-24:
 - a hap frame read back is within 3 code values of ffmpeg's decode of it; hap q, hap alpha, prores 422 and 4444 (in software), h.264 and 10-bit hevc (videotoolbox), 4:2:2 h.264 (videotoolbox, as two planes), png, exr and vp9 each draw their first frame; the same h.264, hevc and 4:2:2 frames through videotoolbox and through software agree within 2 code values of 8 bits.
 - the tests that read a pixel back, save a frame with its marks and caption, save the view with its guides, and keep a still's alpha pass there as they do on windows: the controls' painter draws the same ink in the same places.
-- 203 of the 212 unit tests pass; the 9 that fail are browser and preview tests written with windows paths.
+- 204 of the 213 unit tests passed at the last run there (before the timebar strip was merged); the 9 that failed are browser and preview tests written with windows paths.
 
 not tried, because nothing with a window can be while that screen is locked: the window opening, presenting to the display and its pacing, the pointer, the keys (command does what control does on windows), the wheel and the trackpad, dropping a file, fullscreen, moving and resizing, the clipboard, sound. not written: the browser's volumes and places (every volume counts as a network volume there, so the browser is look-only everywhere), a posted-input seam for an end-to-end test, the window's buttons at the left, single instance, an app bundle, signing. prores does not go through videotoolbox yet (phase 0 found it three to five times faster, and wrong for 4444 with alpha). nothing has been timed there.
+
+a read of the mac's window and device code against the windows code and the phase 0 gate programs (2026-11-24, by a reviewer that ran nothing) found these, none fixed yet: the mac's disk filled to 1.3 GB free the same morning, and nothing is built there until it has room.
+- after every pause the count of late refreshes jumps by the time stood still: a frame's time on the display comes back after the count was reset for it (`mac/metal.rs`, `present`).
+- nothing keeps presenting until a frame is known to have reached the display, which phase 0 found the first two presents after a window opens do not: a window opened on a still clip may stay blank until the pointer moves.
+- neither the event loop nor the render loop has an autorelease pool: what appkit and metal hand out is kept until the thread ends, which the main thread never does.
+- quitting from the dock, a logout or a restart ends the program without the close path, so the settings are not saved.
+- the pointer hidden in fullscreen is hidden on every display; fullscreen keeps the window's resize edges and shadow.
+- shift + a mouse's wheel arrives as sideways scroll and never zooms; a trackpad's coasting keeps stepping frames.
+- the refresh rate is the main display's, and may be reported as none: on a 120 Hz panel or another display, play would be paced wrong.
+- a covered or minimized window may stall each turn of the loop for a second (`nextDrawable` waiting).
+- after a move of the window by its picture the button's release may never arrive.
+- the layer is not marked opaque, so a clip's alpha may show the window through; the window is not black before the first frame.
+- textures are rewritten from ordinary memory with no wait for the frame before to be done with them; the layer is set up from the render thread with no transaction, and its scale is not set.
+- launched as a bare program it may not become the active one; two drawables instead of the three phase 0 ran with; a window of one pixel if no display is found at startup; letters are told by what the layout types, so a layout that is not latin loses the owner's keys.
 
 known gaps:
 
