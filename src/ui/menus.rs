@@ -102,8 +102,17 @@ pub fn facts(ui: &mut egui::Ui, corner: Pos2, pivot: Align2, alpha: f32, room: f
                 let most = (room - 60.0).max(40.0);
                 egui::ScrollArea::vertical().max_height(most).min_scrolled_height(most).show(ui, |ui| {
                     widgets::rows(ui, &meta.groups);
+                    // what the file cannot say of itself: how this player decodes it and brings its chroma up
+                    use crate::media::meta::{Row, Tone};
+                    let mut ours = Vec::new();
                     if !model.decoded.is_empty() {
-                        widgets::rows(ui, &[Vec::new(), vec![crate::media::meta::Row { label: "decode", value: model.decoded.to_string(), tone: crate::media::meta::Tone::Plain }]]);
+                        ours.push(Row { label: "decode", value: model.decoded.to_string(), tone: Tone::Plain });
+                    }
+                    if let Some((words, assumed)) = &model.chroma {
+                        ours.push(Row { label: "chroma", value: words.clone(), tone: if *assumed { Tone::Assumed } else { Tone::Plain } });
+                    }
+                    if !ours.is_empty() {
+                        widgets::rows(ui, &[Vec::new(), ours]);
                     }
                 });
             }

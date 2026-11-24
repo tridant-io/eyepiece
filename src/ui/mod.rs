@@ -230,6 +230,9 @@ pub struct Model<'a> {
     pub facts: Facts<'a>,
     /// how the clip is decoded, in the panel's words
     pub decoded: &'a str,
+    /// how chroma smaller than the picture is brought up to it, in the panel's words, and whether where it sits
+    /// is assumed
+    pub chroma: Option<(String, bool)>,
     /// the clip has sound; how loud the player is set, 0 to 1; and whether it is muted
     pub sound: bool,
     pub volume: f32,
@@ -1590,6 +1593,7 @@ mod tests {
             guides: Guides { grid: false, center: false, tile: (120, 120), color: [61, 240, 255] },
             facts: Facts::Reading,
             decoded: "",
+            chroma: None,
             sound: false,
             volume: 1.0,
             muted: true,

@@ -49,11 +49,15 @@ pub struct Constants {
     pub to_source_add: [f32; 2],
     /// 0 shows the picture; 1, 2, 3 and 4 show red, green, blue or alpha alone
     pub channel: f32,
-    pub unused: f32,
+    /// 1 blends the chroma samples round a pixel, 0 takes the nearest
+    pub bilinear: f32,
+    /// where a chroma sample sits among its luma samples (`media::dec::Layout::siting`)
+    pub siting: [f32; 2],
+    pub unused: [f32; 2],
 }
 
 /// the metal for `Constants`, shared by every picture shader: `k` in the fragment function.
-pub const CONSTANTS_MSL: &str = "struct Constants { float2 origin; float2 texels_per_pixel; float2 size; float2 chroma_per_luma; float4 scale_offset; float4 matrix_; float4 to_source; float2 to_source_add; float channel; float unused_; };";
+pub const CONSTANTS_MSL: &str = "struct Constants { float2 origin; float2 texels_per_pixel; float2 size; float2 chroma_per_luma; float4 scale_offset; float4 matrix_; float4 to_source; float2 to_source_add; float channel; float bilinear; float2 siting; float2 unused_; };";
 
 /// a fragment shader with the one vertex shader, made for each kind of target.
 pub struct Shader(pub [Retained<ProtocolObject<dyn MTLRenderPipelineState>>; 2]);

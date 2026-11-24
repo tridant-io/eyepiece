@@ -43,6 +43,11 @@ pub struct Layout {
     pub matrix: Matrix,
     /// true when the file did not name its matrix and `matrix` is the usual assumption
     pub matrix_assumed: bool,
+    /// where a chroma sample sits among the luma samples it stands for: how far right and down of the first of
+    /// them, in luma samples. (0, 0.5) for 4:2:0 as h.264 and hevc site it; 0 the way a plane is not smaller
+    pub siting: (f32, f32),
+    /// true when the file did not say and `siting` is the usual place
+    pub siting_assumed: bool,
 }
 
 /// one decoded frame, owned. software: its planes live in ffmpeg's buffers. hardware: it holds a decoder surface, which
@@ -104,7 +109,21 @@ impl Picture {
                 _ => (Matrix::assumed(f.height as usize), true),
             };
             let stored = Stored { bits, texel_bits: if bits > 8 { 16 } else { 8 }, top_aligned: hardware && bits > 8, full_range };
-            Ok(Layout { hardware, stored, chroma_shift, matrix, matrix_assumed })
+            // where the file does not say: on the left and between two rows for video, in the middle for jpeg's
+            // full-range pictures
+            let jpeg = matches!(samples, F::AV_PIX_FMT_YUVJ420P | F::AV_PIX_FMT_YUVJ422P | F::AV_PIX_FMT_YUVJ444P);
+            let (across, down, siting_assumed) = match f.chroma_location {
+                ffi::AVChromaLocation::AVCHROMA_LOC_LEFT => (0.0, 0.5, false),
+                ffi::AVChromaLocation::AVCHROMA_LOC_CENTER => (0.5, 0.5, false),
+                ffi::AVChromaLocation::AVCHROMA_LOC_TOPLEFT => (0.0, 0.0, false),
+                ffi::AVChromaLocation::AVCHROMA_LOC_TOP => (0.5, 0.0, false),
+                ffi::AVChromaLocation::AVCHROMA_LOC_BOTTOMLEFT => (0.0, 1.0, false),
+                ffi::AVChromaLocation::AVCHROMA_LOC_BOTTOM => (0.5, 1.0, false),
+                _ if jpeg => (0.5, 0.5, true),
+                _ => (0.0, 0.5, true),
+            };
+            let siting = (if chroma_shift.0 > 0 { across } else { 0.0 }, if chroma_shift.1 > 0 { down } else { 0.0 });
+            Ok(Layout { hardware, stored, chroma_shift, matrix, matrix_assumed, siting, siting_assumed: siting_assumed && chroma_shift != (0, 0) })
         }
     }
 

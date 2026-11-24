@@ -61,8 +61,9 @@ float3 ycocg(float4 v) {
 float4 texel(int2 p) { return CONVERT(t.Load(int3(clamp(p, int2(0, 0), int2(size) - 1), 0))); }";
 
 /// y'cbcr pictures, from a hardware decoder's surface (luma plane and a plane of chroma pairs, one slice of an array)
-/// or from three planes in ordinary memory. the numbers come from `media::color`. chroma is the nearest sample for
-/// now; blending it at the file's stated siting is the design's default and is not built yet.
+/// or from three planes in ordinary memory. the numbers come from `media::color`. chroma planes smaller than the
+/// picture are brought up to it by blending the four samples round the pixel, each where the file sites it, or by
+/// taking the nearest; luma is never blended here.
 const YCBCR: &str = "
 #ifdef SURFACE
 Texture2DArray<float> ty : register(t0);
@@ -79,7 +80,20 @@ float2 chroma(int2 p) { return float2(tu.Load(int3(p, 0)), tv.Load(int3(p, 0)));
 float4 texel(int2 p) {
     p = clamp(p, int2(0, 0), int2(size) - 1);
     float y = luma(p) * scale_offset.x + scale_offset.y;
-    float2 c = chroma(int2(p * chroma_per_luma)) * scale_offset.z + scale_offset.w;
+    float2 stored;
+    if (bilinear == 0) {
+        stored = chroma(int2(p * chroma_per_luma));
+    } else {
+        // where this pixel falls among the chroma samples, the first of which sits `siting` from the first pixel
+        float2 at = (p - siting) * chroma_per_luma;
+        int2 i = int2(floor(at));
+        float2 w = at - floor(at);
+        int2 last = int2(ceil(size * chroma_per_luma)) - 1;
+        float2 top = lerp(chroma(clamp(i, int2(0, 0), last)), chroma(clamp(i + int2(1, 0), int2(0, 0), last)), w.x);
+        float2 bottom = lerp(chroma(clamp(i + int2(0, 1), int2(0, 0), last)), chroma(clamp(i + int2(1, 1), int2(0, 0), last)), w.x);
+        stored = lerp(top, bottom, w.y);
+    }
+    float2 c = stored * scale_offset.z + scale_offset.w;
     return float4(y + matrix_.x * c.y, y + matrix_.y * c.x + matrix_.z * c.y, y + matrix_.w * c.x, 1);
 }";
 
@@ -137,6 +151,8 @@ impl Paint {
                     chroma_per_luma: [1.0 / (1 << layout.chroma_shift.0) as f32, 1.0 / (1 << layout.chroma_shift.1) as f32],
                     scale_offset: [c.y_scale, c.y_offset, c.c_scale, c.c_offset],
                     matrix: [c.cr_to_r, c.cb_to_g, c.cr_to_g, c.cb_to_b],
+                    bilinear: 1.0,
+                    siting: [layout.siting.0, layout.siting.1],
                     ..Default::default()
                 };
                 if layout.hardware {
@@ -224,6 +240,12 @@ impl Paint {
             Painter::Surface { held: Some((_, y, c)), .. } => vec![Some(y.clone()), Some(c.clone())],
             Painter::Surface { held: None, .. } => return None,
         })
+    }
+
+    /// how chroma that is smaller than the picture is brought up to it: blended from the samples round each
+    /// pixel, which is how a painter starts, or taken from the nearest.
+    pub fn set_bilinear(&mut self, on: bool) {
+        self.constants.bilinear = on as u8 as f32;
     }
 
     /// true when there is a frame to draw.

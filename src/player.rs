@@ -229,6 +229,31 @@ impl View {
         }
     }
 
+    /// how chroma planes smaller than the picture are brought up to it, as the settings have it.
+    fn set_chroma(&mut self, chroma: settings::Chroma) {
+        self.paint.set_bilinear(chroma == settings::Chroma::Bilinear);
+    }
+
+    /// that, in the metadata panel's words, and whether where the samples sit is the usual place and not the file's
+    /// word. none for a picture whose chroma is as big as its luma, or that has none.
+    fn chroma(&self, settings: &Settings) -> Option<(String, bool)> {
+        let Lane::Video(video) = &self.clip.lane else { return None };
+        let layout = video.layout;
+        if layout.chroma_shift == (0, 0) {
+            return None;
+        }
+        if settings.chroma == settings::Chroma::Nearest {
+            return Some(("the nearest sample".to_string(), false));
+        }
+        let across = if layout.siting.0 == 0.0 { "left" } else { "center" };
+        let down = match layout.siting.1 {
+            d if layout.chroma_shift.1 == 0 || d == 0.5 => "",
+            d if d == 0.0 => "top ",
+            _ => "bottom ",
+        };
+        Some((format!("blended, sited {down}{across}"), layout.siting_assumed))
+    }
+
     /// how the clip is decoded, in the metadata panel's words.
     fn decoded(&self) -> &'static str {
         match &self.clip.lane {
@@ -339,6 +364,7 @@ impl View {
         Model {
             facts,
             decoded: self.decoded(),
+            chroma: self.chroma(settings),
             shots_to,
             sound: matches!(self.sound, Some(Some(_))),
             volume: settings.volume,
@@ -1890,7 +1916,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         let cutting = tabs.tab().cutting();
         playing_now.store(playing || cutting, Ordering::Relaxed);
         let patience = if playing { Duration::from_secs_f64(0.5 / hz) } else { Duration::from_millis(4) };
-        let changed = tabs.view().is_some_and(|v| v.load(&gpu, patience));
+        let changed = tabs.view().is_some_and(|v| {
+            v.set_chroma(settings.chroma);
+            v.load(&gpu, patience)
+        });
         // the chip was laid out before this frame arrived: a new value under the pointer is one more look
         again |= tabs.view().is_some_and(|v| {
             let pixel = pixel_of(v);
@@ -1966,6 +1995,57 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::color;
+    use crate::media::source::Frame;
+
+    /// 4:2:0 chroma is brought up to the picture's size by blending the four samples round each pixel, placed where
+    /// the file sites them; on request the nearest sample is taken instead. every pixel is checked against the same
+    /// arithmetic done here on the decoder's own planes.
+    #[test]
+    fn chroma_is_blended_at_the_files_siting_or_taken_from_the_nearest_sample() {
+        let mut gpu = Gpu::offscreen().expect("a graphics device");
+        (gpu.w, gpu.h) = (64, 64);
+        // decoded in software, so that the planes can be read here too
+        let mut clip = Clip::open(&format!("{}/tests/media/h264_64.mp4", env!("CARGO_MANIFEST_DIR"))).expect("open");
+        clip.start(None).expect("start");
+        let mut view = View::new(&gpu, clip, 60.0).expect("view");
+        assert!(view.load(&gpu, Duration::from_secs(20)), "the first frame arrived");
+        let Lane::Video(video) = &view.clip.lane else { panic!("a clip ffmpeg decodes") };
+        let layout = video.layout;
+        assert_eq!((layout.chroma_shift, layout.siting), ((1, 1), (0.0, 0.5)));
+        let Frame::Ready(picture) = video.source.get(0, Duration::from_secs(20)) else { panic!("the first frame") };
+        let sample = |plane: usize, x: usize, y: usize| {
+            let (data, stride, _) = picture.plane(plane, layout.chroma_shift);
+            data[y * stride + x] as f32 / 255.0
+        };
+        let c = color::conversion(layout.stored, layout.matrix);
+        let wanted = |x: usize, y: usize, bilinear: bool| -> [f32; 3] {
+            let chroma = |plane: usize| {
+                if !bilinear {
+                    return sample(plane, x / 2, y / 2);
+                }
+                let (ax, ay) = ((x as f32 - layout.siting.0) / 2.0, (y as f32 - layout.siting.1) / 2.0);
+                let at = |dx: f32, dy: f32| sample(plane, (ax.floor() + dx).clamp(0.0, 31.0) as usize, (ay.floor() + dy).clamp(0.0, 31.0) as usize);
+                let (wx, wy) = (ax - ax.floor(), ay - ay.floor());
+                let (top, bottom) = (at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * wx, at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * wx);
+                top + (bottom - top) * wy
+            };
+            let (luma, cb, cr) = (sample(0, x, y) * c.y_scale + c.y_offset, chroma(1) * c.c_scale + c.c_offset, chroma(2) * c.c_scale + c.c_offset);
+            [luma + c.cr_to_r * cr, luma + c.cb_to_g * cb + c.cr_to_g * cr, luma + c.cb_to_b * cb].map(|v| v.clamp(0.0, 1.0))
+        };
+        let mut reads = Vec::new();
+        for bilinear in [true, false] {
+            view.paint.set_bilinear(bilinear);
+            let read = view.read(&gpu, 64, 64).expect("the frame");
+            let worst = (0..64 * 64).flat_map(|i| (0..3).map(move |channel| (i, channel))).map(|(i, channel)| (read[i * 4 + channel] as f32 / 65535.0 - wanted(i % 64, i / 64, bilinear)[channel]).abs()).fold(0.0, f32::max);
+            assert!(worst < 1.0 / 255.0, "blended {bilinear}: the worst sample is {:.2} code values of 8 bits off", worst * 255.0);
+            reads.push(read);
+        }
+        assert!(reads[0] != reads[1], "this picture has edges of color: the two ways differ");
+        // the panel says which, and that the place is the file's own word
+        let nearest = Settings { chroma: settings::Chroma::Nearest, ..Settings::default() };
+        assert_eq!((view.chroma(&Settings::default()), view.chroma(&nearest)), (Some(("blended, sited left".to_string(), false)), Some(("the nearest sample".to_string(), false))));
+    }
 
     /// a test clip with its first frame in the painter, with no window. needs a gpu.
     fn view(name: &str) -> (Gpu, View) {
