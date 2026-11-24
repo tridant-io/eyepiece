@@ -436,10 +436,24 @@ mod tests {
         // prores has no range field: what ffmpeg reports is a constant in its decoder
         assert_eq!(get(&m, "range"), ("not stated in file. shown as video range", Tone::Assumed));
         assert_eq!(get(&m, "color"), ("matrix not stated in file. shown as bt.601 · primaries not stated · transfer not stated", Tone::Assumed));
+
+        let m = read("prores4444_64.mov");
+        assert_eq!(get(&m, "codec"), ("prores 4444 · ap4h", Tone::Plain));
+        assert_eq!(get(&m, "bit depth"), ("12-bit · 4:4:4 · nominal for this profile", Tone::Plain));
+        assert_eq!(get(&m, "alpha"), ("yes · 16-bit in file", Tone::Plain));
+        assert_eq!(get(&m, "color"), ("matrix bt.709 · primaries bt.709 · transfer bt.709", Tone::Plain));
     }
 
     #[test]
     fn color_is_what_the_file_tags_or_the_assumption_in_use() {
+        // tagged in the stream alone, which only the probe reads
+        let path = format!("{}/tests/media/h264_vui709_64.mp4", env!("CARGO_MANIFEST_DIR"));
+        let input = Input::open(&path).unwrap();
+        assert_eq!(input.color(input.first_video().unwrap().index), [2, 2, 2, 0], "the container should carry no tags");
+        let m = read("h264_vui709_64.mp4");
+        assert_eq!(get(&m, "color"), ("matrix bt.709 · primaries bt.709 · transfer bt.709", Tone::Plain));
+        assert_eq!(get(&m, "range"), ("video", Tone::Plain));
+
         let m = read("h264_709_64.mp4");
         assert_eq!(get(&m, "color"), ("matrix bt.709 · primaries bt.709 · transfer bt.709", Tone::Plain));
         assert_eq!(get(&m, "range"), ("video", Tone::Plain));
