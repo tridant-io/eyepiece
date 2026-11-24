@@ -678,6 +678,28 @@ Send-Key 0xDB 2; $script:name = 'hapq_64.mov'; Assert-Frame 'the first clip is s
 # the first and the last tab hold clips of one size and length: they change places on the same frame, a flip comparison
 Send-Key 0x23; Send-Key 0xDB; $script:name = 'hap_64.mov'; Assert-Frame 'two clips of one size and length change places on the same frame' 2 3
 Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'and back' 2 3
+# a file dropped on the window opens in a tab of its own too. the drop is posted as the shell sends one: a list of
+# names in memory (a 20-byte header that says where the names start and that they are wide, the one name, two ends)
+Add-Type @'
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class EyepieceDrop {
+  [DllImport("kernel32.dll")] static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+  [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr h);
+  [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr h);
+  public static IntPtr Files(string path) {
+    byte[] name = Encoding.Unicode.GetBytes(path + "\0\0");
+    IntPtr h = GlobalAlloc(0x42, (UIntPtr)(20 + name.Length));
+    IntPtr at = GlobalLock(h);
+    Marshal.WriteInt32(at, 0, 20); Marshal.WriteInt32(at, 16, 1);
+    Marshal.Copy(name, 0, IntPtr.Add(at, 20), name.Length);
+    GlobalUnlock(h);
+    return h;
+  }
+}
+'@
+[void][EyepieceE2e]::PostMessage($script:h, 0x233, [EyepieceDrop]::Files((Join-Path $media 'h264_64.mp4')), [IntPtr]::Zero)
+$script:name = 'h264_64.mp4'; Assert-Frame 'a file dropped on the window opens' 0 12
+Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: what was open is still there, on its frame' 2 3
 [void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 400
 $before = Get-Title
 Start-Again 'a launch with no file exits at once' @{}

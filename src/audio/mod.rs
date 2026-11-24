@@ -67,7 +67,6 @@ impl Speaker {
 /// one clip's sound: its decoder, on a thread of its own. it touches no device until it plays, so it is opened
 /// wherever its clip is.
 pub struct Audio {
-    info: Info,
     /// to the decode thread: the next play, or None to stop
     commands: Option<Sender<Option<Play>>>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -101,14 +100,10 @@ struct Play {
 impl Audio {
     /// None when the file has no audio stream.
     pub fn open(path: &str) -> Result<Option<Audio>, String> {
-        let Some((decoder, info)) = Decoder::open(path)? else { return Ok(None) };
+        let Some((decoder, _)) = Decoder::open(path)? else { return Ok(None) };
         let (commands, theirs) = mpsc::channel();
         let worker = std::thread::Builder::new().name("sound".into()).spawn(move || work(decoder, theirs)).map_err(|e| e.to_string())?;
-        Ok(Some(Audio { info, commands: Some(commands), worker: Some(worker), playing: None }))
-    }
-
-    pub fn info(&self) -> &Info {
-        &self.info
+        Ok(Some(Audio { commands: Some(commands), worker: Some(worker), playing: None }))
     }
 
     /// starts, or restarts, playing from `seconds` into the clip at `speed` (1.0 is normal), out of `speaker`, where
