@@ -9,6 +9,7 @@ mod audio;
 mod event;
 mod media;
 mod play;
+mod preview;
 mod settings;
 mod shot;
 mod ui;
