@@ -2,7 +2,7 @@
 
 use super::widgets::{self, ROW};
 use super::{font, Action, Facts, Menu, Model, Shot, ACCENT, DIM, MONO};
-use crate::play::Loop;
+use crate::settings::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
 use egui::{Align2, Pos2, Rect};
 
@@ -78,10 +78,11 @@ fn slider_and_field(ui: &mut egui::Ui, name: &str, at: f32, shown: &str, unit: &
 
 fn looping(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
     widgets::heading(ui, "loop", &["R"]);
-    // a folder's "all" comes with playing folders
-    let modes = [("off", Loop::Off), ("one", Loop::One)];
+    // "all" is a played folder's: its clips one after another, round and round
+    let all = [("off", Loop::Off), ("one", Loop::One), ("all", Loop::All)];
+    let modes = &all[..if model.folder { 3 } else { 2 }];
     let on = modes.iter().position(|m| model.seam.is_none() && m.1 == model.looping);
-    if let Some(i) = widgets::segments(ui, "loop-modes", &modes.map(|m| m.0), on) {
+    if let Some(i) = widgets::segments(ui, "loop-modes", &modes.iter().map(|m| m.0).collect::<Vec<_>>(), on) {
         actions.push(Action::Loop(modes[i].1));
     }
     let row = widgets::row(ui, ROW);

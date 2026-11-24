@@ -24,6 +24,10 @@ _Avoid_: thumbnail
 the 24 small frames per file that let a browser card scrub under the pointer. made the first time a card is hovered, then kept in the cache.
 _Avoid_: strip, sprite, thumbnails, storyboard
 
+**played folder**:
+the clips of one folder that a tab plays one after another, in name order. the loop mode all goes round it.
+_Avoid_: playlist, queue, bin
+
 **kept frames**:
 the budgeted set of decoded frames held for a long-gop clip (h.264, hevc), inside which stepping back is instant.
 _Avoid_: ring, gop cache, frame cache

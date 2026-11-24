@@ -6,7 +6,9 @@ use super::pictures;
 use super::ui_paint::UiPainter;
 use super::window::{self, Handle};
 use crate::audio::Audio;
+use crate::browse;
 use crate::event::{Event, Key, Mods};
+use crate::folder;
 use crate::media::clip::{Clip, Lane};
 use crate::media::color;
 use crate::media::dec::{Layout, Picture};
@@ -14,7 +16,7 @@ use crate::media::hap::Tex;
 use crate::media::meta::Meta;
 use crate::media::source::Frame;
 use crate::media::still::Samples;
-use crate::play::{Loop, Show, Transport};
+use crate::play::{Show, Transport};
 use crate::settings::{self, Settings};
 use crate::shot;
 use crate::ui::{Action, Facts, Model, Screen, Shot, Ui};
@@ -262,6 +264,13 @@ impl View {
         false
     }
 
+    /// lets the clip go on a thread of its own: its readers finish the frames they are on first, which took up to
+    /// half a second for a 4K float sequence, and the picture must not wait for that.
+    fn retire(self) {
+        let View { clip, .. } = self;
+        std::thread::spawn(move || drop(clip));
+    }
+
     /// puts the transport's frame into the painter, waiting up to `patience` for it, with the frames play or a
     /// step would show next read ahead. true when the picture changed.
     fn load(&mut self, gpu: &Gpu, patience: Duration) -> bool {
@@ -495,7 +504,7 @@ impl View {
     }
 
     /// what the controls show. the pixel is the file's pixel under the pointer, when the zoom chip is to name it.
-    fn model<'a>(&'a self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings, facts: Facts<'a>, shots_to: &'a str) -> Model<'a> {
+    fn model<'a>(&'a self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings, facts: Facts<'a>, shots_to: &'a str, (looping, folder): (settings::Loop, bool)) -> Model<'a> {
         Model {
             facts,
             decoded: self.decoded(),
@@ -510,7 +519,8 @@ impl View {
             fault: self.fault.as_deref(),
             gaps: &self.clip.missing,
             linear: matches!(&self.clip.lane, Lane::Stills(stills) if stills.samples == Samples::F32),
-            looping: self.transport.loop_mode(),
+            looping,
+            folder,
             seam: self.transport.seam_place(),
             seam_seconds: settings.loop_analysis_seconds as f64,
             speed: self.transport.speed(),
@@ -536,10 +546,6 @@ impl View {
             Action::Step(by) => self.transport.step(*by),
             Action::Seek(frame) => self.transport.go(*frame as i64),
             Action::SeekPlace(place) => self.transport.go_place(*place),
-            Action::Loop(mode) => {
-                settings.loop_file = if *mode == Loop::Off { settings::Loop::Off } else { settings::Loop::One };
-                self.transport.set_loop(*mode);
-            }
             Action::Seam(seconds) => {
                 self.transport.set_seam(*seconds);
                 // the transport holds the seconds to what it takes: keep what it kept
@@ -551,12 +557,13 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
     /// what the window's title says: the taskbar and the tests read it.
-    fn title(&self, window: (f32, f32), settings: &Settings) -> String {
+    /// `tab` is what the tab has to say: its loop mode when that is not as it opened, and where it is in a folder.
+    fn title(&self, window: (f32, f32), settings: &Settings, tab: (&str, &str)) -> String {
         let c = &self.clip;
         // the panel will have to admit whether the gpu or the cpu decodes; until then the title does
         let decoded = match &self.painter {
@@ -585,8 +592,8 @@ impl View {
         // what is not as a clip opens: loop, speed, the look, the guides, the zoom
         if self.transport.seam().is_some() {
             state += " · loop analysis";
-        } else if self.transport.loop_mode() == Loop::Off {
-            state += " · loop off";
+        } else {
+            state += tab.0;
         }
         if self.transport.speed() != 1.0 {
             state += &format!(" · {}×", self.transport.speed());
@@ -605,6 +612,7 @@ impl View {
         if let Some((_, (x, y), [r, g, b])) = self.probe {
             state += &format!(" · x {x} y {y} · {r} {g} {b}");
         }
+        state += tab.1;
         format!("{} · {} / {} · {} × {} · {}{decoded} · {}{state}", c.name, self.transport.frame(), c.timeline.frames(), c.width, c.height, c.codec, c.rate_text())
     }
 }
@@ -621,6 +629,69 @@ struct Tab {
     browsing: bool,
     /// the file's facts for the metadata panel, read in the background: on their way, here, or why not
     facts: Option<Loaded<Meta>>,
+    /// what play does at the end: off or one for a clip, and all as well for a folder. it is the tab's
+    mode: settings::Loop,
+    /// the folder it plays, when it plays one, and the clip on its way to take the place of the one on screen
+    played: Option<Played>,
+    coming: Option<Coming>,
+    /// refreshes the last frame of a clip was held while play waited for the folder's next clip
+    held: u64,
+    /// what the strip calls a tab that plays a folder
+    label: String,
+}
+
+/// the folder a tab plays: its clips in name order, and which of them is up
+struct Played {
+    title: String,
+    items: Vec<std::path::PathBuf>,
+    at: usize,
+}
+
+/// a clip on its way to take the place of the one on screen: opened off the drawing thread, and put up once its
+/// first frame is in its painter, so the picture is never blank at a cut.
+struct Coming {
+    /// which of the folder's clips
+    item: usize,
+    path: String,
+    /// the clip, until it has arrived, and the thread that opens it
+    opening: Option<Receiver<Result<Clip, String>>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    view: Option<View>,
+    /// play ran off the end of the clip before: it goes on in this one from its first frame. else a step by hand
+    auto: bool,
+}
+
+impl Coming {
+    fn start(item: usize, path: String, auto: bool, hardware: crate::media::dec::Hardware, wake: Sender<Event>) -> Coming {
+        let (opened, opening) = mpsc::channel();
+        let file = path.clone();
+        let work = move || {
+            // decoding starts here too: making a hardware decoder took 80 to 250 ms for a 4K clip
+            let _ = opened.send(Clip::open(&file).and_then(|mut clip| clip.start(Some(hardware)).map(|()| clip)));
+            let _ = wake.send(Event::Wake);
+        };
+        Coming { item, path, opening: Some(opening), worker: std::thread::Builder::new().name("opening".into()).spawn(work).ok(), view: None, auto }
+    }
+}
+
+impl Drop for Coming {
+    /// the opening thread is handed the graphics device: it must be done with it before the device can go.
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// a file's facts for the metadata panel, read apart from its clip: they are there for a file that does not play too.
+fn read_facts(path: &str, wake: &Sender<Event>) -> Loaded<Meta> {
+    let (reader, arriving) = mpsc::channel();
+    let (file, wake) = (path.to_string(), wake.clone());
+    std::thread::spawn(move || {
+        let _ = reader.send(Meta::read(&file));
+        let _ = wake.send(Event::Wake);
+    });
+    Loaded::Reading(arriving)
 }
 
 /// something read in the background: on its way, here, or not to be had
@@ -654,31 +725,65 @@ type Closed = (String, usize, Framing, Look);
 
 impl Tab {
     fn empty() -> Tab {
-        Tab { path: None, view: None, error: None, browsing: false, facts: None }
+        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, held: 0, label: String::new() }
     }
 
     /// a tab for a file: its clip, or why there is none.
     fn open(gpu: &Gpu, path: String, clip: Result<Clip, String>, hz: f64, settings: &Settings, wake: &Sender<Event>) -> Tab {
-        // the facts are read apart from the clip: they stay available for a file that does not play
-        let (reader, arriving) = mpsc::channel();
-        let (file, wake) = (path.clone(), wake.clone());
-        std::thread::spawn(move || {
-            let _ = reader.send(Meta::read(&file));
-            let _ = wake.send(Event::Wake);
-        });
-        let view = clip.and_then(|clip| View::new(gpu, clip, hz)).map(|mut view| {
-            view.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
-            view
-        });
-        let (view, error) = match view {
+        let facts = Some(read_facts(&path, wake));
+        let (view, error) = match clip.and_then(|clip| View::new(gpu, clip, hz)) {
             Ok(view) => (Some(view), None),
             Err(why) => (None, Some(why)),
         };
-        Tab { path: Some(path), view, error, browsing: false, facts: Some(Loaded::Reading(arriving)) }
+        let mode = if settings.loop_file == settings::Loop::Off { settings::Loop::Off } else { settings::Loop::One };
+        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, held: 0, label: String::new() }
+    }
+
+    /// sets the loop mode, which ends loop analysis, and keeps it for the next tab of its kind.
+    fn set_mode(&mut self, mode: settings::Loop, settings: &mut Settings) {
+        self.mode = mode;
+        if self.played.is_some() {
+            settings.loop_folder = mode;
+        } else {
+            settings.loop_file = mode;
+        }
+        if let Some(v) = self.view.as_mut().filter(|v| v.transport.seam().is_some()) {
+            v.transport.set_seam(None);
+        }
+    }
+
+    /// the strip's name for a tab that plays a folder: the folder, where it is in it, and the clip.
+    fn relabel(&mut self) {
+        if let Some(played) = &self.played {
+            self.label = format!("{} / {} of {} · {}", played.title, played.at + 1, played.items.len(), self.clip_name());
+        }
+    }
+
+    /// what the title says of the tab: its loop mode when that is not what its kind opens with (one for a clip, all
+    /// for a folder), and for a folder which clip is up and the refreshes held at its cuts.
+    fn words(&self) -> (&'static str, String) {
+        let mode = match (self.mode, self.played.is_some()) {
+            (settings::Loop::Off, _) => " · loop off",
+            (settings::Loop::One, true) => " · loop one",
+            (settings::Loop::All, false) => " · loop all",
+            _ => "",
+        };
+        let mut folder = self.played.as_ref().map_or_else(String::new, |p| format!(" · clip {} of {}", p.at + 1, p.items.len()));
+        if self.held > 0 {
+            folder += &format!(" · {} held at cuts", self.held);
+        }
+        (mode, folder)
     }
 
     /// what the strip calls it.
     fn name(&self) -> &str {
+        if self.played.is_some() {
+            return &self.label;
+        }
+        self.clip_name()
+    }
+
+    fn clip_name(&self) -> &str {
         match (&self.view, &self.path) {
             (Some(view), _) => &view.clip.name,
             (None, Some(path)) => Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path),
@@ -764,11 +869,124 @@ impl Tabs {
             window::fit(window, window::client_for((view.clip.width, view.clip.height)));
         }
         if replace || self.tab().is_empty() {
-            *self.tab() = tab;
+            if let Some(old) = std::mem::replace(self.tab(), tab).view.take() {
+                old.retire();
+            }
         } else {
             self.all.push(tab);
             self.select(self.all.len() - 1);
         }
+    }
+
+    /// plays a folder in the tab that is up: its clips one after another in name order, from the first, with the
+    /// folder's loop mode. the window is sized to the first clip. returns what there is to say about it.
+    fn play_folder(&mut self, gpu: &Gpu, window: Handle, folder: &Path, settings: &Settings, wake: &Sender<Event>) -> Option<String> {
+        let listed = browse::list(folder).map_err(|e| e.to_string().to_lowercase());
+        let (items, left_out) = match listed.and_then(|entries| folder::items(browse::volume_of(folder), &entries).map_err(str::to_string)) {
+            Ok(found) => found,
+            Err(why) => return Some(why),
+        };
+        let Some(first) = items.first() else { return Some("no video in this folder".into()) };
+        self.open(gpu, window, first.to_string_lossy().into_owned(), settings, wake, true);
+        let tab = self.tab();
+        let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        (tab.played, tab.mode) = (Some(Played { title, items, at: 0 }), settings.loop_folder);
+        tab.relabel();
+        if let Some(v) = &mut tab.view {
+            v.transport.set_playing(true);
+        }
+        (left_out > 0).then(|| format!("{left_out} file{} not on this disk left out", if left_out == 1 { " is" } else { "s are" }))
+    }
+
+    /// starts bringing in another of the folder's clips: `auto` when play ran off the end of the one before.
+    fn go_item(&mut self, to: usize, auto: bool, gpu: &Gpu, wake: &Sender<Event>) {
+        let tab = self.tab();
+        let Some(path) = tab.played.as_ref().and_then(|p| p.items.get(to)) else { return };
+        let path = path.to_string_lossy().into_owned();
+        // the one before, if it is still on its way, is let go first: it has the device in hand
+        tab.coming = None;
+        tab.coming = Some(Coming::start(to, path, auto, gpu.hardware(), wake.clone()));
+    }
+
+    /// page up and page down: the folder's clip before or after, round its ends, counted from the one on its way
+    /// when there is one, so presses in a row each go one further.
+    fn step_item(&mut self, by: i64, gpu: &Gpu, wake: &Sender<Event>) {
+        let tab = self.tab();
+        let Some(played) = &tab.played else { return };
+        let from = tab.coming.as_ref().map_or(played.at, |c| c.item);
+        if let Some(to) = folder::step(played.items.len(), from, by) {
+            self.go_item(to, false, gpu, wake);
+        }
+    }
+
+    /// play ran off the end of the folder's clip: the next takes over, when the loop mode has one.
+    fn advance(&mut self, gpu: &Gpu, wake: &Sender<Event>) {
+        let tab = self.tab();
+        let Some(played) = &tab.played else { return };
+        if let Some(next) = folder::after(tab.mode, played.items.len(), played.at) {
+            self.go_item(next, true, gpu, wake);
+        }
+    }
+
+    /// brings the clip that is on its way nearer the screen: makes its view once it is opened, reads its first
+    /// frame, and puts it up in place of the old one when that frame is in its painter. the old picture stays up
+    /// until then. a step by hand between clips of one size and length keeps the frame, zoom and pan (two versions
+    /// flip on the spot); the speed, the look and loop analysis are the tab's and stay. it waits up to `patience`
+    /// for what it needs next. true when a clip was put up; Err says why one did not open, and the clip on screen
+    /// then stays.
+    fn bring_in(&mut self, gpu: &Gpu, wake: &Sender<Event>, patience: Duration) -> Result<bool, String> {
+        let hz = self.hz;
+        let tab = self.tab();
+        let Some(coming) = &mut tab.coming else { return Ok(false) };
+        if let Some(opening) = &coming.opening {
+            let clip = match opening.recv_timeout(patience) {
+                Err(RecvTimeoutError::Timeout) => return Ok(false),
+                Err(RecvTimeoutError::Disconnected) => Err("its reader did not start".to_string()),
+                Ok(clip) => clip,
+            };
+            coming.opening = None;
+            let mut view = match clip.and_then(|clip| View::new(gpu, clip, hz)) {
+                Ok(view) => view,
+                Err(why) => {
+                    tab.coming = None;
+                    return Err(why);
+                }
+            };
+            if let Some(old) = &tab.view {
+                view.transport.set_speed(old.transport.speed());
+                view.set_look(old.look);
+                if !coming.auto && (view.size(), view.clip.timeline.frames()) == (old.size(), old.clip.timeline.frames()) {
+                    view.transport.go(old.transport.frame() as i64);
+                    view.framing = old.framing.clone();
+                }
+                if let Some(seconds) = old.transport.seam() {
+                    view.transport.set_seam(Some(seconds));
+                }
+            }
+            coming.view = Some(view);
+        }
+        let Some(view) = &mut coming.view else { return Ok(false) };
+        // its one frame, and nothing read ahead until it is up
+        let frame = view.transport.frame();
+        view.load_wanting(gpu, patience, &[frame]);
+        if view.waiting() {
+            return Ok(false);
+        }
+        let Some(mut coming) = tab.coming.take() else { return Ok(false) };
+        let Some(mut view) = coming.view.take() else { return Ok(false) };
+        if coming.auto || tab.view.as_ref().is_some_and(|old| old.transport.playing()) {
+            view.transport.set_playing(true);
+        }
+        tab.facts = Some(read_facts(&coming.path, wake));
+        (tab.path, tab.error) = (Some(std::mem::take(&mut coming.path)), None);
+        if let Some(played) = &mut tab.played {
+            played.at = coming.item;
+        }
+        if let Some(old) = tab.view.replace(view) {
+            old.retire();
+        }
+        tab.relabel();
+        Ok(true)
     }
 
     /// closes a tab, remembering it. closing the last one leaves an empty tab: the window stays.
@@ -776,9 +994,10 @@ impl Tabs {
         if at >= self.all.len() {
             return;
         }
-        let tab = self.all.remove(at);
-        if let (Some(path), Some(view)) = (tab.path, tab.view) {
+        let mut tab = self.all.remove(at);
+        if let (Some(path), Some(view)) = (tab.path.take(), tab.view.take()) {
             self.closed.push((path, view.transport.frame(), view.framing.clone(), view.look));
+            view.retire();
         }
         if self.all.is_empty() {
             self.all.push(Tab::empty());
@@ -898,7 +1117,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         // with nothing moving and nothing owed, sleep until the window says something or the controls are due
         let playing = tabs.view().is_some_and(|v| v.transport.playing());
         let waiting = tabs.view().is_some_and(|v| v.waiting());
-        let mut next = if playing || waiting || redraw {
+        let mut next = if playing || waiting || redraw || tabs.tab().coming.is_some() {
             match events.try_recv() {
                 Ok(e) => Some(e),
                 Err(TryRecvError::Empty) => None,
@@ -991,8 +1210,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Char(c) if browsing => ui.browser_char(c),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis
-                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::Up | Key::Down) => match key {
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::Up | Key::Down | Key::PageUp | Key::PageDown) => match key {
                     Key::N => tabs.new_tab(),
+                    Key::PageUp => tabs.step_item(-1, &gpu, &wake),
+                    Key::PageDown => tabs.step_item(1, &gpu, &wake),
                     Key::M => {
                         settings.mute = !settings.mute;
                         tabs.loudness(settings);
@@ -1028,11 +1249,17 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     Key::D => settings.grid = !settings.grid,
                     Key::C => settings.center = !settings.center,
                     Key::R => {
-                        // off, one, and round again; from loop analysis, back to plain looping
-                        settings.loop_file = if settings.loop_file == settings::Loop::Off || tabs.view().is_some_and(|v| v.transport.seam().is_some()) { settings::Loop::One } else { settings::Loop::Off };
-                        if let Some(v) = tabs.view() {
-                            v.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
-                        }
+                        // off, one, for a folder all, and round again; from loop analysis, back to plain looping
+                        let tab = tabs.tab();
+                        let (folder, analysis) = (tab.played.is_some(), tab.view.as_ref().is_some_and(|v| v.transport.seam().is_some()));
+                        let mode = match tab.mode {
+                            _ if analysis && folder => settings::Loop::All,
+                            _ if analysis => settings::Loop::One,
+                            settings::Loop::Off => settings::Loop::One,
+                            settings::Loop::One if folder => settings::Loop::All,
+                            _ => settings::Loop::Off,
+                        };
+                        tab.set_mode(mode, settings);
                     }
                     _ => {
                         if let Some(v) = tabs.view() {
@@ -1092,7 +1319,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             let screen = Screen {
                 tabs: tabs.all.iter().map(Tab::name).collect(),
                 current: tabs.up,
-                clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings, facts, &shots_label)),
+                clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some()))),
                 error: tab.error.as_deref(),
                 browsing: tab.browsing(),
                 fullscreen,
@@ -1129,8 +1356,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     tabs.loudness(settings);
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
-                // folders do not play yet: until they do, the browser's shift + enter and play folder do nothing
-                Action::PlayFolder(_) => {}
+                Action::PlayFolder(folder) => {
+                    if let Some(said) = tabs.play_folder(&gpu, window, folder, settings, &wake) {
+                        toast = say(said);
+                    }
+                }
+                Action::Loop(mode) => tabs.tab().set_mode(*mode, settings),
                 Action::Guides(to) => (settings.grid, settings.center, settings.tile) = (to.grid, to.center, to.tile),
                 Action::Fullscreen => {
                     fullscreen = !fullscreen;
@@ -1174,6 +1405,20 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             window::show_pointer(window, pointer_shown);
         }
 
+        // a folder's next clip comes nearer; and what play does at the clip's own ends follows the tab's loop mode
+        // (standing still nothing else paces the loop, so the wait for it is taken here, a few milliseconds a look)
+        let paced = playing || tabs.tab().coming.as_ref().is_some_and(|c| c.auto);
+        match tabs.bring_in(&gpu, &wake, if paced { Duration::ZERO } else { Duration::from_millis(4) }) {
+            Ok(up) => (redraw, again) = (redraw || up, again || up),
+            Err(why) => toast = say(why),
+        }
+        let tab = tabs.tab();
+        if let Some(v) = &mut tab.view {
+            let ends = folder::clip_loop(tab.mode, tab.played.as_ref().map_or(1, |p| p.items.len()), v.transport.shuttle_rate() < 0);
+            if v.transport.seam().is_none() && v.transport.loop_mode() != ends {
+                v.transport.set_loop(ends);
+            }
+        }
         // a clip's sound is looked for once its first frame is up: opening the file again, and the output device,
         // must not hold the picture back
         let tab = tabs.tab();
@@ -1197,7 +1442,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         // a frame that is nearly there is worth a short wait: while playing, half a refresh, since showing the old
         // frame again skips this one for good. standing still, a few milliseconds between looks at the window
         let playing = tabs.view().is_some_and(|v| v.transport.playing());
-        playing_now.store(playing, Ordering::Relaxed);
+        // play that ran off a clip's end waits on its last frame for the folder's next clip, and counts the wait
+        let cutting = tabs.tab().coming.as_ref().is_some_and(|c| c.auto);
+        playing_now.store(playing || cutting, Ordering::Relaxed);
         let patience = if playing { Duration::from_secs_f64(0.5 / hz) } else { Duration::from_millis(4) };
         let changed = tabs.view().is_some_and(|v| v.load(&gpu, patience));
         // the chip was laid out before this frame arrived: a new value under the pointer is one more look
@@ -1205,7 +1452,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             let pixel = pixel_of(v);
             v.probe(&gpu, pixel)
         });
-        if redraw || changed || playing {
+        if redraw || changed || playing || cutting {
             {
                 // the decoder shares this device: its calls stay out of the middle of ours. the lock is let go before
                 // the present, which waits for the display
@@ -1219,6 +1466,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
             }
             let missed = gpu.present(playing, Duration::from_secs_f64(1.0 / hz));
+            tabs.tab().held += cutting as u64;
             if let Some(v) = tabs.view() {
                 // the pause on black between rounds of loop analysis shows no frame: nothing to be late with
                 let black = v.transport.show() == Show::Black;
@@ -1234,13 +1482,20 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // the title
                 again |= playing && !v.transport.playing();
             }
+            // a folder's clip that played to its end hands over to the next
+            if tabs.view().is_some_and(|v| playing && !v.transport.playing() && v.transport.frame() + 1 == v.clip.timeline.frames()) {
+                tabs.advance(&gpu, &wake);
+            }
             redraw = false;
             // the title follows the frame while the clip stands still. it is left alone during play: redrawing a
             // title bar makes the compositor miss a refresh now and then
             if !playing {
                 let tab = &tabs.all[tabs.up];
                 let title = match (&tab.view, &tab.error) {
-                    (Some(v), _) => v.title(size, settings) + if tab.browsing { " · browser" } else { "" },
+                    (Some(v), _) => {
+                        let (mode, folder) = tab.words();
+                        v.title(size, settings, (mode, &folder)) + if tab.browsing { " · browser" } else { "" }
+                    }
                     (None, Some(why)) => format!("eyepiece · {why}"),
                     (None, None) => "eyepiece".to_string(),
                 };

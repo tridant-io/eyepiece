@@ -7,6 +7,7 @@
 mod browse;
 mod audio;
 mod event;
+mod folder;
 mod media;
 mod play;
 mod preview;

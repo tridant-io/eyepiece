@@ -390,6 +390,31 @@ DoubleClick-At (150 + 168 * $columns + 100) ((Get-Height) - 80); Start-Sleep -Mi
 Assert-Title 'a double click on nothing opens nothing' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
 Stop-Player
+
+# ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order.
+# here hap_64.mov (3 frames), prores_64.mov (4) and x_roll.mov (3); the one marked as not on the disk is left out
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+Start-Player
+Start-Sleep -Milliseconds 1000
+function Get-ClipUp { if ((Get-Title) -match ' . clip (\d) of 3') { [int]$Matches[1] } else { 0 } }
+# the title is left alone during play: space stops it, and then it says where the folder is
+Send-Key 0x0D 1 1; Start-Sleep -Milliseconds 700; Send-Key 0x20
+Assert-Title 'shift + enter plays the folder: three clips, without the one that is not on the disk' ' / \d . .* . clip \d of 3( . \d+ held at cuts)?$'
+$up = Get-ClipUp
+Send-Key 0x22; Assert-Title 'page down goes to the next clip, round the end' " . clip $($up % 3 + 1) of 3"
+Send-Key 0x21; Assert-Title 'page up goes back' " . clip $up of 3"
+foreach ($i in 1..3) { if ((Get-ClipUp) -eq 1) { break }; Send-Key 0x22; Start-Sleep -Milliseconds 500 }
+Assert-Title 'the first clip is the first by name' '^hap_64\.mov . \d / 3 . .* . clip 1 of 3'
+# a folder opens on loop all, which the title leaves unsaid; R goes to off, one, and all again
+Send-Key 0x52; Assert-Title 'R on a folder turns looping off' ' . loop off . clip 1 of 3'
+Send-Key 0x20
+Assert-Title 'with looping off the folder plays through once and stops on its last clip''s last frame' '^x_roll\.mov . 2 / 3 . .* . loop off . clip 3 of 3'
+Send-Key 0x52; Assert-Title 'R again loops the one clip' ' . loop one . clip 3 of 3'
+Send-Key 0x20; Start-Sleep -Milliseconds 700; Send-Key 0x20
+Assert-Title 'which play then stays in' '^x_roll\.mov . \d / 3 . .* . loop one . clip 3 of 3'
+Send-Key 0x52
+Wait-Title 'and R again is all: nothing about the loop in the title' { param($t) $t -match ' . clip 3 of 3' -and $t -notmatch ' loop ' } 'clip 3 of 3 and no loop mode'
+Stop-Player
 # what the section made, file by file, then its folders, each named before it goes. nothing recursive
 foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), $shots, $tree, $above, $wrap) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }

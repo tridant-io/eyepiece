@@ -9,7 +9,7 @@ mod widgets;
 
 use crate::event::{Key, Mods};
 use crate::media::meta::Meta;
-use crate::play::Loop;
+use crate::settings::Loop;
 use crate::preview::make::Pictures;
 use crate::view::{Guides, Look};
 use egui::text::{LayoutJob, TextFormat};
@@ -152,6 +152,8 @@ pub struct Model<'a> {
     /// the file holds linear light (exr), shown through the srgb curve
     pub linear: bool,
     pub looping: Loop,
+    /// the tab plays a folder: "all" is then one of its loop modes
+    pub folder: bool,
     /// loop analysis, while it is on: the place in its round and the round's length, in frames
     pub seam: Option<(usize, usize)>,
     /// the seconds each side of the seam loop analysis uses
@@ -864,6 +866,7 @@ impl Ui {
             (Some(_), _) => format!("analysis {:.1}s", model.seam_seconds),
             (None, Loop::Off) => (if narrow { "off" } else { "loop off" }).to_string(),
             (None, Loop::One) => (if narrow { "one" } else { "loop one" }).to_string(),
+            (None, Loop::All) => (if narrow { "all" } else { "loop all" }).to_string(),
         };
         for (menu, name, icon, label) in [(Menu::Zoom, "zoom", None, model.zoom_label.clone()), (Menu::Speed, "speed", None, speed), (Menu::Loop, "loop", Some(Icon::Loop), looping)] {
             let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
