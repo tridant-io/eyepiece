@@ -753,6 +753,8 @@ struct Coming {
     counted: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     view: Option<View>,
+    /// how many clips before it play ran onto in a row that did not open
+    tried: usize,
     /// why it did not open, once that is known; and why its sound cannot be played, when it has sound that cannot
     failed: Option<String>,
     no_sound: Option<String>,
@@ -786,7 +788,7 @@ impl Coming {
         };
         let worker = std::thread::Builder::new().name("opening".into()).spawn(work).ok();
         let now = Instant::now();
-        Coming { item, path, why, play: why == Why::Ran, played: None, place: None, opening: Some(opening), worker, counted, stop, view: None, failed: None, no_sound: None, seeded: false, stamp: None, since: now, said: now }
+        Coming { item, path, why, play: why == Why::Ran, played: None, place: None, opening: Some(opening), worker, counted, stop, view: None, tried: 0, failed: None, no_sound: None, seeded: false, stamp: None, since: now, said: now }
     }
 
     /// takes the clip once it is opened, makes its view, and reads the frame its transport is on, waiting up to
@@ -926,6 +928,15 @@ impl<T> Loaded<T> {
                 Err(TryRecvError::Empty) => {}
             }
         }
+    }
+}
+
+/// the loop mode a tab opens with: the folder's for a played folder, else off or one as it was left for a clip.
+fn opening_mode(folder: bool, settings: &Settings) -> settings::Loop {
+    match (folder, settings.loop_file) {
+        (true, _) => settings.loop_folder,
+        (false, settings::Loop::Off) => settings::Loop::Off,
+        (false, _) => settings::Loop::One,
     }
 }
 
@@ -1278,19 +1289,40 @@ impl Tabs {
                 {
                     let Some(mut coming) = tab.coming.take() else { return Ok(None) };
                     return match coming.why {
-                        // a file opened in the tab that does not open is what the tab then says, with its facts as
-                        // far as they can be read. it stays watched: a render that finishes it brings it in
-                        Why::Opened => {
+                        // a file opened in the tab, or stepped to in its folder, that does not open is what the tab
+                        // then says, with its facts as far as they can be read: the folder is still there to step
+                        // on through. it stays watched: a render that finishes it brings it in
+                        Why::Opened | Why::Stepped => {
                             if let Some(old) = tab.view.take() {
                                 old.retire();
                             }
+                            if coming.why == Why::Opened {
+                                tab.played = coming.played.take();
+                                tab.mode = opening_mode(tab.played.is_some(), settings);
+                            } else if let Some(played) = &mut tab.played {
+                                played.at = coming.item;
+                            }
                             (tab.facts, tab.watch) = (Some(read_facts(&coming.path, wake)), Some(Watching::start(&coming.path, wake)));
-                            (tab.path, tab.error, tab.played) = (Some(std::mem::take(&mut coming.path)), Some(why), None);
+                            (tab.path, tab.error) = (Some(std::mem::take(&mut coming.path)), Some(why));
+                            tab.relabel();
                             Ok(Some(String::new()))
                         }
                         // a file caught while it is still being written does not open: its next change brings it in
                         Why::Changed => Ok(None),
-                        Why::Stepped | Why::Ran => Err(why),
+                        // play goes on to the next clip that opens, and says which it passed over: once round
+                        // the folder at most, and no further than the loop mode goes
+                        Why::Ran => {
+                            let tried = coming.tried + 1;
+                            let next = tab.played.as_ref().filter(|played| tried < played.items.len()).and_then(|played| {
+                                let next = folder::after(tab.mode, played.items.len(), coming.item)?;
+                                Some((next, played.items[next].to_string_lossy().into_owned()))
+                            });
+                            let Some((item, path)) = next else { return Err(why) };
+                            let mut on = Coming::start(item, path, Why::Ran, gpu.hardware(), wake.clone());
+                            (on.tried, on.play) = (tried, coming.play);
+                            tab.coming = Some(on);
+                            Ok(Some(format!("passed over · {why}")))
+                        }
                     };
                 }
             }
@@ -1325,11 +1357,7 @@ impl Tabs {
             if tab.played.is_none() {
                 window::fit(window, window::client_for((view.clip.width, view.clip.height)));
             }
-            tab.mode = match (&tab.played, settings.loop_file) {
-                (Some(_), _) => settings.loop_folder,
-                (None, settings::Loop::Off) => settings::Loop::Off,
-                (None, _) => settings::Loop::One,
-            };
+            tab.mode = opening_mode(tab.played.is_some(), settings);
             tab.held = 0;
         } else if let Some(played) = &mut tab.played {
             played.at = coming.item;
@@ -1447,6 +1475,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // the player's one way out to the speakers, as loud as it was left
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
+    let mut speaker_open = false;
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone());
     // the clip the spare reader has in hand for the timebar, and the frame last asked of it
@@ -1889,6 +1918,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
             }
         }
+        // the output device is opened once, while the first clip with sound stands still, so that the first play
+        // does not wait for it (about 40 ms)
+        if !speaker_open && !playing && tabs.tab().view.as_ref().is_some_and(|v| matches!(v.sound, Some(Some(_)))) {
+            speaker_open = speaker.line().is_some();
+        }
         // every clip's sound does what its transport does. only the tab that is up is heard, and not under the browser
         let up = tabs.up;
         let mut starting = false;
@@ -1956,7 +1990,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         let (mode, folder) = tab.words();
                         v.title(size, settings, (mode, &folder)) + if tab.browsing { " · browser" } else { "" }
                     }
-                    (None, Some(why)) => format!("eyepiece · {why}"),
+                    (None, Some(why)) => format!("eyepiece · {why}{}", tab.words().1),
                     (None, None) => "eyepiece".to_string(),
                 };
                 if titled.as_ref() != Some(&title) {
