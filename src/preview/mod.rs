@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// the small pictures of one clip: frames spread over it, each `width` x `height`, red green blue, 8 bits each.
 #[derive(PartialEq)]
-pub struct Strip {
+pub struct Previews {
     pub width: u32,
     pub height: u32,
     /// how many frames the clip has, and which frame each picture is
@@ -34,7 +34,7 @@ pub struct Cache {
 const BUDGET: u64 = 2 << 30;
 /// where `open` keeps the cache, under the os cache folder
 const PLACE: [&str; 3] = ["eyepiece", "cache", "previews"];
-const MAGIC: [u8; 8] = *b"EYEPSTRP";
+const MAGIC: [u8; 8] = *b"EYEPPREV";
 const VERSION: u32 = 1;
 /// magic, version, width, height, clip frames, picture count, packed length, checksum
 const HEAD: usize = 44;
@@ -80,32 +80,32 @@ impl Cache {
         }))
     }
 
-    /// the strip for this key, if it is there and whole. a damaged or foreign file reads as not there.
-    pub fn get(&self, key: &Key) -> Option<Strip> {
+    /// the previews for this key, if they are there and whole. a damaged or foreign file reads as not there.
+    pub fn get(&self, key: &Key) -> Option<Previews> {
         // opened to write as well, only to mark it used
-        let mut file = fs::OpenOptions::new().read(true).write(true).open(self.file(key, "strip")).ok()?;
-        let strip = read(&mut file)?;
+        let mut file = fs::OpenOptions::new().read(true).write(true).open(self.file(key, "previews")).ok()?;
+        let previews = read(&mut file)?;
         // eviction takes the file used longest ago: one that cannot be marked only goes sooner
         if let Err(why) = file.set_modified(SystemTime::now()) {
             eprintln!("eyepiece: could not mark hover previews used: {why}");
         }
-        Some(strip)
+        Some(previews)
     }
 
-    /// stores a strip, then makes room: while the cache is over its budget, the file used longest ago goes, one
-    /// file at a time. an error after the strip is stored means no room was made this time.
-    pub fn put(&self, key: &Key, strip: &Strip) -> io::Result<()> {
-        if !whole(strip) {
+    /// stores a clip's previews, then makes room: while the cache is over its budget, the file used longest ago goes, one
+    /// file at a time. an error after they are stored means no room was made this time.
+    pub fn put(&self, key: &Key, previews: &Previews) -> io::Result<()> {
+        if !whole(previews) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "hover previews the cache cannot hold"));
         }
-        let bytes = encode(strip)?;
+        let bytes = encode(previews)?;
         fs::create_dir_all(&self.root)?;
         let tmp = self.file(key, &format!("tmp-{}{:06}", std::process::id(), WRITES.fetch_add(1, Ordering::Relaxed)));
         let mut out = File::create_new(&tmp)?;
         out.write_all(&bytes)?;
         out.sync_all()?;
         drop(out);
-        fs::rename(&tmp, self.file(key, "strip"))?;
+        fs::rename(&tmp, self.file(key, "previews"))?;
         self.evict()
     }
 
@@ -144,12 +144,12 @@ impl Cache {
     }
 }
 
-/// a name this cache writes: `<32 hex>.strip`, or `<32 hex>.tmp-<digits>` when `old`, which a crash left behind
+/// a name this cache writes: `<32 hex>.previews`, or `<32 hex>.tmp-<digits>` when `old`, which a crash left behind
 fn ours(name: &str, old: bool) -> bool {
     let Some((stem, extension)) = name.split_once('.') else { return false };
     let hex = stem.len() == 32 && stem.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     let tmp = extension.strip_prefix("tmp-").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    hex && (extension == "strip" || old && tmp)
+    hex && (extension == "previews" || old && tmp)
 }
 
 /// whether the cache may live in and evict from `root`: an absolute path at least three folders deep, so never a
@@ -194,10 +194,10 @@ fn pixel_len(width: u32, height: u32, count: usize) -> Option<usize> {
     fits.then(|| width as usize * height as usize * 3 * count)
 }
 
-/// a strip the cache can hold and read back: within the limits, its pixels as long as its shape, its frames in the clip
-fn whole(strip: &Strip) -> bool {
-    pixel_len(strip.width, strip.height, strip.frames.len()) == Some(strip.pixels.len())
-        && strip.frames.iter().all(|&f| f < strip.clip_frames)
+/// previews the cache can hold and read back: within the limits, the pixels as long as the shape, the frames in the clip
+fn whole(previews: &Previews) -> bool {
+    pixel_len(previews.width, previews.height, previews.frames.len()) == Some(previews.pixels.len())
+        && previews.frames.iter().all(|&f| f < previews.clip_frames)
 }
 
 /// fnv-1a over the pixels eight bytes at a time. each step is one to one, so a changed byte always changes the sum
@@ -209,29 +209,29 @@ fn checksum(bytes: &[u8]) -> u64 {
 }
 
 /// a cache file: the head, the frame numbers, then the pixels packed with snappy. numbers are little endian
-fn encode(strip: &Strip) -> io::Result<Vec<u8>> {
-    let packed = snap::raw::Encoder::new().compress_vec(&strip.pixels).map_err(io::Error::other)?;
+fn encode(previews: &Previews) -> io::Result<Vec<u8>> {
+    let packed = snap::raw::Encoder::new().compress_vec(&previews.pixels).map_err(io::Error::other)?;
     let head: [&[u8]; 8] = [
         &MAGIC,
         &VERSION.to_le_bytes(),
-        &strip.width.to_le_bytes(),
-        &strip.height.to_le_bytes(),
-        &(strip.clip_frames as u64).to_le_bytes(),
-        &(strip.frames.len() as u32).to_le_bytes(),
+        &previews.width.to_le_bytes(),
+        &previews.height.to_le_bytes(),
+        &(previews.clip_frames as u64).to_le_bytes(),
+        &(previews.frames.len() as u32).to_le_bytes(),
         &(packed.len() as u32).to_le_bytes(),
-        &checksum(&strip.pixels).to_le_bytes(),
+        &checksum(&previews.pixels).to_le_bytes(),
     ];
     let mut out = head.concat();
-    for &f in &strip.frames {
+    for &f in &previews.frames {
         out.extend_from_slice(&(f as u64).to_le_bytes());
     }
     out.extend_from_slice(&packed);
     Ok(out)
 }
 
-/// a strip from a cache file. every length is checked against the limits and the file's own length before anything is
+/// a clip's previews from a cache file. every length is checked against the limits and the file's own length before anything is
 /// allocated from it, and the pixels against their checksum: anything off is none.
-fn read(file: &mut File) -> Option<Strip> {
+fn read(file: &mut File) -> Option<Previews> {
     let mut head = [0; HEAD];
     file.read_exact(&mut head).ok()?;
     let u32_at = |at: usize| u32::from_le_bytes(head[at..at + 4].try_into().unwrap());
@@ -254,8 +254,8 @@ fn read(file: &mut File) -> Option<Strip> {
     let mut pixels = vec![0; len];
     snap::raw::Decoder::new().decompress(packed, &mut pixels).ok()?;
     let frames = frames.as_chunks::<8>().0.iter().map(|&f| usize::try_from(u64::from_le_bytes(f)).ok()).collect::<Option<_>>()?;
-    let strip = Strip { width, height, clip_frames: usize::try_from(u64_at(20)).ok()?, frames, pixels };
-    (checksum(&strip.pixels) == u64_at(36) && whole(&strip)).then_some(strip)
+    let previews = Previews { width, height, clip_frames: usize::try_from(u64_at(20)).ok()?, frames, pixels };
+    (checksum(&previews.pixels) == u64_at(36) && whole(&previews)).then_some(previews)
 }
 
 #[cfg(test)]
@@ -282,9 +282,9 @@ mod tests {
         fs::remove_dir(dir).unwrap();
     }
 
-    fn strip(width: u32, height: u32, count: usize, mut fill: impl FnMut() -> u8) -> Strip {
+    fn previews(width: u32, height: u32, count: usize, mut fill: impl FnMut() -> u8) -> Previews {
         let pixels = (0..width as usize * height as usize * 3 * count).map(|_| fill()).collect();
-        Strip { width, height, clip_frames: 1000, frames: (0..count).map(|i| i * 40).collect(), pixels }
+        Previews { width, height, clip_frames: 1000, frames: (0..count).map(|i| i * 40).collect(), pixels }
     }
 
     /// bytes from a seed that snappy cannot pack (xorshift)
@@ -317,12 +317,12 @@ mod tests {
     fn round_trip() {
         let dir = scratch("round-trip");
         let cache = Cache::at(dir.clone(), u64::MAX).unwrap();
-        let (k, s) = (key("a.mov"), strip(64, 36, 24, noise(1)));
+        let (k, s) = (key("a.mov"), previews(64, 36, 24, noise(1)));
         assert!(cache.get(&k).is_none());
         cache.put(&k, &s).unwrap();
         assert!(cache.get(&k).unwrap() == s);
         // one file, and no temporary one left
-        assert_eq!(names(&dir), [format!("{:032x}.strip", k.0)]);
+        assert_eq!(names(&dir), [format!("{:032x}.previews", k.0)]);
         tidy(&dir);
     }
 
@@ -330,13 +330,13 @@ mod tests {
     fn two_writers_of_one_key() {
         let dir = scratch("two-writers");
         let k = &key("a.mov");
-        let (a, b) = (&strip(16, 9, 24, noise(1)), &strip(16, 9, 24, noise(2)));
+        let (a, b) = (&previews(16, 9, 24, noise(1)), &previews(16, 9, 24, noise(2)));
         std::thread::scope(|threads| {
             for s in [a, b] {
                 let cache = Cache::at(dir.clone(), u64::MAX).unwrap();
                 threads.spawn(move || (0..20).for_each(|_| cache.put(k, s).unwrap()));
             }
-            // a reader meanwhile sees nothing yet, or one strip whole
+            // a reader meanwhile sees nothing yet, or one clip's previews whole
             let cache = Cache::at(dir.clone(), u64::MAX).unwrap();
             threads.spawn(move || {
                 for _ in 0..200 {
@@ -355,8 +355,8 @@ mod tests {
         let dir = scratch("damaged");
         let cache = Cache::at(dir.clone(), u64::MAX).unwrap();
         let k = key("a.mov");
-        cache.put(&k, &strip(32, 18, 24, noise(3))).unwrap();
-        let file = cache.file(&k, "strip");
+        cache.put(&k, &previews(32, 18, 24, noise(3))).unwrap();
+        let file = cache.file(&k, "previews");
         let good = fs::read(&file).unwrap();
         let set = |at: usize, value: &[u8]| {
             let mut bad = good.clone();
@@ -398,11 +398,11 @@ mod tests {
     fn put_refuses_what_would_not_read_back() {
         let dir = scratch("refuses");
         let cache = Cache::at(dir.clone(), u64::MAX).unwrap();
-        let mut short = strip(8, 8, 2, noise(4));
+        let mut short = previews(8, 8, 2, noise(4));
         short.pixels.pop();
-        let mut outside = strip(8, 8, 2, noise(4));
+        let mut outside = previews(8, 8, 2, noise(4));
         outside.clip_frames = 40;
-        for s in [short, outside, strip(641, 1, 1, noise(4)), strip(1, 361, 1, noise(4)), strip(1, 1, 65, noise(4))] {
+        for s in [short, outside, previews(641, 1, 1, noise(4)), previews(1, 361, 1, noise(4)), previews(1, 1, 65, noise(4))] {
             assert_eq!(cache.put(&key("a.mov"), &s).unwrap_err().kind(), io::ErrorKind::InvalidInput);
         }
         assert!(!dir.exists());
@@ -430,29 +430,29 @@ mod tests {
     fn eviction_takes_the_least_recently_used_and_only_ours() {
         let dir = scratch("evict");
         let all = Cache::at(dir.clone(), u64::MAX).unwrap();
-        let flat = |v: u8| strip(8, 8, 2, move || v);
+        let flat = |v: u8| previews(8, 8, 2, move || v);
         let keys = [key("a.mov"), key("b.mov"), key("c.mov"), key("d.mov")];
         for (i, k) in keys[..3].iter().enumerate() {
             all.put(k, &flat(i as u8)).unwrap();
         }
         for (k, hours) in keys.iter().zip([3, 2, 1]) {
-            used_ago(&all.file(k, "strip"), hours);
+            used_ago(&all.file(k, "previews"), hours);
         }
         // not ours, and older than anything, so they would go first if they counted
         let hex = "0123456789abcdef0123456789abcdef";
         let foreign = [
             "notes.txt".to_string(),
-            format!("{}.strip", &hex[1..]),
+            format!("{}.previews", &hex[1..]),
             // not the folder's name in capitals: on windows that would be the folder
-            "FEDCBA9876543210FEDCBA9876543210.strip".to_string(),
-            format!("{hex}.strip.bak"),
+            "FEDCBA9876543210FEDCBA9876543210.previews".to_string(),
+            format!("{hex}.previews.bak"),
             format!("{hex}.tmp-12x"),
             format!("{hex}.tmp-"),
             format!("{hex}.txt"),
         ];
-        let folder = dir.join(format!("{hex}.strip"));
+        let folder = dir.join(format!("{hex}.previews"));
         fs::create_dir(&folder).unwrap();
-        let inside = folder.join(format!("{hex}.strip"));
+        let inside = folder.join(format!("{hex}.previews"));
         let made = |file: &Path, hours| {
             fs::write(file, [7; 1000]).unwrap();
             used_ago(file, hours);
@@ -466,10 +466,10 @@ mod tests {
         made(&left, 48);
         made(&writing, 0);
         // room for two: storing the fourth makes it
-        let len = |k: &Key| fs::metadata(all.file(k, "strip")).unwrap().len();
+        let len = |k: &Key| fs::metadata(all.file(k, "previews")).unwrap().len();
         Cache::at(dir.clone(), 2 * len(&keys[2])).unwrap().put(&keys[3], &flat(3)).unwrap();
         assert_eq!(len(&keys[3]), len(&keys[2]));
-        let there = |k: &Key| all.file(k, "strip").exists();
+        let there = |k: &Key| all.file(k, "previews").exists();
         assert_eq!(keys.each_ref().map(there), [false, false, true, true]);
         assert!(!left.exists() && writing.exists());
         for name in &foreign {
@@ -485,14 +485,14 @@ mod tests {
         let dir = scratch("used");
         let all = Cache::at(dir.clone(), u64::MAX).unwrap();
         let (a, b) = (key("a.mov"), key("b.mov"));
-        all.put(&a, &strip(8, 8, 2, || 1)).unwrap();
-        all.put(&b, &strip(8, 8, 2, || 2)).unwrap();
-        used_ago(&all.file(&a, "strip"), 2);
-        used_ago(&all.file(&b, "strip"), 1);
+        all.put(&a, &previews(8, 8, 2, || 1)).unwrap();
+        all.put(&b, &previews(8, 8, 2, || 2)).unwrap();
+        used_ago(&all.file(&a, "previews"), 2);
+        used_ago(&all.file(&b, "previews"), 1);
         assert!(all.get(&a).is_some());
-        let one = fs::metadata(all.file(&a, "strip")).unwrap().len();
+        let one = fs::metadata(all.file(&a, "previews")).unwrap().len();
         Cache::at(dir.clone(), one).unwrap().evict().unwrap();
-        assert!(all.file(&a, "strip").exists() && !all.file(&b, "strip").exists());
+        assert!(all.file(&a, "previews").exists() && !all.file(&b, "previews").exists());
         tidy(&dir);
     }
 
