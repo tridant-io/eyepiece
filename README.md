@@ -31,7 +31,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File spike\gate6.ps1
 
 the gates are `gate1_zerocopy`, `gate2_present`, `gate3_ramp`, `gate4_coldstart`, `gate5_share`, `gate6_browse`, and the measurements `hap_demux`, `hap_speed`, `hap_play`, `decode_speed`, `devtime`. a gate ends with `PASS` or `FAIL`; a measurement only prints numbers. what each one found is in `docs/phase-0.md`.
 
-windows only so far. the macos side of each gate is not written yet.
+## run the gates (macos)
+
+needs rust and apple's command line tools. the mac has no github access of its own: copy `spike/` there (the windows machine does it with tar over ssh).
+
+```sh
+# once: builds an lgpl shared ffmpeg 9.0 with videotoolbox into spike/third_party (ignored by git)
+sh spike/mac/setup.sh
+# then a gate
+sh spike/mac/gate.sh gate5_share some-small-clip.mov
+```
+
+so far: `gate5_share`, `gate6_browse` (driven from windows by `spike\gate6.ps1 -Mac user@host`) and `sign-test.sh`, the signing and notarization gate. gates 1 to 4 are not written for macos yet.
 
 ## deploy
 

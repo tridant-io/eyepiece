@@ -19,8 +19,8 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | 2 | can we learn when a frame reached the screen? | the os returns present counts and vsync timestamps that advance once per refresh, and the measured refresh rate is stable to 0.01 Hz. a 59.94 clip on a 60 Hz display shows the expected repeat cadence in those numbers, confirmed from outside the app. | **pass** on its own numbers 2026-11-23. not yet confirmed from outside the app | not run |
 | 3 | does 10-bit survive to the swapchain? | a 1024-step ramp drawn into a 10-bit back buffer reads back with every code value exact. | **pass** 2026-11-23 | not run |
 | 4 | how long is a cold start, stage by stage? | measured, not judged: process start, window visible, gpu ready, file open, first frame decoded, first present. twenty warm runs (p50, p95) and one run after a reboot. target for warm: 250 ms on a local hap or prores file. | **measured** 2026-11-23: 220 to 310 ms warm. target missed. after-reboot run owed | not run |
-| 5 | can a render overwrite a file we have open? | with our handle open, another process can overwrite in place, rename a new file over it, and delete and recreate it. we notice each change from size and modified time. | **pass** 2026-11-23 | not run |
-| 6 | does browsing a share open nothing? | on a scratch share that logs opens, listing a folder and reading names, sizes and dates logs zero opens. recorded alongside: which of list, stat and open changes ctime. never run against the owner's nas. | **pass** 2026-11-23, against samba 4.23.8 | not run |
+| 5 | can a render overwrite a file we have open? | with our handle open, another process can overwrite in place, rename a new file over it, and delete and recreate it. we notice each change from size and modified time. | **pass** 2026-11-23 | **pass** 2026-11-23 |
+| 6 | does browsing a share open nothing? | on a scratch share that logs opens, listing a folder and reading names, sizes and dates logs zero opens. recorded alongside: which of list, stat and open changes ctime. never run against the owner's nas. | **pass** 2026-11-23, against samba 4.23.8 | **pass** 2026-11-23 |
 
 ## measured alongside
 
@@ -31,7 +31,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | **measured** 2026-11-23: 76 ms | not run |
 | prores 4444 xq at 4K60 in software | no hardware prores decode on windows | **measured** 2026-11-23: 30 to 37 fps on worst-case content | n/a |
 | can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | not run: this pc has no touchpad (the hid entry is its logitech receiver). needs another windows machine | n/a |
-| sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | **pass** 2026-11-23 | not run |
+| sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | **pass** 2026-11-23 | **pass** 2026-11-23, signed and notarized with ffmpeg inside |
 
 ## log
 
@@ -145,12 +145,11 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| every gate on macos | nobody. the mac is reachable over ssh; the macos gate programs (metal, videotoolbox) are being written. |
-| gate 6 on macos | nobody. the mac's own smb client has to be measured against the scratch share. |
+| gates 1 to 4 on macos | the programs (metal, videotoolbox) are not written yet. the timed ones also need the mac quiet and its screen free: it was in use when first reached. |
+| the name on the mac build | the owner. the mac's only signing identity is personal, "Developer ID Application: Dylan Roscover"; windows signs as "Tridant, Inc.". |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
 | touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
-| signing on macos | a run, as a job in the mac's own login session (its keychains are locked over ssh). the mac's only signing identity is a personal one, "Developer ID Application: Dylan Roscover", where windows signs as "Tridant, Inc.": the owner says which name the mac build ships under. |
 
 ### 2026-11-23, later the same day: the owner's answers, and what they unblocked
 
@@ -195,3 +194,46 @@ the share is not the wsl ubuntu the owner agreed to: that distro does not start 
 ### 2026-11-23, night: correction. tec-mba was reachable all along
 
 ssh works as user `rosco` with this pc's key, as other projects on this pc have used it for months. the "refused" in the entries above was my wrong user name (`admin`), and i had not looked at those projects' notes. the owlette detour was never needed: its refusal stands as a fact about this pc's grant, not as a block, and nothing was added to the mac. through owlette this pc can read the mac's state and manage its listed processes but has no shell there, so builds and gate runs go over ssh.
+
+### 2026-11-23, night: the mac, first results
+
+tec-mba, apple m2, macos 26.6. the machine was in use throughout (load average 16 on 8 cores: spotlight indexing, a browser, a call app, another session's work), so nothing here is a timing.
+
+**ffmpeg on the mac.** `spike/mac/setup.sh` builds the release/9.0 branch (9.0.2, the same library versions as the windows build): lgpl, shared, videotoolbox, 18 MB installed. the gate programs for the mac are their own small package, `spike/mac`, run with `spike/mac/gate.sh`.
+
+**gate 5 on macos: pass.** nothing is ever refused here, so the gate is about noticing.
+
+| file held open by | writer | allowed | noticed from the path by | our open handle then reads |
+|---|---|---|---|---|
+| a plain read-only open | overwrite in place | yes | size, time | the new file |
+| a plain read-only open | rename over | yes | size, time, identity | the old file |
+| a plain read-only open | delete and recreate | yes | size, time, identity | the old file |
+| ffmpeg's own open | all three | yes | the same | not read |
+
+- after a rename-over or a recreate our handle goes on reading the old file, silently. so the player watches the path (size, time and which file the name points at) and reopens; it never trusts the handle to show a new render.
+- ffmpeg's own open blocks nothing on the mac. reading frames ourselves is still the plan, for the other two reasons found on windows.
+
+**gate 6 on macos: pass.** `spike\gate6.ps1 -Mac user@host`: the same scratch share, reached from the mac through an ssh tunnel and mounted hidden from finder.
+
+| mode | open requests | list requests | read requests | files opened | file times changed |
+|---|---|---|---|---|---|
+| idle (nothing run, 20 s) | 2 | 0 | 0 | 0 | none |
+| open (the control) | 43 | 23 | 21 | 20 | access time |
+| names (the listing alone) | 3 | 3 | 0 | 0 | none |
+| bulk (`getattrlistbulk`: names, sizes, dates) | 23 | 23 | 0 | 0 | none |
+| stat (rust's walk: one stat per file) | 23 | 23 | 0 | 0 | none |
+| bulk again | 22 | 23 | 0 | 0 | none |
+
+- no file is opened by any way of listing, and nothing is read.
+- but sizes and dates are not free on the mac. names cost one listing for the whole folder. asking for sizes and dates, by either call, made the mac ask the server about each file by name: one open of the folder and one single-name listing per file (the server's log shows 21 opens of the folder for 20 files). windows gets sizes and dates inside the one listing.
+- so on a mac, a network folder of 5,000 frames is 5,000 round trips before sizes show. the browser shows names at once and fills sizes and dates in afterwards, for what is on screen first.
+- a repeated listing was asked again in full; the mac kept no copy that we could see.
+- left alone for 20 s the mac made two requests of its own, neither on a file.
+- the windows run now has the same idle row: 0 requests.
+
+**signing on macos: pass, for an app that carries ffmpeg.** `spike/mac/sign-test.sh`, run as a job in the mac's login session (keychains are locked over ssh). it wraps a gate program and the four ffmpeg libraries in a throwaway .app, rewrites the library references to stay inside the bundle, signs each library and then the app with the hardened runtime and a timestamp, runs it (the libraries load), has apple notarize it (accepted), staples the ticket, and asks gatekeeper: "accepted, source=Notarized Developer ID".
+- what this proves: the identity, the notary credentials and the ffmpeg-inside-the-bundle shape all work on this machine.
+- what it does not: the real app's entitlements, a build for both processor kinds, or a disk image or installer around it.
+- the signer is the mac's only identity, a personal developer id ("Dylan Roscover"). windows signs as "Tridant, Inc.". which name the mac build carries is the owner's to say.
+
+**left on the mac.** `~/src/eyepiece` (sources, the ffmpeg install and build output, 152 MB), `/private/tmp/eyepiece-ffmpeg-src` (188 MB), `/private/tmp/eyepiece-signtest-*` (25 MB), `/private/tmp/eyepiece-g6` and `/private/tmp/eyepiece-tiny_hap.mov` (a few KB). the mac has 17 GB free. removing any of it waits for the owner's word.

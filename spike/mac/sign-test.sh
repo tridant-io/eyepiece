@@ -9,7 +9,7 @@ identity=$1
 profile=$2
 keychain=${3:-}
 here=$(cd "$(dirname "$0")" && pwd)
-ff="$here/../third_party/ffmpeg/lib"
+ff=$(cd "$here/../third_party/ffmpeg/lib" && pwd)
 work=/private/tmp/eyepiece-signtest-$(date +%Y%m%d-%H%M%S)
 app="$work/EyepieceSigningTest.app"
 bin="$app/Contents/MacOS/eyepiece-signing-test"
@@ -41,7 +41,8 @@ cat > "$app/Contents/Info.plist" <<'EOF'
 EOF
 # the ffmpeg libraries move inside the bundle and every reference to them becomes relative to it
 for lib in "$ff"/lib*.[0-9]*.dylib; do
-  case "$lib" in *.*.*.*.dylib) continue ;; esac
+  # the name the programs ask for (libavcodec.63.dylib), not the fully versioned file behind it
+  case "$(basename "$lib")" in *.*.*.*.dylib) continue ;; esac
   cp "$lib" "$fw/" || fail "copy $lib"
 done
 install_name_tool -add_rpath @executable_path/../Frameworks "$bin" || fail rpath
