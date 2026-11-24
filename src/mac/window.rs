@@ -6,11 +6,12 @@
 use crate::event::{Button, Event, Key, Mods};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2::runtime::AnyObject;
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationPresentationOptions, NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent,
     NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowOcclusionState, NSWindowStyleMask, NSWorkspace,
+    NSAutoresizingMaskOptions, NSButton, NSWindowButton, NSWindowOcclusionState, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSData, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL};
@@ -79,6 +80,111 @@ pub struct ViewState {
     /// while fullscreen: where the window was, to put it back
     restore: Cell<Option<NSRect>>,
     pointer: Cell<Pointer>,
+    /// the system's close, minimize and zoom buttons, in a view of their own over the strip's left end
+    buttons: RefCell<Option<Retained<Buttons>>>,
+}
+
+/// where the system's buttons sit in the strip, in points from the window's top left: the first one's corner, the
+/// step from one to the next, and the room the strip keeps for the three
+const BUTTONS_AT: (f64, f64) = (12.0, 8.0);
+const BUTTONS_STEP: f64 = 20.0;
+const BUTTONS_ROOM: f32 = 78.0;
+
+define_class!(
+    // SAFETY: NSView asks nothing of its subclasses, and this one is made and used on the main thread only
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "EyepieceButtons"]
+    #[ivars = Cell<bool>]
+    /// holds the system's window buttons, which the window, having no title bar, has no place for. true while the
+    /// pointer is among them.
+    struct Buttons;
+
+    impl Buttons {
+        // the buttons ask the view they sit in whether the pointer is among them, and show their marks while it is
+        #[unsafe(method(_mouseInGroup:))]
+        fn mouse_in_group(&self, _button: &NSButton) -> bool {
+            self.ivars().get()
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.among(true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.among(false);
+        }
+
+        #[unsafe(method(closePressed:))]
+        fn close_pressed(&self, _button: &NSButton) {
+            close(Handle(std::ptr::null()));
+        }
+
+        #[unsafe(method(minimizePressed:))]
+        fn minimize_pressed(&self, _button: &NSButton) {
+            if let Some(window) = self.window() {
+                window.miniaturize(None);
+            }
+        }
+
+        // in fullscreen it leaves fullscreen, which is what putting the window back means there: what P does
+        #[unsafe(method(zoomPressed:))]
+        fn zoom_pressed(&self, _button: &NSButton) {
+            let full = WINDOW.with_borrow(|window| window.as_ref().is_some_and(|(_, view)| view.ivars().restore.get().is_some()));
+            if full {
+                send(Event::Key { key: Key::P, mods: Mods::default() });
+            } else if let Some(window) = self.window() {
+                window.zoom(None);
+            }
+        }
+    }
+);
+
+impl Buttons {
+    fn among(&self, over: bool) {
+        self.ivars().set(over);
+        for button in self.subviews().iter() {
+            button.setNeedsDisplay(true);
+        }
+    }
+
+    /// the three buttons in a view just their size, hidden until the strip comes up.
+    fn new(mtm: MainThreadMarker) -> Retained<Buttons> {
+        let size = NSSize::new(2.0 * BUTTONS_STEP + 14.0, 16.0);
+        let holder = Buttons::alloc(mtm).set_ivars(Cell::new(false));
+        let holder: Retained<Buttons> = unsafe { msg_send![super(holder), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), size)] };
+        let titled = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable;
+        let made = [(NSWindowButton::CloseButton, sel!(closePressed:)), (NSWindowButton::MiniaturizeButton, sel!(minimizePressed:)), (NSWindowButton::ZoomButton, sel!(zoomPressed:))];
+        for (i, (kind, pressed)) in made.into_iter().enumerate() {
+            let Some(button) = NSWindow::standardWindowButton_forStyleMask(kind, titled, mtm) else { continue };
+            button.setFrameOrigin(NSPoint::new(i as f64 * BUTTONS_STEP, 0.0));
+            let target: &AnyObject = &holder;
+            unsafe {
+                button.setTarget(Some(target));
+                button.setAction(Some(pressed));
+            }
+            holder.addSubview(&button);
+        }
+        let tracking = NSTrackingAreaOptions::MouseEnteredAndExited | NSTrackingAreaOptions::ActiveAlways | NSTrackingAreaOptions::InVisibleRect;
+        let area = unsafe { NSTrackingArea::initWithRect_options_owner_userInfo(mtm.alloc(), holder.bounds(), tracking, Some(&holder), None) };
+        holder.addTrackingArea(&area);
+        holder.setHidden(true);
+        holder
+    }
+
+    /// puts the buttons over the strip's left end: in the window's frame view, above the picture, held to its top
+    /// left corner. again after the window's style changed, in case it made itself a new frame view.
+    fn place(&self, window: &NSWindow) {
+        let Some(frame) = window.contentView().and_then(|picture| unsafe { picture.superview() }) else { return };
+        if unsafe { self.superview() }.as_deref() != Some(&*frame) {
+            frame.addSubview(self);
+        }
+        // the frame view counts from its bottom
+        self.setFrameOrigin(NSPoint::new(BUTTONS_AT.0, frame.bounds().size.height - BUTTONS_AT.1 - self.frame().size.height));
+        self.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+    }
 }
 
 define_class!(
@@ -255,7 +361,7 @@ define_class!(
             let held = mods(event);
             let key = key(event);
             // command + Q, as everywhere on a mac
-            if key == Some(Key::Q) && unsafe { event.modifierFlags() }.contains(NSEventModifierFlags::Command) {
+            if key == Some(Key::Q) && event.modifierFlags().contains(NSEventModifierFlags::Command) {
                 return close(Handle(std::ptr::null()));
             }
             if let Some(key) = key {
@@ -306,7 +412,7 @@ define_class!(
         #[unsafe(method(performDragOperation:))]
         fn perform_drag(&self, sender: &objc2::runtime::ProtocolObject<dyn NSDraggingInfo>) -> bool {
             let dropped = unsafe { sender.draggingPasteboard().stringForType(NSPasteboardTypeFileURL) };
-            let path = dropped.and_then(|url| unsafe { NSURL::URLWithString(&url) }).and_then(|url| unsafe { url.path() });
+            let path = dropped.and_then(|url| NSURL::URLWithString(&url)).and_then(|url| url.path());
             match path {
                 Some(path) => {
                     send(Event::Open(path.to_string()));
@@ -321,7 +427,7 @@ define_class!(
 impl PictureView {
     /// where an event's pointer is in the picture area, in physical pixels from its top left.
     fn place(&self, event: &NSEvent) -> (f32, f32) {
-        let at = self.convertPoint_fromView(unsafe { event.locationInWindow() }, None);
+        let at = self.convertPoint_fromView(event.locationInWindow(), None);
         let scale = f32::from_bits(SCALE.load(Ordering::Relaxed)) as f64;
         ((at.x * scale) as f32, (at.y * scale) as f32)
     }
@@ -354,7 +460,7 @@ impl PictureView {
 
 /// which of shift, option and control or command are held: command does here what control does on windows.
 fn mods(event: &NSEvent) -> Mods {
-    let held = unsafe { event.modifierFlags() };
+    let held = event.modifierFlags();
     Mods { shift: held.contains(NSEventModifierFlags::Shift), alt: held.contains(NSEventModifierFlags::Option), ctrl: held.contains(NSEventModifierFlags::Command) || held.contains(NSEventModifierFlags::Control) }
 }
 
@@ -398,7 +504,7 @@ fn by_place(code: u16) -> Key {
 /// a key press as one of our keys: the keys with no letter by their place on the keyboard, the rest by the letter the
 /// layout gives them, whatever is held with them.
 fn key(event: &NSEvent) -> Option<Key> {
-    let code = unsafe { event.keyCode() };
+    let code = event.keyCode();
     Some(match code {
         49 => Key::Space,
         36 | 76 => Key::Enter,
@@ -414,7 +520,7 @@ fn key(event: &NSEvent) -> Option<Key> {
         119 => Key::End,
         116 => Key::PageUp,
         121 => Key::PageDown,
-        _ => match unsafe { event.charactersIgnoringModifiers() }.and_then(|typed| typed.to_string().chars().next()).map(|c| c.to_ascii_lowercase()) {
+        _ => match event.charactersIgnoringModifiers().and_then(|typed| typed.to_string().chars().next()).map(|c| c.to_ascii_lowercase()) {
             Some('0' | ')') => Key::Digit0,
             Some('1' | '!') => Key::Digit1,
             Some('2' | '@') => Key::Digit2,
@@ -511,7 +617,7 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, Strin
     window.setHasShadow(true);
     window.setContentMinSize(NSSize::new(MIN_CLIENT.0, MIN_CLIENT.1));
     window.setAcceptsMouseMovedEvents(true);
-    let view = PictureView::alloc(mtm).set_ivars(ViewState { wheel: Cell::new(0.0), pressed: RefCell::new(None), restore: Cell::new(None), pointer: Cell::new(Pointer::Arrow) });
+    let view = PictureView::alloc(mtm).set_ivars(ViewState { wheel: Cell::new(0.0), pressed: RefCell::new(None), restore: Cell::new(None), pointer: Cell::new(Pointer::Arrow), buttons: RefCell::new(None) });
     let view: Retained<PictureView> = unsafe { msg_send![super(view), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), rect.size)] };
     // the layer is set up here, before the view has it: the render thread only draws into it
     let layer = CAMetalLayer::new();
@@ -532,6 +638,9 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, Strin
     view.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]));
     window.setContentView(Some(&view));
     window.makeFirstResponder(Some(&view));
+    let buttons = Buttons::new(mtm);
+    buttons.place(&window);
+    view.ivars().buttons.replace(Some(buttons));
     view.measured();
     window.makeKeyAndOrderFront(None);
     #[allow(deprecated)]
@@ -612,9 +721,7 @@ pub fn close(_window: Handle) {
         window.close();
         CLOSED.store(true, Ordering::Relaxed);
         // the event loop is waiting for an event: this one tells it to look again
-        let wake = unsafe {
-            NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(NSEventType::ApplicationDefined, NSPoint::new(0.0, 0.0), NSEventModifierFlags::empty(), 0.0, 0, None, 0, 0, 0)
-        };
+        let wake = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(NSEventType::ApplicationDefined, NSPoint::new(0.0, 0.0), NSEventModifierFlags::empty(), 0.0, 0, None, 0, 0, 0);
         if let Some(wake) = wake {
             NSApplication::sharedApplication(mtm).postEvent_atStart(&wake, true);
         }
@@ -632,6 +739,9 @@ pub fn set_fullscreen(_window: Handle, on: bool, next_display: bool) {
                 window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable | NSWindowStyleMask::Miniaturizable);
                 window.setHasShadow(true);
                 window.setFrame_display(was, true);
+                if let Some(buttons) = view.ivars().buttons.borrow().as_ref() {
+                    buttons.place(window);
+                }
                 window.makeFirstResponder(Some(view));
             }
             return;
@@ -652,6 +762,9 @@ pub fn set_fullscreen(_window: Handle, on: bool, next_display: bool) {
         window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::Miniaturizable);
         window.setHasShadow(false);
         window.setFrame_display(screen.frame(), true);
+        if let Some(buttons) = view.ivars().buttons.borrow().as_ref() {
+            buttons.place(window);
+        }
         window.makeFirstResponder(Some(view));
     });
 }
@@ -663,6 +776,20 @@ pub enum Pointer {
     Hidden,
     Arrow,
     Cross,
+}
+
+/// room at the strip's left for the system's window buttons, in the design's pixels.
+pub fn buttons_room() -> Option<f32> {
+    Some(BUTTONS_ROOM)
+}
+
+/// shows the system's window buttons, or hides them: they come and go with the strip.
+pub fn show_buttons(_window: Handle, shown: bool) {
+    on_main(move |_, view, _| {
+        if let Some(buttons) = view.ivars().buttons.borrow().as_ref() {
+            buttons.setHidden(!shown);
+        }
+    });
 }
 
 /// which pointer shows while it is over the picture area.

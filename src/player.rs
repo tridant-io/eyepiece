@@ -1413,7 +1413,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let playing_now = Arc::new(AtomicBool::new(false));
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
-    ui.set_buttons_left(cfg!(target_os = "macos"));
+    ui.set_buttons_room(window::buttons_room());
     // the player's one way out to the speakers, as loud as it was left
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
@@ -1446,7 +1446,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
     // the picture area fills a display; the pointer is shown (it hides in fullscreen while the controls are away)
-    let (mut fullscreen, mut pointer_shown) = (false, window::Pointer::Arrow);
+    let (mut fullscreen, mut pointer_shown, mut buttons_shown) = (false, window::Pointer::Arrow, false);
     let (mut redraw, mut titled) = (true, None);
     // the last key was a command, not typing: the character windows makes of the same press is then not typed
     // anywhere (N opens a new tab; its "n" must not pick a file in that tab's browser)
@@ -1848,6 +1848,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if pointer_shown != pointer_now {
             pointer_shown = pointer_now;
             window::show_pointer(window, pointer_now);
+        }
+        // where the window's buttons are the system's own, they come and go with the strip
+        if buttons_shown != out.shown {
+            buttons_shown = out.shown;
+            window::show_buttons(window, out.shown);
         }
 
         // loop analysis asks, once for a clip, how much changes across its seam; the answer comes when it is read

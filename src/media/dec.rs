@@ -9,6 +9,7 @@ use std::ptr;
 
 /// surfaces a hardware decoder is given beyond its own needs and the frames the caller keeps: the frames ready around
 /// the one on screen, and the one being drawn.
+#[cfg(windows)]
 const SPARE_SURFACES: usize = 8;
 
 /// what a hardware decoder needs from the renderer: its device, and the one lock both sides take around device calls.

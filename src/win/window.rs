@@ -239,6 +239,14 @@ pub enum Pointer {
     Cross,
 }
 
+/// room at the strip's left for window buttons the system draws itself: none here, where the strip draws its own.
+pub fn buttons_room() -> Option<f32> {
+    None
+}
+
+/// shows or hides the system's own window buttons: there are none here.
+pub fn show_buttons(_window: Handle, _shown: bool) {}
+
 /// which pointer shows while it is over the picture area.
 pub fn show_pointer(window: Handle, pointer: Pointer) {
     post_with(window, WM_POINTER, pointer as usize);

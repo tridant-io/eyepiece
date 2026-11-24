@@ -7,7 +7,7 @@ use crate::media::dec::{Layout, Picture};
 use crate::media::hap::Tex;
 use crate::media::source::Frame;
 use crate::media::still::Samples;
-use objc2_metal::{MTLPixelFormat, MTLTexture};
+use objc2_metal::MTLPixelFormat;
 use std::sync::Arc;
 use std::time::Duration;
 

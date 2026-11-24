@@ -386,8 +386,8 @@ pub struct Ui {
     tab_scroll: f32,
     tab_seen: (usize, usize, i32),
     tabs_over: Option<Rect>,
-    /// the window's buttons are at the strip's left, as a mac's windows have them
-    buttons_left: bool,
+    /// room kept at the strip's left for the system's own window buttons, where a system draws them itself (a mac)
+    buttons_room: Option<f32>,
     /// the frame under the pointer on the timebar; the pictures had for the timebar, each with the frame it is of and
     /// its size: the clip's timebar strip, in order, and the one read last; and the one shown
     time_hover: Option<usize>,
@@ -447,7 +447,7 @@ impl Ui {
             tab_scroll: 0.0,
             tab_seen: (0, 0, 0),
             tabs_over: None,
-            buttons_left: false,
+            buttons_room: None,
             time_hover: None,
             time_strip: Vec::new(),
             time_read: None,
@@ -485,10 +485,10 @@ impl Ui {
         self.browser.recent()
     }
 
-    /// puts the window's buttons at the strip's left, close first, with the tabs after them: where a mac's windows
-    /// have theirs (the design's "no header").
-    pub fn set_buttons_left(&mut self, left: bool) {
-        self.buttons_left = left;
+    /// where the system draws the window's buttons itself, at the strip's left (a mac): the strip keeps `room` for
+    /// them there, draws none of its own, and the tabs start after it.
+    pub fn set_buttons_room(&mut self, room: Option<f32>) {
+        self.buttons_room = room;
     }
 
     pub fn set_browser_recent(&mut self, recent: Vec<PathBuf>) {
@@ -986,12 +986,15 @@ impl Ui {
             }
         }
 
-        // the window's buttons, at the right: minimize, maximize, close. on a mac at the left, where its windows have
-        // theirs: close, minimize, maximize. 10 x 10 marks in 40-wide buttons. the tabs have the rest: `from` to `x`
-        let (from, x) = if self.buttons_left { (strip.left() + 3.0 * WINDOW_BUTTON, strip.right()) } else { (strip.left(), strip.right() - 3.0 * WINDOW_BUTTON) };
-        for (i, (name, action)) in [("close", Action::Close), ("maximize", Action::ToggleMaximize), ("minimize", Action::Minimize)].into_iter().enumerate() {
-            let left = if self.buttons_left { strip.left() + [0.0, 2.0, 1.0][i] * WINDOW_BUTTON } else { strip.right() - (i + 1) as f32 * WINDOW_BUTTON };
-            let rect = Rect::from_min_size(Pos2::new(left, strip.top()), Vec2::new(WINDOW_BUTTON, STRIP - 1.0));
+        // the window's buttons, at the right: minimize, maximize, close. 10 x 10 marks in 40-wide buttons. where the
+        // system draws its own at the left (`buttons_room`) there are none of ours. the tabs have the rest: `from`
+        // to `x`
+        let (from, x, ours) = match self.buttons_room {
+            Some(room) => (strip.left() + room, strip.right(), 0),
+            None => (strip.left(), strip.right() - 3.0 * WINDOW_BUTTON, 3),
+        };
+        for (i, (name, action)) in [("close", Action::Close), ("maximize", Action::ToggleMaximize), ("minimize", Action::Minimize)].into_iter().enumerate().take(ours) {
+            let rect = Rect::from_min_size(Pos2::new(strip.right() - (i + 1) as f32 * WINDOW_BUTTON, strip.top()), Vec2::new(WINDOW_BUTTON, STRIP - 1.0));
             let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
             if response.is_pointer_button_down_on() {
                 painter.rect_filled(rect, 0.0, PRESSED);
@@ -1757,21 +1760,21 @@ mod tests {
         [(x, y, None), (x, y, Some((Left, true))), (x, y, Some((Left, false))), (x, y, None)]
     }
 
-    /// on a mac the window's buttons are at the strip's left, 40 wide each: close, minimize, maximize, as its windows
-    /// have them; the tabs start after them, and the strip's right end is the strip's own. "clip" is 4 of the type's
-    /// 6.9-wide letters in a tab 40 wider, with its close mark 14 from the tab's end.
+    /// on a mac the window's buttons are the system's own, at the strip's left: the strip keeps their room, has none
+    /// of its own there or at the right, and the tabs start after the room. "clip" is 4 of the type's 6.9-wide
+    /// letters in a tab 40 wider, with its close mark 14 from the tab's end.
     #[test]
-    fn on_a_mac_the_windows_buttons_are_at_the_left_and_the_tabs_after_them() {
+    fn where_the_system_draws_the_windows_buttons_the_strip_keeps_their_room() {
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
-        ui.set_buttons_left(true);
-        let close_mark = 120.0 + 27.6 + 40.0 - 14.0;
-        for (x, asked) in [(20.0, vec![Action::Close]), (60.0, vec![Action::Minimize]), (100.0, vec![Action::ToggleMaximize]), (close_mark, vec![Action::CloseTab(0)]), (880.0, vec![])] {
+        ui.set_buttons_room(Some(78.0));
+        let close_mark = 27.6 + 40.0 - 14.0;
+        for (x, asked) in [(20.0, vec![]), (60.0, vec![]), (78.0 + close_mark, vec![Action::CloseTab(0)]), (880.0, vec![]), (800.0, vec![])] {
             assert_eq!(drive(&mut ui, &click(x, 16.0)), asked, "a click at {x}");
             std::thread::sleep(Duration::from_millis(350));
         }
-        // elsewhere they are at the right, close last, and the tabs start at the left edge
+        // elsewhere they are the strip's, at the right, close last, and the tabs start at the left edge
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
-        for (x, asked) in [(880.0, vec![Action::Close]), (840.0, vec![Action::ToggleMaximize]), (800.0, vec![Action::Minimize]), (close_mark - 120.0, vec![Action::CloseTab(0)])] {
+        for (x, asked) in [(880.0, vec![Action::Close]), (840.0, vec![Action::ToggleMaximize]), (800.0, vec![Action::Minimize]), (close_mark, vec![Action::CloseTab(0)])] {
             assert_eq!(drive(&mut ui, &click(x, 16.0)), asked, "a click at {x}");
             std::thread::sleep(Duration::from_millis(350));
         }
