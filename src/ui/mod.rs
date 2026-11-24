@@ -1353,8 +1353,9 @@ impl Ui {
             }
         }
         // the frame under the pointer: its number, and over it the picture nearest it of those had, which is at once
-        // one of the clip's strip and then the frame itself, or the key frame nearest it, once the spare reader has
-        // read that. the design's box: the picture 160 by 90 inside a margin of 2
+        // one of the clip's timebar strip and then the frame itself, or the key frame nearest it, once the spare
+        // reader has read that. the design's box (fig. 04): its line, then the picture 160 by 90 two in from it and the
+        // number in the 20 under the picture
         self.time_hover = response.hover_pos().filter(|_| model.seam.is_none()).map(|p| stop_at(p.x));
         if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
             let nearest = self.time_strip.iter().chain(&self.time_read).min_by_key(|(of, ..)| of.abs_diff(frame));
@@ -1363,7 +1364,7 @@ impl Ui {
             }
             let galley = painter.layout_no_wrap(stamp(frame, model.first, model.clock, self.timecode).1, font(MONO_MEDIUM, 10.5), FG);
             let size = match &self.time_picture {
-                Some(_) => Vec2::new(164.0, 2.0 + 90.0 + galley.size().y + 10.0),
+                Some(_) => Vec2::new(164.0, 3.0 + 90.0 + 20.0 + 1.0),
                 None => galley.size() + Vec2::new(16.0, 10.0),
             };
             let left = (p.x - size.x / 2.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0);
@@ -1372,11 +1373,11 @@ impl Ui {
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
             let mut number = rect;
             if let Some((_, picture)) = &self.time_picture {
-                let place = Rect::from_min_size(rect.min + Vec2::splat(2.0), Vec2::new(160.0, 90.0));
+                let place = Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::new(160.0, 90.0));
                 painter.rect_filled(place, 0.0, Color32::BLACK);
                 let fitted = Rect::from_center_size(place.center(), picture.size_vec2() * (place.width() / picture.size_vec2().x).min(place.height() / picture.size_vec2().y));
                 painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                number = Rect::from_min_max(Pos2::new(rect.left(), place.bottom()), rect.max);
+                number = Rect::from_min_max(Pos2::new(rect.left(), place.bottom()), Pos2::new(rect.right(), place.bottom() + 20.0));
             }
             painter.galley(Pos2::new(number.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), number.center().y)), galley, FG);
         }

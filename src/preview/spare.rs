@@ -124,8 +124,9 @@ impl Strip {
 /// until another is asked about, it is forgotten, or nothing is asked or made for a while. of the frames asked for
 /// while it was busy only the newest is read; every seam asked about is answered. the strip is made a frame at a
 /// time while nothing is asked and `busy` (a clip plays) is not set, and a picture the window already has (one of
-/// the strip, or the one answered last) is not read again. `told` is called after each answer. returns when the
-/// window's end is gone.
+/// the strip, or the one answered last) is not read again. `told` is called after each answer but a picture of the
+/// strip, which the window takes when it next looks: woken for each, it drew again each time, and a step or a flip
+/// waited a refresh or two behind that. returns when the window's end is gone.
 pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &AtomicBool, told: impl Fn(), mut open: impl FnMut(&Path) -> Option<R>) {
     let mut held: Option<(PathBuf, R)> = None;
     let mut strip: Option<Strip> = None;
@@ -133,8 +134,9 @@ pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &Ato
     let mut answered: Option<(PathBuf, usize)> = None;
     let mut since = Instant::now();
     let send = |answer: Answer| {
+        let wake = !matches!(answer, Answer::Frame { strip: true, .. });
         let sent = answers.send(answer).is_ok();
-        if sent {
+        if sent && wake {
             told();
         }
         sent

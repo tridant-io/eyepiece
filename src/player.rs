@@ -1848,6 +1848,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             }
             time_asked = asking;
             while let Some(answer) = spare.take() {
+                // a picture of the timebar strip is drawn only while the timebar is hovered
+                again |= !matches!(answer, Answer::Frame { strip: true, .. }) || out.hovered.is_some();
                 match answer {
                     Answer::Seam(path, seam) => {
                         for v in tabs.all.iter_mut().filter(|tab| tab.path.as_deref().map(Path::new) == Some(path.as_path())).filter_map(|tab| tab.view.as_mut()) {
@@ -1860,7 +1862,6 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         }
                     }
                 }
-                again = true;
             }
         }
         // a folder's next clip comes nearer; and what play does at the clip's own ends follows the tab's loop mode
