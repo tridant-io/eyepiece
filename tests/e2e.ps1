@@ -2,7 +2,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e.ps1 [-Exe path\to\eyepiece.exe]
 # windows open for a few seconds each. exits 0 when every check holds. needs a desktop session and a gpu with a
 # video decoder (the h.264 and hevc checks require hardware decoding).
-# not covered here: dropping a file on the window, and shift with a key.
+# not covered here: dropping a file on the window.
 param([string]$Exe = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target\release\eyepiece.exe'))
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -19,8 +19,8 @@ public static class EyepieceE2e {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 '@
-# the controls are driven by a posted pointer, not the real one: the player is told, so it does not ask windows
-# where the real pointer is
+# the controls are driven by posted input, not the real pointer and keyboard: the player is told, so it does not ask
+# windows where the real pointer is, and takes what is held with a key (1 shift, 2 alt, 4 control) from the message
 $env:EYEPIECE_POSTED_POINTER = '1'
 $script:failed = 0
 # the pointer, in the design's pixels. a negative place counts from the right or the bottom edge of the picture area
@@ -41,9 +41,18 @@ function Click-At([double]$x, [double]$y, [switch]$Again) {
     [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr]0, $at)
     if (-not $Again) { Start-Sleep -Milliseconds 200 }
 }
+# two quick clicks in one place
+function DoubleClick-At([double]$x, [double]$y) {
+    $at = Get-Place $x $y
+    [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0, $at); Start-Sleep -Milliseconds 350
+    foreach ($i in 1, 2) { [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]1, $at); Start-Sleep -Milliseconds 40; [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr]0, $at); Start-Sleep -Milliseconds 40 }
+    Start-Sleep -Milliseconds 200
+}
+function Get-Height { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.B / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 function Get-Width { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.R / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 function Get-Title { $s = New-Object Text.StringBuilder 512; [void][EyepieceE2e]::GetWindowText($script:h, $s, 512); $s.ToString() }
-function Send-Key([int]$vk, [int]$times = 1) { foreach ($i in 1..$times) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]$vk, [IntPtr]0); Start-Sleep -Milliseconds 200 } }
+function Send-Key([int]$vk, [int]$times = 1, [int]$with = 0) { foreach ($i in 1..$times) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]$vk, [IntPtr]$with); Start-Sleep -Milliseconds 200 } }
+function Send-Char([string]$text) { foreach ($c in $text.ToCharArray()) { [void][EyepieceE2e]::PostMessage($script:h, 0x102, [IntPtr][int]$c, [IntPtr]0); Start-Sleep -Milliseconds 80 } }
 function Confirm-That([string]$what, [bool]$holds, [string]$detail = '') {
     if ($holds) { Write-Host "ok    $what" } else { Write-Host "FAIL  ${what}: $detail"; $script:failed++ }
 }
@@ -87,6 +96,19 @@ Send-Key 0x23; Assert-Frame 'end goes to the last frame' 2 3
 Send-Key 0x24
 [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536), [IntPtr]0); Assert-Frame 'a wheel notch toward the user steps forward' 1 3
 [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536), [IntPtr]0); Assert-Frame 'a wheel notch away steps back' 0 3
+# zoom. the pointer is put in the middle of the window, over the middle of the 64 x 64 picture
+Move-Pointer ((Get-Width) / 2) ((Get-Height) / 2)
+Send-Key 0x31; Assert-Title '1 is 1:1, and the title names the pixel under the pointer with its values' ' . 100% . x 32 y 32 . \d+ \d+ \d+$'
+[void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536 + 4), [IntPtr]0); Assert-Title 'shift + wheel zooms in one stop, about the pointer' ' . 200% . x 32 y 32 . '
+Send-Key 0x25 1 2; Assert-Title 'alt + left moves the picture right, as far as its edge' ' . 200% . x 0 y 32 . '
+Send-Key 0x30; Assert-Frame '0 fits the picture again' 0 3
+DoubleClick-At ((Get-Width) / 2) ((Get-Height) / 2); Assert-Title 'a double click goes back to the last zoom and place' ' . 200% . x 0 y 32 . '
+DoubleClick-At ((Get-Width) / 2) ((Get-Height) / 2); Assert-Frame 'and another fits it' 0 3
+# the zoom button is the number at the right of the bar. its menu stands over it: the choices are 181 up from the
+# bottom, 1:1 the second of five; the field is 143 up
+Click-At -30 -32; Click-At -188 -181; Assert-Title 'the zoom menu''s 1:1 choice' ' . 100%'
+Click-At -50 -143; Send-Key 0x41 1 4; Send-Char '250'; Send-Key 0x0D; Assert-Title 'a zoom typed into the menu''s field' ' . 250%'
+Send-Key 0x1B; Send-Key 0x30; Assert-Frame 'escape closes the menu, and 0 fits the picture' 0 3
 # the window changes size: the renderer has to follow and keep answering
 [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
 Send-Key 0x47; Assert-Frame 'still steps after the window is resized' 1 3

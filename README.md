@@ -2,7 +2,7 @@
 
 a review player for vfx and install content, by tridant. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.
 
-**status: phase 1, in progress, windows.** it plays hap, prores, h.264 and hevc from the command line or a file dropped on the window. the window has no title bar: the controls are drawn by the player to the approved design, and come up when the pointer moves. so far those are the strip along the top (the clip's tab, minimize, maximize, close), and the bar along the bottom (previous frame, play, next frame, the frame or timecode readout, the full-width timebar). zoom and the pixel readout, the metadata panel and screenshots are the rest of phase 1; loop, speed, guides, volume, fullscreen and tabs come after. macos comes after that.
+**status: phase 1, in progress, windows.** it plays hap, prores, h.264 and hevc from the command line or a file dropped on the window. the window has no title bar: the controls are drawn by the player to the approved design, and come up when the pointer moves. so far those are the strip along the top (the clip's tab, minimize, maximize, close), the bar along the bottom (previous frame, play, next frame, the frame or timecode readout, the zoom with its menu, the full-width timebar), and the zoom chip with the pixel under the pointer. the metadata panel and screenshots are the rest of phase 1; loop, speed, guides, volume, fullscreen and tabs come after. macos comes after that.
 
 the look follows `docs/design/plan.html`: its colors, measurements, icons and type (ibm plex mono and archivo, in `assets/fonts` with their licenses). checked by putting the window's own pixels beside the design's mock at the same scale. not yet looked at by a person on a real screen: the shadow, resizing from the edges, snapping, and display scales other than 100%.
 
@@ -23,6 +23,7 @@ known gaps:
 - the frame count leaves out what an edit list hides (a clip cut from a longer one without re-encoding), which is tested. pictures that are stored but cannot be decoded are not yet left out, and the counts have only been checked on clips made for the tests, not on files from cameras or other tools.
 - prores decodes in software only, with ffmpeg's decoder; alpha in a prores file is not drawn.
 - dropping a file on the window is written and not yet tested.
+- the pixel values in the zoom chip are the red, green and blue the screen is sent, on the scale of the file's bit depth (0 to 255 for 8-bit, 0 to 1023 for 10-bit). they are read from the frame at its own size, not from the window. they are not the stored y'cbcr codes, and they stop at the top of the scale: a hap hdr value above 1.0 reads as the top.
 
 the title bar also says what went wrong: ` · n late` (refreshes that went by without the frame that was due), ` · n could not be shown` (frames the file could not give), and ` · reading` while the frame it names is still on its way.
 
@@ -30,7 +31,7 @@ the title bar also says what went wrong: ` · n late` (refreshes that went by wi
 
 | path | what |
 |---|---|
-| `src/` | the player. `media/` reads files (ffmpeg for containers, our own code for hap), `play.rs` paces frames to the display, `win/` is the window and the direct3d renderer. |
+| `src/` | the player. `media/` reads files (ffmpeg for containers, our own code for hap), `play.rs` paces frames to the display, `view.rs` places the picture (fit, zoom, pan), `ui/` draws the controls, `win/` is the window and the direct3d renderer. |
 | `tests/media/` | tiny clips the unit tests read, and the script that made them |
 | `scripts/` | setup, and the build that packages and signs |
 | `docs/design/plan.html` | the approved design, rev c (2026-11-23). open it in a browser. |
@@ -57,13 +58,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& tests\launch.ps1 -Clip
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\backstep.ps1 -Clip a.mp4 -Frames 600 -KeyEvery 60
 ```
 
-keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. drop a file on the window to open it.
+keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. 0 fits the picture, 1 is 1:1 and 2 is 2×, about the pointer when it is over the picture; shift with the wheel zooms one stop a notch about the pointer (12.5% to 6400%, with fit as a stop of its own); alt with the arrows moves a zoomed picture an eighth of the window. T switches the readout between frames and timecode. esc closes a menu. drop a file on the window to open it.
 
-with the pointer: move it and the controls come up; they go 2.4 s after it rests off them, or when it leaves the window. a plain click on the picture shows or hides them. a drag on the picture or on the strip moves the window; a double click on the strip maximizes it. a click or a drag on the timebar goes to that frame, and a click on the readout switches between frames and timecode (counted from 00:00:00:00; the file's own timecode is not read yet).
+with the pointer: move it and the controls come up; they go 2.4 s after it rests off them, or when it leaves the window. a plain click on the picture shows or hides them. a drag on the strip moves the window, and so does a drag on the picture while the whole frame is in view; zoomed in, a drag on the picture moves the picture. a double click on the picture goes between fit and the last zoom and place (1:1 the first time); a double click on the strip maximizes the window. the number at the right of the bar is the zoom: a click opens its menu (fit, 1:1, 2×, 4×, 8×, a slider, a field to type a percentage into). while a zoom is set, a chip at the top right gives it, says whether every video pixel is a whole number of display pixels (exact) or not (scaled), and names the pixel under the pointer with its values; it goes 2 s after the pointer rests. a click or a drag on the timebar goes to that frame, and a click on the readout switches between frames and timecode (counted from 00:00:00:00; the file's own timecode is not read yet).
 
-the window's title, which the taskbar shows and the tests read, is `name · frame / count · size · codec, how it is decoded · rate`; it is left alone while a clip plays.
+the window's title, which the taskbar shows and the tests read, is `name · frame / count · size · codec, how it is decoded · rate`, then the zoom and the pixel under the pointer while a zoom is set; it is left alone while a clip plays.
 
-the tests drive the controls with posted pointer messages, not the real pointer. `EYEPIECE_POSTED_POINTER=1` tells the player so: it then does not ask windows when the real pointer leaves.
+the tests drive the controls with posted messages, not the real pointer and keyboard. `EYEPIECE_POSTED_POINTER=1` tells the player so: it then does not ask windows when the real pointer leaves, and takes what is held with a posted key from the message's own low bits (1 shift, 2 alt, 4 control) instead of the keyboard.
 
 the timing checks (`play.ps1`, `launch.ps1`, `backstep.ps1`) mean nothing on a busy machine: on 2026-11-23, with other test suites holding this pc at 97% cpu, a clip that had run with 2 late refreshes in 10 s showed 246 in 6 s, with the same build.
 

@@ -4,7 +4,7 @@
 //! it owns the message loop on the main thread and turns messages into events for the render thread, which never
 //! waits on it. dragging or resizing the window therefore never stalls the picture.
 
-use crate::event::{Button, Event, Key};
+use crate::event::{Button, Event, Key, Mods};
 use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmSetWindowAtt
 use windows::Win32::Graphics::Gdi::{GetStockObject, ScreenToClient, BLACK_BRUSH, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_END, VK_HOME, VK_LBUTTON, VK_LEFT, VK_RBUTTON, VK_RIGHT, VK_SHIFT, VK_SPACE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -44,6 +44,8 @@ struct Shared {
     wheel: i32,
     /// windows has been asked to say when the pointer leaves
     tracking: bool,
+    /// the test seam: input is posted to the window, so the keyboard's real state says nothing about it
+    posted: bool,
 }
 
 /// a window handle that may cross to the render thread: win32 lets any thread size, title and present to a window.
@@ -106,7 +108,7 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
         let posted_pointer = std::env::var_os("EYEPIECE_POSTED_POINTER").is_some();
         let (x, y, w, h) = outer(client);
         let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("eyepiece"), w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer })) as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer })) as isize);
         // square corners and no border line, so no pixel of the picture is covered (windows 11; ignored before it)
         let (square, no_color) = (1u32, 0xffff_fffeu32);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const u32 as *const c_void, 4);
@@ -124,6 +126,8 @@ pub fn run() {
     unsafe {
         let mut m = MSG::default();
         while GetMessageW(&mut m, None, 0, 0).as_bool() {
+            // turns key presses into typed characters as well, for the few fields that take text
+            let _ = TranslateMessage(&m);
             DispatchMessageW(&m);
         }
     }
@@ -192,17 +196,60 @@ pub fn refresh_rate() -> f64 {
     }
 }
 
+/// a windows virtual-key code as one of our keys. the number pad's digits and signs count as the top row's.
 fn key(vk: u16) -> Option<Key> {
     Some(match vk {
-        v if v == VK_SPACE.0 => Key::Space,
-        v if v == VK_LEFT.0 => Key::Left,
-        v if v == VK_RIGHT.0 => Key::Right,
-        v if v == VK_HOME.0 => Key::Home,
-        v if v == VK_END.0 => Key::End,
+        0x20 => Key::Space,
+        0x0d => Key::Enter,
+        0x1b => Key::Escape,
+        0x08 => Key::Backspace,
+        0x2e => Key::Delete,
+        0x09 => Key::Tab,
+        0x25 => Key::Left,
+        0x27 => Key::Right,
+        0x26 => Key::Up,
+        0x28 => Key::Down,
+        0x24 => Key::Home,
+        0x23 => Key::End,
+        0x21 => Key::PageUp,
+        0x22 => Key::PageDown,
+        0x30 | 0x60 => Key::Digit0,
+        0x31 | 0x61 => Key::Digit1,
+        0x32 | 0x62 => Key::Digit2,
+        0xbd | 0x6d => Key::Minus,
+        0xbb | 0x6b => Key::Equals,
+        0xdb => Key::BracketLeft,
+        0xdd => Key::BracketRight,
+        0xbf => Key::Slash,
+        0x41 => Key::A,
+        0x43 => Key::C,
+        0x44 => Key::D,
+        0x45 => Key::E,
         0x46 => Key::F,
         0x47 => Key::G,
+        0x48 => Key::H,
+        0x49 => Key::I,
+        0x4a => Key::J,
+        0x4b => Key::K,
+        0x4c => Key::L,
+        0x4d => Key::M,
+        0x4e => Key::N,
+        0x4f => Key::O,
+        0x50 => Key::P,
+        0x51 => Key::Q,
+        0x52 => Key::R,
+        0x53 => Key::S,
+        0x54 => Key::T,
+        0x56 => Key::V,
+        0x57 => Key::W,
+        0x5a => Key::Z,
         _ => return None,
     })
+}
+
+/// which of shift, alt and control are held.
+unsafe fn mods() -> Mods {
+    Mods { shift: GetKeyState(0x10) < 0, alt: GetKeyState(0x12) < 0, ctrl: GetKeyState(0x11) < 0 }
 }
 
 /// the two coordinates packed into a message's last parameter
@@ -271,7 +318,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_KEYDOWN => {
             if let Some(key) = key(wp.0 as u16) {
-                send(Event::Key { key, shift: GetKeyState(VK_SHIFT.0 as i32) < 0 });
+                // a posted key says what is held with it in its own low bits
+                let mods = if (*shared).posted { Mods { shift: lp.0 & 1 != 0, alt: lp.0 & 2 != 0, ctrl: lp.0 & 4 != 0 } } else { mods() };
+                send(Event::Key { key, mods });
+            }
+            LRESULT(0)
+        }
+        // a key with alt held arrives this way. ours are taken; the system keeps its own (alt + f4, alt + space)
+        WM_SYSKEYDOWN => match key(wp.0 as u16) {
+            Some(key) if !matches!(key, Key::Space) => {
+                send(Event::Key { key, mods: mods() });
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        },
+        WM_CHAR => {
+            if let Some(c) = char::from_u32(wp.0 as u32).filter(|c| !c.is_control()) {
+                send(Event::Char(c));
             }
             LRESULT(0)
         }
@@ -280,7 +343,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let notches = total / WHEEL_NOTCH;
             (*shared).wheel = total - notches * WHEEL_NOTCH;
             if notches != 0 {
-                let _ = (*shared).events.send(Event::Wheel { notches });
+                // shift and control come with the message itself (MK_SHIFT, MK_CONTROL)
+                let mods = Mods { shift: wp.0 & 0x4 != 0, ctrl: wp.0 & 0x8 != 0, alt: GetKeyState(0x12) < 0 };
+                let _ = (*shared).events.send(Event::Wheel { notches, mods });
             }
             LRESULT(0)
         }

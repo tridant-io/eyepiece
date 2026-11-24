@@ -251,6 +251,47 @@ impl Gpu {
         Ok(if deep { (view(DXGI_FORMAT_R16_UNORM)?, view(DXGI_FORMAT_R16G16_UNORM)?) } else { (view(DXGI_FORMAT_R8_UNORM)?, view(DXGI_FORMAT_R8G8_UNORM)?) })
     }
 
+    /// draws into a picture of our own instead of the window, and hands back its pixels: four 16-bit numbers each
+    /// (red, green, blue, alpha; 65535 is 1.0), row by row. this is how a pixel's value and a screenshot are taken
+    /// from the source picture, at its own size, never from what the window happens to show.
+    /// `draw` does the drawing, with `Gpu::draw`. call it between frames, with the device's lock held.
+    pub fn read_pixels(&self, w: u32, h: u32, draw: impl FnOnce(&Gpu)) -> Result<Vec<u16>> {
+        let mut desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R16G16B16A16_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            ..Default::default()
+        };
+        unsafe {
+            let (mut target, mut view, mut copy) = (None, None, None);
+            self.device.CreateTexture2D(&desc, None, Some(&mut target))?;
+            let target: ID3D11Texture2D = target.unwrap();
+            self.device.CreateRenderTargetView(&target, None, Some(&mut view))?;
+            (desc.Usage, desc.BindFlags, desc.CPUAccessFlags) = (D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32);
+            self.device.CreateTexture2D(&desc, None, Some(&mut copy))?;
+            let copy: ID3D11Texture2D = copy.unwrap();
+            self.ctx.OMSetRenderTargets(Some(std::slice::from_ref(&view)), None);
+            self.ctx.ClearRenderTargetView(view.as_ref().unwrap(), &[0.0, 0.0, 0.0, 1.0]);
+            draw(self);
+            self.ctx.CopyResource(&copy, &target);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            self.ctx.Map(&copy, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h as usize {
+                out.extend_from_slice(std::slice::from_raw_parts((m.pData as *const u8).add(y * m.RowPitch as usize) as *const u16, w as usize * 4));
+            }
+            self.ctx.Unmap(&copy, 0);
+            // back to the window, for whoever draws next
+            self.ctx.OMSetRenderTargets(Some(std::slice::from_ref(&self.rtv)), None);
+            Ok(out)
+        }
+    }
+
     /// starts a frame: the whole window black.
     pub fn clear(&self) {
         unsafe {
@@ -267,9 +308,15 @@ impl Gpu {
     pub fn draw(&self, ps: &ID3D11PixelShader, views: &[Option<ID3D11ShaderResourceView>], rect: (f32, f32, f32, f32), size: (f32, f32), mut constants: Constants) {
         let (x, y, w, h) = rect;
         (constants.origin, constants.texels_per_pixel, constants.size) = ([x, y], [size.0 / w, size.1 / h], [size.0, size.1]);
+        // direct3d takes a viewport only within about 32767 pixels of the corner, and a 4k picture at 16x is wider
+        // than that. what is cut here is far off the target; the shader still places texels from the uncut rectangle
+        let (left, top, right, bottom) = (x.max(-32768.0), y.max(-32768.0), (x + w).min(32767.0), (y + h).min(32767.0));
+        if right <= left || bottom <= top {
+            return;
+        }
         unsafe {
             self.ctx.UpdateSubresource(&self.constants, 0, None, &constants as *const Constants as *const c_void, 0, 0);
-            self.ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: x, TopLeftY: y, Width: w, Height: h, MinDepth: 0.0, MaxDepth: 1.0 }]));
+            self.ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: left, TopLeftY: top, Width: right - left, Height: bottom - top, MinDepth: 0.0, MaxDepth: 1.0 }]));
             self.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             self.ctx.VSSetShader(&self.vs, None);
             self.ctx.PSSetShader(ps, None);

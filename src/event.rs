@@ -1,14 +1,59 @@
 //! what the window tells the player. the same on every system: the window code turns its own messages into these (adr 0006).
 
+/// the keys the player listens for, by the letter or name on them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key {
     Space,
-    F,
-    G,
+    Enter,
+    Escape,
+    Backspace,
+    Delete,
+    Tab,
     Left,
     Right,
+    Up,
+    Down,
     Home,
     End,
+    PageUp,
+    PageDown,
+    Digit0,
+    Digit1,
+    Digit2,
+    Minus,
+    Equals,
+    BracketLeft,
+    BracketRight,
+    Slash,
+    A,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    V,
+    W,
+    Z,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Mods {
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,9 +65,11 @@ pub enum Button {
 
 #[derive(Debug)]
 pub enum Event {
-    Key { key: Key, shift: bool },
+    Key { key: Key, mods: Mods },
+    /// a character was typed, for the few fields that take text
+    Char(char),
     /// the wheel moved by this many notches. away from the user is positive.
-    Wheel { notches: i32 },
+    Wheel { notches: i32, mods: Mods },
     /// the pointer is at this place in the picture area, in physical pixels
     PointerMove { x: f32, y: f32 },
     PointerButton { button: Button, down: bool, x: f32, y: f32 },
