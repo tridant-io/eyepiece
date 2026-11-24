@@ -6,7 +6,7 @@
 mod jobs;
 mod nav;
 
-use super::{cut_middle, font, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
+use super::{cut_middle, font, text_top, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
 use crate::browse::{self, Entry, Kind, Place, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
@@ -64,6 +64,8 @@ const SPEC: f32 = 13.125;
 const META_LINE: f32 = 15.525;
 /// what a notch of the wheel scrolls
 const NOTCH: f32 = 3.0 * ROW;
+/// how long the selection rests on a card before its file is read, in seconds
+const REST: f64 = 0.15;
 /// while an answer is awaited, the browser looks again this often: nothing else wakes the window for it
 const POLL: Duration = Duration::from_millis(40);
 
@@ -140,6 +142,8 @@ struct State {
     read: HashMap<PathBuf, Result<Meta, String>>,
     /// the files whose metadata was asked for, or that were opened from here: on a network volume, read
     asked: HashSet<PathBuf>,
+    /// the unread file the selection is on, and since when
+    resting: Option<(PathBuf, f64)>,
     /// wheel notches not yet applied; how far the sidebar, the grid and the metadata column are scrolled, and how
     /// tall the sidebar's and the metadata column's contents were when last drawn
     wheel: i32,
@@ -224,6 +228,7 @@ impl State {
             stale: HashSet::new(),
             read: HashMap::new(),
             asked: HashSet::new(),
+            resting: None,
             wheel: 0,
             side_scroll: 0.0,
             side_height: 0.0,
@@ -300,7 +305,9 @@ impl State {
         for click in clicks {
             self.click(click);
         }
-        self.ask(layout.first);
+        if let Some(wait) = self.ask(layout.first, ui.input(|i| i.time)) {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
+        }
         if self.lists.busy() || self.metas.busy() {
             ui.ctx().request_repaint_after(POLL);
         }
@@ -324,8 +331,9 @@ impl State {
         }
     }
 
-    /// asks for what is on screen and not read yet, and lets go of what is not on screen any more.
-    fn ask(&mut self, first: usize) {
+    /// asks for what is on screen and not read yet, and lets go of what is not on screen any more. returns how long
+    /// until it should be called again, when a file is waiting for the selection to rest on it.
+    fn ask(&mut self, first: usize, now: f64) -> Option<f64> {
         let needed = self.nav.needed(first);
         self.lists.keep_only(|folder| needed.iter().any(|n| n == folder));
         for folder in needed {
@@ -342,11 +350,15 @@ impl State {
         let file = self.nav.metadata(&self.asked);
         self.read.retain(|f, _| self.asked.contains(f) || file.as_ref() == Some(f));
         self.metas.keep_only(|f| Some(f) == file.as_deref());
-        if let Some(file) = file {
-            if !self.read.contains_key(&file) && !self.metas.waiting(&file) {
-                self.metas.ask(file, read_meta);
-            }
+        // a selection only passing over a card (an arrow held down) reads nothing: the read starts where it rests.
+        // a file asked for by name is read at once
+        let file = file.filter(|f| !self.read.contains_key(f) && !self.metas.waiting(f))?;
+        let wait = if self.asked.contains(&file) { 0.0 } else { rest(&mut self.resting, &file, now) };
+        if wait > 0.0 {
+            return Some(wait);
         }
+        self.metas.ask(file, read_meta);
+        None
     }
 
     /// the wheel scrolls what is under the pointer: the sidebar, a column, the grid or the metadata column. each keeps
@@ -384,7 +396,7 @@ impl State {
                 y += 1.0 + 12.0;
             }
             let heading = spaced(&painter, if drives { "VOLUMES" } else { "PLACES" }, font(MONO_MEDIUM, 9.5), 1.52, GRAY);
-            painter.galley(Pos2::new(rect.left() + 14.0, y + 4.75 - heading.size().y / 2.0), heading, GRAY);
+            painter.galley(Pos2::new(rect.left() + 14.0, top_of(&painter, &heading, y + 4.75)), heading, GRAY);
             y += 9.5 + 5.0;
             for (i, (place, volume)) in places.into_iter().enumerate() {
                 let row = Rect::from_min_size(Pos2::new(rect.left(), y + 1.0), Vec2::new(width, ROW));
@@ -399,7 +411,7 @@ impl State {
                     let size = Vec2::new(tag.size().x + 8.0, 15.0);
                     let mark = Rect::from_min_size(Pos2::new(row.right() - 14.0 - size.x, row.center().y - size.y / 2.0), size);
                     painter.rect_stroke(mark, 0.0, (1.0, TAG_EDGE), StrokeKind::Inside);
-                    painter.galley(mark.center() - tag.size() / 2.0, tag, TAG);
+                    painter.galley(Pos2::new(mark.center().x - tag.size().x / 2.0, top_of(&painter, &tag, mark.center().y)), tag, TAG);
                     room -= size.x + 8.0;
                 }
                 text(&painter, row.left() + 14.0, row.center().y, &place.name, font(SANS, 12.5), if on { FG } else { DIM }, room);
@@ -458,7 +470,7 @@ impl State {
             if folder {
                 let arrow = painter.layout_no_wrap("›".to_string(), font(SANS, 12.5), GRAY);
                 room -= arrow.size().x + 8.0;
-                painter.galley(Pos2::new(row.right() - 10.0 - arrow.size().x, middle - arrow.size().y / 2.0), arrow, GRAY);
+                painter.galley(Pos2::new(row.right() - 10.0 - arrow.size().x, top_of(&painter, &arrow, middle)), arrow, GRAY);
             }
             text(&painter, row.left() + 31.0, middle, &entry.name, font(SANS, 12.5), color, room);
             if ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click()).clicked() {
@@ -485,7 +497,7 @@ impl State {
         }
         let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
         painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
-        painter.galley(cap.center() - keys.size() / 2.0, keys, DIM);
+        painter.galley(Pos2::new(cap.center().x - keys.size().x / 2.0, top_of(&painter, &keys, cap.center().y)), keys, DIM);
         let name = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let (left, room) = (line.left() + 14.0, play.left() - 10.0 - line.left() - 14.0);
         let named = text(&painter, left, middle, &name, font(MONO_MEDIUM, 11.5), FG, room);
@@ -509,7 +521,8 @@ impl State {
             let galley = painter.layout_job(job);
             let note = Rect::from_min_size(Pos2::new(rect.left() + 14.0, top + 14.0), Vec2::new(rect.width() - 28.0, galley.size().y + 22.0));
             painter.rect_stroke(note, 0.0, (1.0, LINE), StrokeKind::Inside);
-            painter.rect_filled(Rect::from_min_size(note.min, Vec2::new(2.0, note.height())), 0.0, AMBER);
+            // fig. 29 draws this edge in amber. amber is kept for a fault in a file, and this is none
+            painter.rect_filled(Rect::from_min_size(note.min, Vec2::new(2.0, note.height())), 0.0, GRAY);
             painter.galley(note.min + Vec2::new(2.0 + 12.0, 1.0 + 10.0), galley, DIM);
             top = note.bottom();
         }
@@ -600,7 +613,7 @@ impl State {
         let Some(card) = self.nav.card() else { return };
         let (left, width) = (rect.left() + 1.0 + 14.0, rect.width() - 1.0 - 28.0);
         let readable = nav::readable(card);
-        let reads = readable && nav::reads_metadata(self.nav.volume, self.asked.contains(&card.path));
+        let reads = readable && nav::reads_metadata(self.nav.volume, card, self.asked.contains(&card.path));
         // at the foot: open, and on a network volume, until asked, read metadata
         let foot = rect.bottom() - 12.0 - 25.0;
         let mut x = left;
@@ -626,6 +639,7 @@ impl State {
             read => {
                 let rest = match read {
                     _ if !readable => fact("everything else", "not read for stills and sequences yet.".to_string(), Tone::Assumed),
+                    _ if !reads && card.away => fact("everything else", "not read: the file is not on this disk, and reading it downloads it.".to_string(), Tone::Assumed),
                     _ if !reads => fact("everything else", "not read. opening the file reads it.".to_string(), Tone::Assumed),
                     // not amber: a file locked or out of reach is no fault of the file's
                     Some(Err(why)) => {
@@ -640,6 +654,17 @@ impl State {
         };
         let bottom = rows(&painter, left, picture.bottom() + 10.0, width, groups);
         self.meta_height = bottom - top + 12.0;
+    }
+}
+
+/// how long the selection has still to rest on `file` before it is read: `REST` from when it got there.
+fn rest(resting: &mut Option<(PathBuf, f64)>, file: &Path, now: f64) -> f64 {
+    match resting {
+        Some((on, since)) if on.as_path() == file => (REST - (now - *since)).max(0.0),
+        _ => {
+            *resting = Some((file.to_path_buf(), now));
+            REST
+        }
     }
 }
 
@@ -662,9 +687,15 @@ fn text(painter: &Painter, left: f32, middle: f32, words: &str, font_id: FontId,
     let mut job = LayoutJob::simple_singleline(words.to_string(), font_id, color);
     job.wrap = TextWrapping::truncate_at_width(width.max(0.0));
     let galley = painter.layout_job(job);
-    let size = galley.size();
-    painter.galley(Pos2::new(left, middle - size.y / 2.0), galley, color);
-    size.x
+    let width = galley.size().x;
+    painter.galley(Pos2::new(left, top_of(painter, &galley, middle)), galley, color);
+    width
+}
+
+/// where the top of a line already laid out goes for it to look centered on `middle`: by its figures (`text_top`),
+/// not by its box
+fn top_of(painter: &Painter, galley: &Galley, middle: f32) -> f32 {
+    galley.job.sections.first().map_or(middle - galley.size().y / 2.0, |s| text_top(painter, s.format.font_id.clone(), middle))
 }
 
 /// small text with its letters spaced out, as the design's labels have it
@@ -689,7 +720,7 @@ fn button(ui: &egui::Ui, painter: &Painter, rect: Rect, name: impl std::hash::Ha
     }
     painter.rect_stroke(rect, 0.0, (1.0, if strong { STRONG } else { LINE }), StrokeKind::Inside);
     let pad = if rect.height() < 27.0 { 8.0 } else { 9.0 };
-    painter.galley(Pos2::new(rect.left() + 1.0 + pad, rect.center().y - label.size().y / 2.0), label, FG);
+    painter.galley(Pos2::new(rect.left() + 1.0 + pad, top_of(painter, &label, rect.center().y)), label, FG);
     response.clicked()
 }
 
@@ -701,7 +732,7 @@ fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, on: bool)
     painter.rect_stroke(picture, 0.0, if on { (2.0, FG) } else { (1.0, LINE) }, StrokeKind::Outside);
     let kind = Path::new(&entry.name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
     let galley = spaced(painter, &kind, font(MONO_MEDIUM, 11.0), 1.54, PLAIN_TEXT);
-    painter.galley(picture.center() - galley.size() / 2.0, galley, PLAIN_TEXT);
+    painter.galley(Pos2::new(picture.center().x - galley.size().x / 2.0, top_of(painter, &galley, picture.center().y)), galley, PLAIN_TEXT);
     if let Kind::Sequence { missing, .. } = &entry.kind {
         // from the right: the missing frames, a fault in amber, then the sequence's own mark
         let mut right = picture.right() - 4.0;
@@ -710,12 +741,12 @@ fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, on: bool)
             let galley = spaced(painter, &words, font(MONO_MEDIUM, 9.0), 0.54, color);
             let mark = Rect::from_min_size(Pos2::new(right - galley.size().x - 8.0, picture.top() + 4.0), Vec2::new(galley.size().x + 8.0, 15.0));
             painter.rect_filled(mark, 0.0, BADGE_BACK);
-            painter.galley(mark.center() - galley.size() / 2.0, galley, color);
+            painter.galley(Pos2::new(mark.center().x - galley.size().x / 2.0, top_of(painter, &galley, mark.center().y)), galley, color);
             right = mark.left() - 3.0;
         }
     }
     let name = cut_middle(painter, &entry.name, font(MONO_MEDIUM, 11.5), FG, area.width());
-    painter.galley(Pos2::new(area.left(), picture.bottom() + 6.0 + (NAME - name.size().y) / 2.0), name, FG);
+    painter.galley(Pos2::new(area.left(), top_of(painter, &name, picture.bottom() + 6.0 + NAME / 2.0)), name, FG);
     let (spec, fault) = spec(entry);
     text(painter, area.left(), picture.bottom() + 6.0 + NAME + 6.0 + SPEC / 2.0, &spec, font(MONO, 10.5), if fault { AMBER } else { DIM }, area.width());
 }
@@ -836,14 +867,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_file_is_read_once_the_selection_rests_on_it() {
+        let mut resting = None;
+        let (a, b) = (Path::new("a.mov"), Path::new("b.mov"));
+        assert_eq!(rest(&mut resting, a, 10.0), REST);
+        // passing on to the next card starts over, so an arrow held down reads none of the cards it passes
+        assert_eq!(rest(&mut resting, b, 10.1), REST);
+        assert!(rest(&mut resting, b, 10.1 + REST / 2.0) > 0.0);
+        assert_eq!(rest(&mut resting, b, 11.0), 0.0);
+    }
+
+    #[test]
     fn a_card_says_what_the_listing_says() {
         let at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         assert_eq!(when(at), "2023-11-14 22:13 utc");
         assert_eq!(when(UNIX_EPOCH + Duration::from_secs(951_782_400)), "2000-02-29 00:00 utc");
         assert_eq!((short_size(4_820_000_000), short_size(86_000_000), short_size(512)), ("4.82 GB".into(), "86.0 MB".into(), "512 bytes".into()));
-        let clip = Entry { name: "a.mov".into(), path: "a.mov".into(), kind: Kind::Clip, size: Some(4_820_000_000), modified: Some(at) };
+        let clip = Entry { name: "a.mov".into(), path: "a.mov".into(), kind: Kind::Clip, size: Some(4_820_000_000), modified: Some(at), away: false };
         assert_eq!(spec(&clip), ("4.82 GB · 2023-11-14 22:13 utc".to_string(), false));
-        let seq = Entry { name: "s.[0001-0240].exr".into(), path: "s.0001.exr".into(), kind: Kind::Sequence { first: 1, last: 240, missing: vec![7, 9], pad: 4 }, size: None, modified: None };
+        let seq = Entry { name: "s.[0001-0240].exr".into(), path: "s.0001.exr".into(), kind: Kind::Sequence { first: 1, last: 240, missing: vec![7, 9], pad: 4 }, size: None, modified: None, away: false };
         assert_eq!(spec(&seq), ("238 of 240".to_string(), true));
         assert_eq!(listed_facts(&seq)[1].value, "238 of 240 · 2 missing");
         assert_eq!(holds(&[clip, seq]), "1 video · 1 sequence");

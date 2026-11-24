@@ -53,9 +53,10 @@ pub fn readable(entry: &Entry) -> bool {
     entry.kind == Kind::Clip && !browse::is_still(&entry.name)
 }
 
-/// a file's metadata is read at once on a local volume; on a network one only when asked for (adr 0004)
-pub fn reads_metadata(volume: Volume, asked: bool) -> bool {
-    volume != Volume::Network || asked
+/// a file's metadata is read at once when it is on a local volume and its data is on the disk; on a network
+/// volume, or for a file that would have to be downloaded first, only when asked for (adr 0004)
+pub fn reads_metadata(volume: Volume, entry: &Entry, asked: bool) -> bool {
+    (volume != Volume::Network && !entry.away) || asked
 }
 
 /// where the columns start for `folder`: the deepest of `places` that holds it, else its drive or share
@@ -345,7 +346,7 @@ impl Nav {
     /// the file whose metadata is to be read now: the selected card, when it can be read and may be (adr 0004).
     pub fn metadata(&self, asked: &HashSet<PathBuf>) -> Option<PathBuf> {
         let card = self.card().filter(|e| readable(e))?;
-        reads_metadata(self.volume, asked.contains(&card.path)).then(|| card.path.clone())
+        reads_metadata(self.volume, card, asked.contains(&card.path)).then(|| card.path.clone())
     }
 }
 
@@ -354,7 +355,7 @@ mod tests {
     use super::*;
 
     fn entry(dir: &Path, name: &str, kind: Kind) -> Entry {
-        Entry { name: name.to_string(), path: dir.join(name), kind, size: Some(10), modified: None }
+        Entry { name: name.to_string(), path: dir.join(name), kind, size: Some(10), modified: None, away: false }
     }
 
     /// a folder `r` on a drive that need not exist, with a folder `shots` holding two clips, then three files.
@@ -553,6 +554,18 @@ mod tests {
         assert_eq!(nav.metadata(&asked), None);
         asked.insert(share.join("a.mov"));
         assert_eq!(nav.metadata(&asked), Some(share.join("a.mov")));
+
+        // nor is a file whose data is not on the disk, wherever it is: reading it would download it
+        let (mut nav, r) = tree();
+        let folder = r.join("shots");
+        nav.listings.insert(folder.clone(), Ok(vec![Entry { away: true, ..entry(&folder, "cloud.mov", Kind::Clip) }]));
+        press(&mut nav, Key::Down);
+        press(&mut nav, Key::Right);
+        assert_eq!(nav.card().map(|c| c.name.as_str()), Some("cloud.mov"));
+        let mut asked = HashSet::new();
+        assert_eq!(nav.metadata(&asked), None);
+        asked.insert(folder.join("cloud.mov"));
+        assert_eq!(nav.metadata(&asked), Some(folder.join("cloud.mov")));
 
         // a local folder reads the selected clip's at once; a still or a sequence has no reader yet
         let (mut nav, r) = tree();

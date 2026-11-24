@@ -38,6 +38,9 @@ pub struct Entry {
     pub kind: Kind,
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
+    /// its data is not on this disk (a cloud placeholder, or moved to offline storage): reading it would fetch it.
+    /// for a sequence, any of its files
+    pub away: bool,
 }
 
 const CLIPS: &[&str] = &["mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm"];
@@ -119,16 +122,16 @@ pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
         // on windows this comes with the listing; fs::metadata would open the file (phase 0, gate 6)
         let meta = item.metadata()?;
         let name = item.file_name().to_string_lossy().into_owned();
-        let (folder, hidden) = flags(&name, &meta);
+        let (folder, hidden, away) = flags(&name, &meta);
         if hidden {
             continue;
         }
         let modified = meta.modified().ok();
         if folder {
-            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified });
+            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified, away });
         } else {
             let kind = if is_media(&name) { Kind::Clip } else { Kind::Other };
-            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified });
+            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified, away });
         }
     }
     let mut files = fold_sequences(files);
@@ -138,20 +141,23 @@ pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
     Ok(folders)
 }
 
-/// (folder, hidden), from what the listing says.
+/// (folder, hidden, away), from what the listing says.
 #[cfg(windows)]
-fn flags(name: &str, meta: &Metadata) -> (bool, bool) {
+fn flags(name: &str, meta: &Metadata) -> (bool, bool, bool) {
     use std::os::windows::fs::MetadataExt;
-    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_SYSTEM};
+    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_SYSTEM};
     let a = meta.file_attributes();
+    // onedrive, dropbox and the like mark a file they have not downloaded with the recall bits; older tools with
+    // offline. only a folder listing shows the recall bits, which is where this comes from
+    let away = a & (FILE_ATTRIBUTE_OFFLINE.0 | FILE_ATTRIBUTE_RECALL_ON_OPEN.0 | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0) != 0;
     // the directory bit also marks junctions and folder links, which std's is_dir() counts as symlinks.
     // a leading dot hides the ._ and .DS_Store files a mac leaves on shared drives
-    (a & FILE_ATTRIBUTE_DIRECTORY.0 != 0, a & (FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0) != 0 || name.starts_with('.'))
+    (a & FILE_ATTRIBUTE_DIRECTORY.0 != 0, a & (FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0) != 0 || name.starts_with('.'), away)
 }
 
 #[cfg(not(windows))]
-fn flags(name: &str, meta: &Metadata) -> (bool, bool) {
-    (meta.is_dir(), name.starts_with('.'))
+fn flags(name: &str, meta: &Metadata) -> (bool, bool, bool) {
+    (meta.is_dir(), name.starts_with('.'), false)
 }
 
 pub fn is_media(name: &str) -> bool {
@@ -256,6 +262,7 @@ fn sequence(before: &str, ext: &str, run: &mut [Frame], files: &[Entry]) -> Opti
         kind: Kind::Sequence { first, last, missing, pad },
         size: Some(members().filter_map(|f| f.size).sum()),
         modified: members().filter_map(|f| f.modified).max(),
+        away: members().any(|f| f.away),
     })
 }
 
@@ -383,6 +390,24 @@ mod tests {
             s.made.push((path, false));
         }
         assert_eq!(s.names(), ["shown.mov"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_whose_data_is_not_on_the_disk_says_so() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_OFFLINE;
+        let mut s = Scratch::new("away");
+        s.files(&["here.mov", "run.0001.png", "run.0002.png"]);
+        for name in ["cloud.mov", "run.0003.png"] {
+            let path = s.dir.join(name);
+            fs::OpenOptions::new().write(true).create_new(true).attributes(FILE_ATTRIBUTE_OFFLINE.0).open(&path).unwrap();
+            s.made.push((path, false));
+        }
+        assert!(!s.entry("here.mov").away);
+        assert!(s.entry("cloud.mov").away);
+        // a sequence with one file away is away
+        assert!(s.entry("run.[0001-0003].png").away);
     }
 
     #[test]
