@@ -1,5 +1,6 @@
 //! macos: the window and the metal renderer, as the player (`crate::player`) knows them.
 
+mod instance;
 mod metal;
 mod paint;
 mod ui_paint;
@@ -37,6 +38,11 @@ impl Drop for Pool {
 
 /// opens the window and runs until it closes. `first` is the file to open at once, if any.
 pub fn run(first: Option<String>) -> Result<(), String> {
+    // a player already open takes the file, and this one is done before it has made anything
+    let later = match instance::claim(first.as_deref()) {
+        instance::Claim::Theirs => return Ok(()),
+        instance::Claim::Ours(later) => later,
+    };
     let mtm = objc2::MainThreadMarker::new().ok_or("the window is made on the main thread")?;
     // the application first: the displays are asked about through it
     objc2_app_kit::NSApplication::sharedApplication(mtm);
@@ -55,6 +61,9 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     // the render thread's way to wake itself: what it has read or written in the background says when it is done
     let wake = tx.clone();
     let handle = window::create(client, tx)?;
+    if let Some(later) = later {
+        instance::serve(later, window::handed);
+    }
     let render = std::thread::Builder::new().name("render".into()).spawn(move || crate::player::run(handle, rx, wake, first)).map_err(|e| e.to_string())?;
     window::run();
     let _ = render.join();

@@ -700,6 +700,22 @@ pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
     board.setData_forType(Some(&NSData::with_bytes(&file)), unsafe { NSPasteboardTypePNG })
 }
 
+/// a later launch handed over its file, or with none asked only for the window (instance.rs): the file opens in a
+/// tab, and the window comes to the front, out of the dock if it was there.
+pub fn handed(path: String) {
+    if !path.is_empty() {
+        send(Event::Open(path));
+    }
+    on_main(|window, _, mtm| {
+        if window.isMiniaturized() {
+            window.deminiaturize(None);
+        }
+        window.makeKeyAndOrderFront(None);
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    });
+}
+
 /// shows a file in finder, selected in its folder's window; a line in the window says so when finder could not.
 pub fn reveal(file: &std::path::Path, wake: Sender<Event>) {
     let file = file.to_string_lossy().into_owned();
