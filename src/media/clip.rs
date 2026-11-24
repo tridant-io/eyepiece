@@ -413,7 +413,8 @@ mod tests {
 
     /// plays clips as the render loop does on a 60 Hz display: each refresh tells the reader `Transport::ahead` and
     /// waits half a refresh for the frame due, and play moves on only once that frame is shown. for each run it prints
-    /// how long the middle frame took from standing still, then, for the first pass and the second, the frames ready
+    /// how long the middle frame took from standing still with nothing else loading (a lone frame: one a step reaches
+    /// when it was not ready), then, for the first pass and the second, the frames ready
     /// when first due out of the frames due, and how long the pass took. the clips are the files in EYEPIECE_PLAY,
     /// separated by `;` (any frame of a sequence, or a video file), each run EYEPIECE_RUNS times (3 if unset):
     /// `cargo test --release plays_at_speed -- --ignored --nocapture`
@@ -438,7 +439,9 @@ mod tests {
                 let mut t = Transport::new(frames, clip.timeline.fps(), hz);
                 let long = Duration::from_secs(30);
                 t.go(clip.first_frame as i64);
-                assert!(look(&t.ahead(), t.frame(), long), "the first frame arrived");
+                // the reader settles on the first frame and the ones a step away before it is asked for another
+                let near = t.ahead();
+                assert!(near.iter().all(|&f| look(&near, f, long)), "the first frames arrived");
                 t.go((frames / 2) as i64);
                 let asked = Instant::now();
                 assert!(look(&t.ahead(), t.frame(), long), "the middle frame arrived");
