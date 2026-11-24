@@ -30,15 +30,9 @@ pub fn save(pixels: &[u16], width: u32, height: u32, deep: bool, folder: &Path, 
             Err(e) if e.kind() == ErrorKind::AlreadyExists => n += 1,
             Err(e) => return Err(format!("{}: {e}", path.display())),
             Ok(mut file) => {
-                let written = file.write_all(&png);
-                drop(file);
-                return match written {
+                return match file.write_all(&png) {
                     Ok(()) => Ok(path),
-                    Err(e) => {
-                        // a part of an image is not left looking like a screenshot
-                        let _ = fs::remove_file(&path);
-                        Err(format!("{}: {e}", path.display()))
-                    }
+                    Err(e) => Err(format!("{}: {e}, so the file is incomplete", path.display())),
                 };
             }
         }
@@ -81,23 +75,17 @@ fn pictures() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// a folder of its own for one test, which `save` makes. it removes the images named to it one at a time, then
-    /// the folder
-    struct Scratch(PathBuf, &'static [&'static str]);
-
-    impl Scratch {
-        fn new(test: &str, images: &'static [&'static str]) -> Scratch {
-            Scratch(std::env::temp_dir().join(format!("eyepiece-shot-{test}-{}", std::process::id())), images)
-        }
+    /// a folder of its own for one test, not made yet: `save` makes it
+    fn scratch(test: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("eyepiece-shot-{test}-{}", std::process::id()))
     }
 
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            for name in self.1 {
-                let _ = fs::remove_file(self.0.join(name));
-            }
-            let _ = fs::remove_dir(&self.0);
+    /// removes the images a test wrote, one at a time, then the empty folder. a failed test leaves them for a look
+    fn tidy(dir: &Path, images: &[PathBuf]) {
+        for image in images {
+            fs::remove_file(image).unwrap();
         }
+        fs::remove_dir(dir).unwrap();
     }
 
     // two pixels. 128 is just under half an 8-bit step and 129 just over; the alphas are not written
@@ -113,22 +101,23 @@ mod tests {
 
     #[test]
     fn both_depths_read_back() {
-        let scratch = Scratch::new("depths", &["deep.png", "plain.png"]);
-        assert!(save(&PIXELS[..4], 2, 1, true, &scratch.0, "short").is_err());
-        let deep = save(&PIXELS, 2, 1, true, &scratch.0, "deep").unwrap();
+        let dir = scratch("depths");
+        assert!(save(&PIXELS[..4], 2, 1, true, &dir, "short").is_err());
+        let deep = save(&PIXELS, 2, 1, true, &dir, "deep").unwrap();
         let rgb = [0u16, 128, 129, 65535, 25828, 1000];
         assert_eq!(read_back(&deep), (png::ColorType::Rgb, png::BitDepth::Sixteen, rgb.iter().flat_map(|v| v.to_be_bytes()).collect()));
-        let plain = save(&PIXELS, 2, 1, false, &scratch.0, "plain").unwrap();
+        let plain = save(&PIXELS, 2, 1, false, &dir, "plain").unwrap();
         // 25828 is 100.498 steps of 257, and 1000 is 3.89
         assert_eq!(read_back(&plain), (png::ColorType::Rgb, png::BitDepth::Eight, vec![0, 0, 1, 255, 100, 4]));
+        tidy(&dir, &[deep, plain]);
     }
 
     #[test]
     fn never_overwrites() {
-        const NAMES: [&str; 3] = ["clip.f000007.png", "clip.f000007 (2).png", "clip.f000007 (3).png"];
-        let scratch = Scratch::new("names", &NAMES);
-        let written: Vec<PathBuf> = (0..3).map(|_| save(&PIXELS, 2, 1, false, &scratch.0, "clip.f000007").unwrap()).collect();
-        assert_eq!(written, NAMES.map(|n| scratch.0.join(n)));
+        let dir = scratch("names");
+        let written: Vec<PathBuf> = (0..3).map(|_| save(&PIXELS, 2, 1, false, &dir, "clip.f000007").unwrap()).collect();
+        assert_eq!(written, ["clip.f000007.png", "clip.f000007 (2).png", "clip.f000007 (3).png"].map(|n| dir.join(n)));
+        tidy(&dir, &written);
     }
 
     #[test]

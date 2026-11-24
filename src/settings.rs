@@ -238,38 +238,28 @@ fn folder(v: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// a folder of its own for one test, which `save_to` makes. it removes the two files a save can leave, one at a
-    /// time, then the folder
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(test: &str) -> Scratch {
-            Scratch(std::env::temp_dir().join(format!("eyepiece-settings-{test}-{}", std::process::id())))
-        }
-        fn file(&self) -> PathBuf {
-            self.0.join("settings.txt")
-        }
+    /// a folder of its own for one test, not made yet: `save_to` makes it
+    fn scratch(test: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("eyepiece-settings-{test}-{}", std::process::id()))
     }
 
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            for name in ["settings.txt", "settings.tmp"] {
-                let _ = fs::remove_file(self.0.join(name));
-            }
-            let _ = fs::remove_dir(&self.0);
-        }
+    /// removes the settings file, then the empty folder. a failed test leaves them for a look
+    fn tidy(dir: &Path) {
+        fs::remove_file(dir.join("settings.txt")).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 
     #[test]
     fn defaults_when_missing() {
-        let scratch = Scratch::new("missing");
-        assert_eq!(Settings::load_from(&scratch.file()), Settings::default());
-        assert!(!scratch.0.exists());
+        let dir = scratch("missing");
+        assert_eq!(Settings::load_from(&dir.join("settings.txt")), Settings::default());
+        assert!(!dir.exists());
     }
 
     #[test]
     fn round_trip() {
-        let scratch = Scratch::new("round-trip");
+        let dir = scratch("round-trip");
+        let file = dir.join("settings.txt");
         // every field away from its default, so one that does not survive shows
         let saved = Settings {
             timecode: true,
@@ -291,25 +281,28 @@ mod tests {
             window_size: Some((1280, 720)),
             screenshot_folder: Some(PathBuf::from(r"\\nas\review = notes")),
         };
-        saved.save_to(&scratch.file()).unwrap();
-        assert_eq!(Settings::load_from(&scratch.file()), saved);
-        assert!(!scratch.0.join("settings.tmp").exists());
+        saved.save_to(&file).unwrap();
+        assert_eq!(Settings::load_from(&file), saved);
+        assert!(!dir.join("settings.tmp").exists());
+        tidy(&dir);
     }
 
     #[test]
     fn unknown_keys_are_kept_and_bad_lines_give_defaults() {
-        let scratch = Scratch::new("odd");
-        fs::create_dir_all(&scratch.0).unwrap();
+        let dir = scratch("odd");
+        let file = dir.join("settings.txt");
+        fs::create_dir_all(&dir).unwrap();
         let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\n";
-        fs::write(scratch.file(), by_hand).unwrap();
-        let loaded = Settings::load_from(&scratch.file());
+        fs::write(&file, by_hand).unwrap();
+        let loaded = Settings::load_from(&file);
         let defaults = Settings::default();
         assert_eq!((loaded.volume, loaded.guide_color), (0.5, [0xff, 0x88, 0x00]));
         assert_eq!((loaded.mute, loaded.tile), (defaults.mute, defaults.tile));
-        loaded.save_to(&scratch.file()).unwrap();
-        let text = fs::read_to_string(scratch.file()).unwrap();
+        loaded.save_to(&file).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
         assert!(text.contains("\nfrom_a_newer_build = 42\n"), "{text}");
         assert!(text.contains("\nmute = off\n") && !text.contains("broken"), "{text}");
-        assert_eq!(Settings::load_from(&scratch.file()), loaded);
+        assert_eq!(Settings::load_from(&file), loaded);
+        tidy(&dir);
     }
 }

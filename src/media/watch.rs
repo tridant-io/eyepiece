@@ -124,24 +124,17 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
-    /// a folder of its own for one case. it removes the two files a case may leave, one at a time, then the folder
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(case: &str) -> Scratch {
-            let dir = std::env::temp_dir().join(format!("eyepiece-watch-{case}-{}", std::process::id()));
-            fs::create_dir_all(&dir).unwrap();
-            Scratch(dir)
-        }
+    /// a folder of its own for one case
+    fn scratch(case: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("eyepiece-watch-{case}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            for name in ["clip.mov", "clip.tmp"] {
-                let _ = fs::remove_file(self.0.join(name));
-            }
-            let _ = fs::remove_dir(&self.0);
-        }
+    /// removes the clip every case ends with, then the empty folder. a failed case leaves them for a look
+    fn tidy(dir: &Path) {
+        fs::remove_file(dir.join("clip.mov")).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 
     fn at(start: Instant, ms: u64) -> Instant {
@@ -151,8 +144,9 @@ mod tests {
     /// runs a case on a local file, then again as if the folder were on a network volume
     fn both(case: &str, run: impl Fn(&Path, bool)) {
         for network in [false, true] {
-            let scratch = Scratch::new(&format!("{case}-{network}"));
-            run(&scratch.0.join("clip.mov"), network);
+            let dir = scratch(&format!("{case}-{network}"));
+            run(&dir.join("clip.mov"), network);
+            tidy(&dir);
         }
     }
 
@@ -173,8 +167,8 @@ mod tests {
 
     #[test]
     fn rename_over_with_the_same_size_and_time() {
-        let scratch = Scratch::new("rename");
-        let (clip, tmp) = (scratch.0.join("clip.mov"), scratch.0.join("clip.tmp"));
+        let dir = scratch("rename");
+        let (clip, tmp) = (dir.join("clip.mov"), dir.join("clip.tmp"));
         fs::write(&clip, b"render one").unwrap();
         let mut watch = Watch::new(&clip, false);
         let before = fs::metadata(&clip).unwrap();
@@ -187,6 +181,7 @@ mod tests {
         let t = Instant::now();
         assert_eq!(watch.poll_at(t), Change::None);
         assert_eq!(watch.poll_at(at(t, 500)), Change::Changed);
+        tidy(&dir);
     }
 
     #[test]
