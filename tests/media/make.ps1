@@ -39,3 +39,39 @@ ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=24,format=yuva444p10le,setpar
 # channels can be told apart; pcm in mono (8-bit: 16-bit would not fit the size these clips keep to)
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:s=64x64:r=24:d=1' -f lavfi -i 'aevalsrc=0.5*sin(2*PI*440*t)|0.5*sin(2*PI*660*t):s=48000:c=stereo:d=1' -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 128k (Out-Clip 'tone48_stereo.mov')
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:s=64x64:r=24:d=1' -f lavfi -i 'sine=frequency=440:sample_rate=44100:duration=1' -c:v libx264 -pix_fmt yuv420p -c:a pcm_u8 (Out-Clip 'tone44_mono.mov')
+# stills, from patterns whose numbers the tests know. no name may end in digits unless it is a frame of a sequence:
+# the tests open stills from this folder, and numbered names that share a stem fold into one sequence.
+# 8-bit: pixel (x, y) is red 16x, green 16y, blue 128; the tga adds alpha 16x + 15
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp,geq=r='X*16':g='Y*16':b='128'" -frames:v 1 -pix_fmt rgb24 (Out-Clip 'still_8bit.png')
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrap,geq=r='X*16':g='Y*16':b='128':a='X*16+15'" -frames:v 1 -pix_fmt bgra (Out-Clip 'still.tga')
+# 16-bit: red 4096x + y, green 4096y + x, blue 1234; the tiff adds alpha 65535 - x
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp16le,geq=r='X*4096+Y':g='Y*4096+X':b='1234'" -frames:v 1 -pix_fmt rgb48be (Out-Clip 'still_16bit.png')
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrap16le,geq=r='X*4096+Y':g='Y*4096+X':b='1234':a='65535-X'" -frames:v 1 -pix_fmt rgba64le (Out-Clip 'still_16bit.tif')
+# 10-bit: red 64x + y, green 64y, blue 777
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp10le,geq=r='X*64+Y':g='Y*64':b='777'" -frames:v 1 -pix_fmt gbrp10le (Out-Clip 'still_10bit.dpx')
+# 16-bit gray: 4096x + y
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gray16be,geq=lum='X*4096+Y'" -frames:v 1 -pix_fmt gray16be (Out-Clip 'still_gray.png')
+# one flat color, so a lossy jpeg comes back close to it: red 0x33, green 0x66, blue 0x99
+ffmpeg -v error -y -f lavfi -i 'color=c=0x336699:s=16x16' -frames:v 1 -q:v 1 (Out-Clip 'still.jpg')
+# exr: the floats are written by hand, as ffmpeg's filters do not give exact float values. pixel (x, y) is red x/8,
+# green y/16, blue 2.5 (above 1, so nothing may clip it) and alpha 0.5, all exact in half floats too
+$raw = New-Object byte[] (16 * 16 * 4 * 4)
+for ($y = 0; $y -lt 16; $y++) {
+    for ($x = 0; $x -lt 16; $x++) {
+        # gbrapf32le: the green, blue, red and alpha planes, one after another
+        foreach ($p in @(@(0, ($y / 16)), @(1, 2.5), @(2, ($x / 8)), @(3, 0.5))) {
+            [BitConverter]::GetBytes([single]$p[1]).CopyTo($raw, $p[0] * 1024 + ($y * 16 + $x) * 4)
+        }
+    }
+}
+$rawPath = Join-Path $env:TEMP 'eyepiece-exr-pattern.raw'
+[IO.File]::WriteAllBytes($rawPath, $raw)
+# the float one states its rate, as exr can. ffmpeg stores it premultiplied, as exr is: red x/16, green y/32, blue 1.25
+ffmpeg -v error -y -f rawvideo -pix_fmt gbrapf32le -s 16x16 -framerate 30000/1001 -i $rawPath -frames:v 1 -format float -compression zip1 (Out-Clip 'still_float.exr')
+# the half one has no alpha: the same planes but the last, rather than an ffmpeg conversion, which clips floats to 0..1
+[IO.File]::WriteAllBytes($rawPath, [byte[]]$raw[0..3071])
+ffmpeg -v error -y -f rawvideo -pix_fmt gbrpf32le -s 16x16 -i $rawPath -frames:v 1 -format half -compression rle (Out-Clip 'still_half.exr')
+Remove-Item -LiteralPath $rawPath
+# a numbered run with its third frame left out: frame n (from 1) is red 40n, all else 0
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp,geq=r='(N+1)*40':g='0':b='0'" -frames:v 2 -start_number 1 -pix_fmt rgb24 (Out-Clip 'seq.%04d.png')
+ffmpeg -v error -y -f lavfi -i "nullsrc=s=16x16,format=gbrp,geq=r='(N+4)*40':g='0':b='0'" -frames:v 2 -start_number 4 -pix_fmt rgb24 (Out-Clip 'seq.%04d.png')
