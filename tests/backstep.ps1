@@ -7,6 +7,9 @@ param([Parameter(Mandatory = $true)][string]$Clip, [Parameter(Mandatory = $true)
     [string]$Exe)
 $ErrorActionPreference = 'Stop'
 if (-not $Exe) { $Exe = Join-Path (Split-Path $PSScriptRoot -Parent) 'target\release\eyepiece.exe' }
+# players of this script's own: never handed to one the owner has open, and with settings of their own
+$env:EYEPIECE_INSTANCE = "backstep-$PID"
+$env:APPDATA = Join-Path $env:TEMP "eyepiece-backstep-$PID"
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class EyepieceBack {
@@ -51,3 +54,7 @@ $settled = Wait-Frame ($from - 20)
 "twenty wheel notches back, sent at once: picture up on frame $($from - 20) after $settled ms"
 "title: $(Get-Title)"
 [void]$p.CloseMainWindow(); if (-not $p.WaitForExit(3000)) { $p.Kill() }
+# the script's own settings: the file, then the two folders made for it, each named before it goes. nothing recursive
+foreach ($made in (Join-Path $env:APPDATA 'eyepiece\settings.txt'), (Join-Path $env:APPDATA 'eyepiece'), $env:APPDATA) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}

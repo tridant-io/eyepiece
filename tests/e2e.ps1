@@ -327,6 +327,11 @@ Start-Again 'a second launch with a file exits at once, and no second window ope
 $script:name = 'prores_64.mov'; Assert-Frame 'the first window now shows the second launch''s file' 0 4 'software'
 Start-Again 'a launch with a path relative to its own folder exits at once too' @{ ArgumentList = 'hap_64.mov'; WorkingDirectory = $media }
 $script:name = 'hap_64.mov'; Assert-Frame 'and the first window opens that path, resolved from the launch''s folder' 0 3
+# each file handed over got a tab of its own, and never took the place of what was open: the first clip is two tabs back
+Send-Key 0xDB 2; $script:name = 'hapq_64.mov'; Assert-Frame 'the first clip is still there, in its own tab' 0 3
+# the first and the last tab hold clips of one size and length: they change places on the same frame, a flip comparison
+Send-Key 0x23; Send-Key 0xDB; $script:name = 'hap_64.mov'; Assert-Frame 'two clips of one size and length change places on the same frame' 2 3
+Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'and back' 2 3
 [void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 400
 $before = Get-Title
 Start-Again 'a launch with no file exits at once' @{}

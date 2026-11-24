@@ -7,6 +7,9 @@
 param([Parameter(Mandatory = $true)][string[]]$Clips, [int]$Runs = 6, [string]$Exe)
 $ErrorActionPreference = 'Stop'
 if (-not $Exe) { $Exe = Join-Path (Split-Path $PSScriptRoot -Parent) 'target\release\eyepiece.exe' }
+# players of this script's own: never handed to one the owner has open, and with settings of their own
+$env:EYEPIECE_INSTANCE = "launch-$PID"
+$env:APPDATA = Join-Path $env:TEMP "eyepiece-launch-$PID"
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class EyepieceLaunch {
@@ -41,4 +44,8 @@ foreach ($clip in $Clips) {
     }
     $rest = @($times | Select-Object -Skip 1 | Sort-Object)
     "{0,-28} first launch {1,4} ms, then {2} (median {3} ms)" -f (Split-Path $clip -Leaf), $times[0], ($rest -join ' '), $rest[[math]::Floor($rest.Count / 2)]
+}
+# the script's own settings: the file, then the two folders made for it, each named before it goes. nothing recursive
+foreach ($made in (Join-Path $env:APPDATA 'eyepiece\settings.txt'), (Join-Path $env:APPDATA 'eyepiece'), $env:APPDATA) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
