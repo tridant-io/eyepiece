@@ -13,8 +13,9 @@ use crate::media::source::Frame;
 use crate::media::still::Samples;
 use crate::play::{Loop, Show, Transport};
 use crate::settings::{self, Settings};
-use crate::ui::{Action, Model, Ui};
+use crate::ui::{Action, Model, Screen, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
+use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -394,9 +395,8 @@ impl View {
     }
 
     /// what the controls show. the pixel is the file's pixel under the pointer, when the zoom chip is to name it.
-    fn model(&self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings, fullscreen: bool) -> Model<'_> {
+    fn model(&self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings) -> Model<'_> {
         Model {
-            name: &self.clip.name,
             frame: self.transport.frame(),
             frames: self.clip.timeline.frames(),
             playing: self.transport.playing(),
@@ -420,7 +420,33 @@ impl View {
             shown_size: self.look.shown(self.size()),
             look: self.look,
             guides: guides(settings),
-            fullscreen,
+        }
+    }
+
+    /// does what the controls asked of the clip. the tabs' and the window's own are not for it.
+    fn act(&mut self, action: &Action, window: (f32, f32), settings: &mut Settings) {
+        match action {
+            Action::TogglePlay => self.transport.set_playing(!self.transport.playing()),
+            Action::Step(by) => self.transport.step(*by),
+            Action::Seek(frame) => self.transport.go(*frame as i64),
+            Action::SeekPlace(place) => self.transport.go_place(*place),
+            Action::Loop(mode) => {
+                settings.loop_file = if *mode == Loop::Off { settings::Loop::Off } else { settings::Loop::One };
+                self.transport.set_loop(*mode);
+            }
+            Action::Seam(seconds) => {
+                self.transport.set_seam(*seconds);
+                // the transport holds the seconds to what it takes: keep what it kept
+                if let Some(kept) = self.transport.seam() {
+                    settings.loop_analysis_seconds = kept as f32;
+                }
+            }
+            Action::Speed(speed) => self.transport.set_speed(*speed),
+            Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
+            Action::ToggleFit(at) => self.framing.toggle_fit(Some(*at), window),
+            Action::Pan(by) => self.framing.pan(*by, window),
+            Action::Look(look) => self.set_look(*look),
+            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Browse(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
@@ -475,16 +501,151 @@ impl View {
     }
 }
 
-/// puts a newly opened clip in the window, sized to it. a file that could not be opened leaves what was there and
-/// says why in the title.
-fn show(gpu: &Gpu, window: Handle, clip: Result<Clip, String>, hz: f64, settings: &Settings, current: &mut Option<View>) {
-    match clip.and_then(|clip| View::new(gpu, clip, hz)) {
-        Ok(mut view) => {
-            window::fit(window, window::client_for((view.clip.width, view.clip.height)));
+/// one tab of the window.
+struct Tab {
+    /// the file it was asked to show, as given
+    path: Option<String>,
+    /// its clip, when the file opened
+    view: Option<View>,
+    /// why it did not
+    error: Option<String>,
+    /// the browser is laid over what the tab holds
+    browsing: bool,
+}
+
+/// a tab that was closed: its file, the frame it was on and how the picture sat, for bringing it back
+type Closed = (String, usize, Framing, Look);
+
+impl Tab {
+    fn empty() -> Tab {
+        Tab { path: None, view: None, error: None, browsing: false }
+    }
+
+    /// a tab for a file: its clip, or why there is none.
+    fn open(gpu: &Gpu, path: String, clip: Result<Clip, String>, hz: f64, settings: &Settings) -> Tab {
+        let view = clip.and_then(|clip| View::new(gpu, clip, hz)).map(|mut view| {
             view.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
-            *current = Some(view);
+            view
+        });
+        let (view, error) = match view {
+            Ok(view) => (Some(view), None),
+            Err(why) => (None, Some(why)),
+        };
+        Tab { path: Some(path), view, error, browsing: false }
+    }
+
+    /// what the strip calls it.
+    fn name(&self) -> &str {
+        match (&self.view, &self.path) {
+            (Some(view), _) => &view.clip.name,
+            (None, Some(path)) => Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path),
+            (None, None) => "new tab",
         }
-        Err(why) => window::set_title(window, &format!("eyepiece · {why}")),
+    }
+
+    /// nothing has been opened in it.
+    fn is_empty(&self) -> bool {
+        self.view.is_none() && self.error.is_none()
+    }
+
+    /// the browser is what this tab shows: asked for over its clip, or because there is nothing else to show.
+    fn browsing(&self) -> bool {
+        self.browsing || self.is_empty()
+    }
+}
+
+/// the tabs of the window, of which one is up. there is always at least one.
+struct Tabs {
+    all: Vec<Tab>,
+    up: usize,
+    closed: Vec<Closed>,
+}
+
+impl Tabs {
+    fn tab(&mut self) -> &mut Tab {
+        &mut self.all[self.up]
+    }
+
+    /// the clip on screen, when a clip is what is on screen.
+    fn view(&mut self) -> Option<&mut View> {
+        let tab = self.tab();
+        if tab.browsing() {
+            None
+        } else {
+            tab.view.as_mut()
+        }
+    }
+
+    /// puts another tab up. the one left behind stops where it is. two clips of one size and length change places on
+    /// the same frame, zoom and pan, which makes two tabs a flip comparison.
+    fn select(&mut self, to: usize) {
+        if to == self.up || to >= self.all.len() {
+            return;
+        }
+        let carried = self.tab().view.as_mut().map(|v| {
+            v.transport.set_playing(false);
+            (v.size(), v.clip.timeline.frames(), v.transport.frame(), v.framing.clone(), v.look)
+        });
+        self.up = to;
+        if let (Some((size, frames, frame, framing, look)), Some(v)) = (carried, self.tab().view.as_mut()) {
+            if (v.size(), v.clip.timeline.frames()) == (size, frames) {
+                v.transport.go(frame as i64);
+                (v.framing, v.look) = (framing, look);
+            }
+        }
+    }
+
+    /// a new tab with nothing in it: the browser.
+    fn new_tab(&mut self) {
+        self.all.push(Tab::empty());
+        self.select(self.all.len() - 1);
+    }
+
+    /// opens a file. from the browser it takes the place of what the tab that is up holds; dropped on the window or
+    /// handed over by another launch it gets a tab of its own, and never replaces what is being looked at. the
+    /// window grows to a bigger clip and never shrinks.
+    fn open(&mut self, gpu: &Gpu, window: Handle, path: String, hz: f64, settings: &Settings, replace: bool) {
+        let clip = Clip::open(&path);
+        let tab = Tab::open(gpu, path, clip, hz, settings);
+        if let Some(view) = &tab.view {
+            window::fit(window, window::client_for((view.clip.width, view.clip.height)));
+        }
+        if replace || self.tab().is_empty() {
+            *self.tab() = tab;
+        } else {
+            self.all.push(tab);
+            self.select(self.all.len() - 1);
+        }
+    }
+
+    /// closes a tab, remembering it. closing the last one leaves an empty tab: the window stays.
+    fn close(&mut self, at: usize) {
+        if at >= self.all.len() {
+            return;
+        }
+        let tab = self.all.remove(at);
+        if let (Some(path), Some(view)) = (tab.path, tab.view) {
+            self.closed.push((path, view.transport.frame(), view.framing.clone(), view.look));
+        }
+        if self.all.is_empty() {
+            self.all.push(Tab::empty());
+        }
+        if at < self.up || self.up >= self.all.len() {
+            self.up = self.up.saturating_sub(1);
+        }
+    }
+
+    /// brings back the tab closed last, on its frame, zoom and pan.
+    fn reopen(&mut self, gpu: &Gpu, window: Handle, hz: f64, settings: &Settings) {
+        let Some((path, frame, framing, look)) = self.closed.pop() else { return };
+        if !self.tab().is_empty() {
+            self.new_tab();
+        }
+        self.open(gpu, window, path, hz, settings, true);
+        if let Some(v) = &mut self.tab().view {
+            v.transport.go(frame as i64);
+            (v.framing, v.look) = (framing, look);
+        }
     }
 }
 
@@ -499,7 +660,8 @@ fn over_picture(pointer: Option<(f32, f32)>, window: (f32, f32), scale: f32) -> 
 }
 
 /// runs the player until its window closes. what is kept between runs is read first and written back after.
-pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, String>>) {
+/// `first` is the file given at the start, with its clip already opened or the reason it did not.
+pub fn run(window: Handle, events: Receiver<Event>, first: Option<(String, Result<Clip, String>)>) {
     let mut settings = Settings::load();
     play(window, events, first, &mut settings);
     if let Err(e) = settings.save() {
@@ -507,34 +669,38 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
     }
 }
 
-fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, String>>, settings: &mut Settings) {
+fn play(window: Handle, events: Receiver<Event>, first: Option<(String, Result<Clip, String>)>, settings: &mut Settings) {
     let (w, h) = window::client_size(window);
-    // declared before the view on purpose: the view, and with it any decoder writing to this device, goes first
+    // declared before the tabs on purpose: a clip, and with it any decoder writing to this device, goes first
     let mut gpu = match Gpu::new(window.0, w, h) {
         Ok(gpu) => gpu,
         Err(e) => return window::set_title(window, &format!("eyepiece · no graphics device: {e}")),
     };
     let hz = window::refresh_rate();
-    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode);
+    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone());
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
     };
     // when the controls want another look with nothing new from the window: they are due to fade
     let mut ui_due: Option<Instant> = None;
-    let mut view: Option<View> = None;
+    let first = match first {
+        Some((path, clip)) => Tab::open(&gpu, path, clip, hz, settings),
+        None => Tab::empty(),
+    };
+    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new() };
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
     // the picture area fills a display; the pointer is shown (it hides in fullscreen while the controls are away)
     let (mut fullscreen, mut pointer_shown) = (false, true);
-    if let Some(clip) = first {
-        show(&gpu, window, clip, hz, settings, &mut view);
-    }
     let (mut redraw, mut titled) = (true, None);
+    // the last key was a command, not typing: the character windows makes of the same press is then not typed
+    // anywhere (N opens a new tab; its "n" must not pick a file in that tab's browser)
+    let mut command = false;
     loop {
         // with nothing moving and nothing owed, sleep until the window says something or the controls are due
-        let playing = view.as_ref().is_some_and(|v| v.transport.playing());
-        let waiting = view.as_ref().is_some_and(|v| v.waiting());
+        let playing = tabs.view().is_some_and(|v| v.transport.playing());
+        let waiting = tabs.view().is_some_and(|v| v.waiting());
         let mut next = if playing || waiting || redraw {
             match events.try_recv() {
                 Ok(e) => Some(e),
@@ -558,6 +724,11 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
         };
         while let Some(event) = next {
             let size = (gpu.w as f32, gpu.h as f32);
+            let browsing = tabs.tab().browsing();
+            if let Event::Key { key, mods } = &event {
+                let for_browser = browsing && !mods.ctrl && !mods.alt && !matches!(key, Key::BracketLeft | Key::BracketRight);
+                command = !(ui.typing() || for_browser);
+            }
             match event {
                 Event::Close => return,
                 Event::Resize { w, h } => {
@@ -579,7 +750,7 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
                     pointer = None;
                     ui.pointer_leave();
                 }
-                Event::Open(path) => show(&gpu, window, Clip::open(&path), hz, settings, &mut view),
+                Event::Open(path) => tabs.open(&gpu, window, path, hz, settings, false),
                 // a field being typed into takes the keys; escape closes it and its menu
                 Event::Key { key, mods } if ui.typing() => {
                     ui.key(key, mods);
@@ -587,18 +758,40 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
                         ui.escape();
                     }
                 }
-                // escape leaves fullscreen first, then closes a menu
+                // tabs. the brackets go round them; control + W closes the one that is up and control + shift + T
+                // brings the last one closed back
+                Event::Key { key: key @ (Key::BracketLeft | Key::BracketRight), mods } if !mods.ctrl && !mods.alt => {
+                    let count = tabs.all.len();
+                    tabs.select((tabs.up + if key == Key::BracketLeft { count - 1 } else { 1 }) % count);
+                }
+                Event::Key { key: Key::W, mods } if mods.ctrl => tabs.close(tabs.up),
+                Event::Key { key: Key::T, mods } if mods.ctrl && mods.shift => tabs.reopen(&gpu, window, hz, settings),
+                // escape leaves fullscreen first; then it is the browser's, which goes back to the clip, or closes a menu
                 Event::Key { key: Key::Escape, .. } => {
                     if fullscreen {
                         fullscreen = false;
                         window::set_fullscreen(window, false, false);
+                    } else if browsing {
+                        ui.browser_key(Key::Escape);
                     } else {
                         ui.escape();
                     }
                 }
-                // the keys that are not one clip's: fullscreen (with shift, on the next display), the readout, the
-                // guides, the loop mode and loop analysis, which are kept between runs
-                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::P | Key::T | Key::D | Key::C | Key::R | Key::A) => match key {
+                // in the browser the keys move about it and letters select by name
+                Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key),
+                Event::Char(_) if command => {}
+                Event::Char(c) if browsing => ui.browser_char(c),
+                // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
+                // the next display), the readout, the guides, the loop mode and loop analysis
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A) => match key {
+                    Key::N => tabs.new_tab(),
+                    Key::O => {
+                        let tab = tabs.tab();
+                        tab.browsing = true;
+                        if let Some(v) = &mut tab.view {
+                            v.transport.set_playing(false);
+                        }
+                    }
                     Key::P => {
                         fullscreen = !fullscreen || mods.shift;
                         window::set_fullscreen(window, fullscreen, mods.shift);
@@ -608,19 +801,19 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
                     Key::C => settings.center = !settings.center,
                     Key::R => {
                         // off, one, and round again; from loop analysis, back to plain looping
-                        settings.loop_file = if settings.loop_file == settings::Loop::Off || view.as_ref().is_some_and(|v| v.transport.seam().is_some()) { settings::Loop::One } else { settings::Loop::Off };
-                        if let Some(v) = &mut view {
+                        settings.loop_file = if settings.loop_file == settings::Loop::Off || tabs.view().is_some_and(|v| v.transport.seam().is_some()) { settings::Loop::One } else { settings::Loop::Off };
+                        if let Some(v) = tabs.view() {
                             v.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
                         }
                     }
                     _ => {
-                        if let Some(v) = &mut view {
+                        if let Some(v) = tabs.view() {
                             v.transport.set_seam(v.transport.seam().is_none().then_some(settings.loop_analysis_seconds as f64));
                         }
                     }
                 },
                 Event::Key { key, mods } => {
-                    if view.as_mut().is_some_and(|v| v.key(key, mods, over_picture(pointer, size, scale), size)) {
+                    if tabs.view().is_some_and(|v| v.key(key, mods, over_picture(pointer, size, scale), size)) {
                         ui.view_changed();
                     }
                 }
@@ -631,14 +824,14 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
                 }
                 // with shift, one stop of zoom a notch, about the pointer: away from the user is in
                 Event::Wheel { notches, mods } if mods.shift => {
-                    if let Some(v) = &mut view {
+                    if let Some(v) = tabs.view() {
                         (0..notches.abs()).for_each(|_| v.framing.step(notches.signum(), pointer, size));
                         ui.view_changed();
                     }
                 }
                 // one frame a notch. toward the user is forward, as a page scrolls
                 Event::Wheel { notches, .. } => {
-                    if let Some(v) = &mut view {
+                    if let Some(v) = tabs.view() {
                         v.transport.step(-notches as i64);
                     }
                 }
@@ -650,78 +843,77 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
         // the controls: laid out against where the clip is now. what they ask for is done before the frame is
         // fetched, so a click and its picture are one refresh apart
         let size = (gpu.w as f32, gpu.h as f32);
-        // the pixel the zoom chip names: the one under the pointer, while a zoom is set
+        // the pixel the zoom chip names: the file's pixel under the pointer, while a zoom is set
         let pixel_of = |v: &View| over_picture(pointer, size, scale).filter(|_| v.framing.zoomed()).and_then(|p| v.framing.pixel_at(p, size)).map(|shown| v.look.source_pixel(shown, v.size()));
-        let controls = view.as_mut().map(|v| {
-            let out = ui.run(&v.model(size, pixel_of(v), settings, fullscreen));
-            settings.timecode = ui.timecode();
-            for action in &out.actions {
-                match action {
-                    Action::TogglePlay => v.transport.set_playing(!v.transport.playing()),
-                    Action::Step(by) => v.transport.step(*by),
-                    Action::Seek(frame) => v.transport.go(*frame as i64),
-                    Action::SeekPlace(place) => v.transport.go_place(*place),
-                    Action::Loop(mode) => {
-                        settings.loop_file = if *mode == Loop::Off { settings::Loop::Off } else { settings::Loop::One };
-                        v.transport.set_loop(*mode);
+        let out = {
+            let tab = &tabs.all[tabs.up];
+            let screen = Screen {
+                tabs: tabs.all.iter().map(Tab::name).collect(),
+                current: tabs.up,
+                clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings)),
+                error: tab.error.as_deref(),
+                browsing: tab.browsing(),
+                fullscreen,
+            };
+            ui.run(&screen)
+        };
+        settings.timecode = ui.timecode();
+        if settings.browser_folder.as_deref() != Some(ui.browser_folder()) {
+            settings.browser_folder = Some(ui.browser_folder().to_path_buf());
+        }
+        for action in &out.actions {
+            match action {
+                Action::NewTab => tabs.new_tab(),
+                Action::SelectTab(to) => tabs.select(*to),
+                Action::CloseTab(at) => tabs.close(*at),
+                Action::Open(path) => tabs.open(&gpu, window, path.to_string_lossy().into_owned(), hz, settings, true),
+                Action::Browse(on) => tabs.tab().browsing = *on,
+                Action::Guides(to) => (settings.grid, settings.center, settings.tile) = (to.grid, to.center, to.tile),
+                Action::Fullscreen => {
+                    fullscreen = !fullscreen;
+                    window::set_fullscreen(window, fullscreen, false);
+                }
+                Action::MoveWindow => window::begin_move(window),
+                Action::Minimize => window::minimize(window),
+                Action::ToggleMaximize => window::toggle_maximize(window),
+                Action::Close => window::close(window),
+                // the rest are for the clip on screen
+                clip => {
+                    if let Some(v) = tabs.view() {
+                        v.act(clip, size, settings);
                     }
-                    Action::Seam(seconds) => {
-                        v.transport.set_seam(*seconds);
-                        // the transport holds the seconds to what it takes: keep what it kept
-                        if let Some(kept) = v.transport.seam() {
-                            settings.loop_analysis_seconds = kept as f32;
-                        }
-                    }
-                    Action::Speed(speed) => v.transport.set_speed(*speed),
-                    Action::Zoom(zoom) => v.framing.set_zoom(*zoom, None, size),
-                    Action::ToggleFit(at) => v.framing.toggle_fit(Some(*at), size),
-                    Action::Pan(by) => v.framing.pan(*by, size),
-                    Action::Look(look) => v.set_look(*look),
-                    Action::Guides(to) => (settings.grid, settings.center, settings.tile) = (to.grid, to.center, to.tile),
-                    Action::Fullscreen => {
-                        fullscreen = !fullscreen;
-                        window::set_fullscreen(window, fullscreen, false);
-                    }
-                    Action::MoveWindow => window::begin_move(window),
-                    Action::Minimize => window::minimize(window),
-                    Action::ToggleMaximize => window::toggle_maximize(window),
-                    Action::Close => window::close(window),
                 }
             }
-            out
-        });
-        // they are drawn again when they ask to be: at once while something of theirs is moving, later when a fade
-        // is due, and once more after a click so they show what it did
-        let mut again = false;
+        }
+        // the controls are drawn again when they ask to be: at once while something of theirs is moving, later when
+        // a fade is due, and once more after a click so they show what it did
+        let mut again = !out.actions.is_empty();
         ui_due = None;
-        if let Some(out) = &controls {
-            let set = {
-                let _lock = gpu.locked();
-                ui_painter.set_textures(&gpu, &out.textures)
-            };
-            if let Err(e) = set {
-                return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
-            }
-            match out.again {
-                Some(wait) if wait.is_zero() => again = true,
-                Some(wait) => ui_due = Some(Instant::now() + wait),
-                None => {}
-            }
-            again |= !out.actions.is_empty();
-            // fullscreen with the controls away is the frame and nothing else: no pointer either
-            if pointer_shown != (!fullscreen || out.shown) {
-                pointer_shown = !pointer_shown;
-                window::show_pointer(window, pointer_shown);
-            }
+        let set = {
+            let _lock = gpu.locked();
+            ui_painter.set_textures(&gpu, &out.textures)
+        };
+        if let Err(e) = set {
+            return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
+        }
+        match out.again {
+            Some(wait) if wait.is_zero() => again = true,
+            Some(wait) => ui_due = Some(Instant::now() + wait),
+            None => {}
+        }
+        // fullscreen with the controls away is the frame and nothing else: no pointer either
+        if pointer_shown != (!fullscreen || out.shown) {
+            pointer_shown = !pointer_shown;
+            window::show_pointer(window, pointer_shown);
         }
 
         // a frame that is nearly there is worth a short wait: while playing, half a refresh, since showing the old
         // frame again skips this one for good. standing still, a few milliseconds between looks at the window
-        let playing = view.as_ref().is_some_and(|v| v.transport.playing());
+        let playing = tabs.view().is_some_and(|v| v.transport.playing());
         let patience = if playing { Duration::from_secs_f64(0.5 / hz) } else { Duration::from_millis(4) };
-        let changed = view.as_mut().is_some_and(|v| v.load(&gpu, patience));
+        let changed = tabs.view().is_some_and(|v| v.load(&gpu, patience));
         // the chip was laid out before this frame arrived: a new value under the pointer is one more look
-        again |= view.as_mut().is_some_and(|v| {
+        again |= tabs.view().is_some_and(|v| {
             let pixel = pixel_of(v);
             v.probe(&gpu, pixel)
         });
@@ -731,17 +923,15 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
                 // the present, which waits for the display
                 let _lock = gpu.locked();
                 gpu.clear();
-                if let Some(v) = &view {
+                if let Some(v) = tabs.view() {
                     v.draw(&gpu);
                 }
-                if let Some(out) = &controls {
-                    if let Err(e) = ui_painter.paint(&gpu, &out.primitives, out.scale) {
-                        return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
-                    }
+                if let Err(e) = ui_painter.paint(&gpu, &out.primitives, out.scale) {
+                    return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
                 }
             }
             let missed = gpu.present(playing, Duration::from_secs_f64(1.0 / hz));
-            if let Some(v) = &mut view {
+            if let Some(v) = tabs.view() {
                 // the pause on black between rounds of loop analysis shows no frame: nothing to be late with
                 let black = v.transport.show() == Show::Black;
                 if playing && !black {
@@ -759,18 +949,22 @@ fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, Stri
             // the title follows the frame while the clip stands still. it is left alone during play: redrawing a
             // title bar makes the compositor miss a refresh now and then
             if !playing {
-                let title = view.as_ref().map(|v| v.title(size, settings));
-                if title.is_some() && title != titled {
-                    window::set_title(window, title.as_deref().unwrap());
-                    titled = title;
+                let tab = &tabs.all[tabs.up];
+                let title = match (&tab.view, &tab.error) {
+                    (Some(v), _) => v.title(size, settings) + if tab.browsing { " · browser" } else { "" },
+                    (None, Some(why)) => format!("eyepiece · {why}"),
+                    (None, None) => "eyepiece".to_string(),
+                };
+                if titled.as_ref() != Some(&title) {
+                    window::set_title(window, &title);
+                    titled = Some(title);
                 }
             }
         }
-        if let Some(mut out) = controls {
-            ui_painter.free_textures(&out.textures);
-            // both halves are done with: egui checks that no change is dropped unseen
-            out.textures.clear();
-        }
+        ui_painter.free_textures(&out.textures);
+        // both halves are done with: egui checks that no change is dropped unseen
+        let mut textures = out.textures;
+        textures.clear();
         redraw |= again;
     }
 }

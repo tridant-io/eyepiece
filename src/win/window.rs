@@ -149,12 +149,14 @@ unsafe fn framed(hwnd: HWND) -> bool {
     GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_THICKFRAME.0 != 0
 }
 
-/// resizes the window so its picture area is `client`, centered. for a newly opened clip. a fullscreen window
-/// stays as it is.
+/// grows the window so its picture area is at least `client`, centered: for a newly opened clip. the window
+/// never shrinks, and a fullscreen or maximized one stays as it is.
 pub fn fit(window: Handle, client: (u32, u32)) {
+    let now = client_size(window);
+    let client = (client.0.max(now.0), client.1.max(now.1));
     let (x, y, w, h) = outer(client);
     unsafe {
-        if !framed(window.0) {
+        if client == now || !framed(window.0) || IsZoomed(window.0).as_bool() {
             return;
         }
         let _ = SetWindowPos(window.0, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);

@@ -237,6 +237,23 @@ Click-At -20 16
 Confirm-That 'the strip''s close button closes the window' ($script:p.WaitForExit(3000) -and $script:p.ExitCode -eq 0) 'still running, or a bad exit code'
 if (-not $script:p.HasExited) { $script:p.Kill() }
 
+# ---- tabs: a clip, a new tab with the browser, round them, the browser over a clip, close and bring back
+Start-Player (Join-Path $media 'h264_320.mp4')
+Send-Key 0x47; Assert-Frame 'the clip is on frame 1' 1 24
+Send-Key 0x4E; Assert-Title 'N opens a new tab: the browser, and no clip' '^eyepiece$'
+Send-Key 0xDB; Assert-Frame '[ goes round to the clip, which is where it was' 1 24
+Send-Key 0x4F; Assert-Title 'O lays the browser over the clip' ' . browser$'
+Send-Key 0x1B; Assert-Frame 'escape takes it away again' 1 24
+Send-Key 0xDD; Assert-Title '] goes round to the new tab' '^eyepiece$'
+Send-Key 0x57 1 4; Assert-Frame 'control + W closes the tab that is up' 1 24
+Send-Key 0x57 1 4; Assert-Title 'closing the last tab leaves an empty one, and the window stays' '^eyepiece$'
+Send-Key 0x54 1 5; Assert-Frame 'control + shift + T brings the closed tab back on its frame' 1 24
+# the strip: the clip's tab is as wide as its name and 40 more (123 here), then the + that opens a new tab
+Click-At 139 16; Assert-Title 'the + opens a new tab' '^eyepiece$'
+Click-At 60 16; Assert-Frame 'a click on a tab puts it up' 1 24
+Click-At 109 16; Assert-Title 'the mark on the tab that is up closes it' '^eyepiece$'
+Stop-Player
+
 # ---- 10-bit hevc in hardware: its key frames have pictures that are shown before them
 Start-Player (Join-Path $media 'hevc10_320.mp4')
 Assert-Frame 'hevc opens on frame 0, decoded by the gpu' 0 24 'hardware'

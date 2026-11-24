@@ -2,6 +2,7 @@
 //! platform-neutral: the window reports the pointer and the keys, this returns triangles for the renderer and what
 //! was asked for. one unit here is one of the design's pixels; the display's scale turns it into physical pixels.
 
+mod browser;
 mod icons;
 mod menus;
 mod widgets;
@@ -12,6 +13,7 @@ use crate::view::{Guides, Look};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 use icons::Icon;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,11 +33,20 @@ const FILL: Color32 = Color32::from_rgba_premultiplied(140, 140, 140, 140); // r
 const BANNER: Color32 = Color32::from_rgba_premultiplied(19, 19, 19, 242); // rgba(20,20,20,.95)
 const CHIP: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 184); // rgba(0,0,0,.72)
 const TAB_ON: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
+const TAB_OFF: Color32 = Color32::from_rgb(0x7d, 0x7d, 0x7d);
+/// the strip over the browser, which is not see-through
+const STRIP_SOLID: Color32 = Color32::from_rgb(0x14, 0x14, 0x14);
+const MESSAGE: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0b);
 
 // ---- the design's measurements
 const STRIP: f32 = 32.0;
 const WINDOW_BUTTON: f32 = 40.0;
 const TAB_MAX: f32 = 310.0;
+/// a tab's width without its name: 12 before, 8 to the close mark, 12 of mark, 8 after
+const TAB_PAD: f32 = 40.0;
+/// tabs narrow to this before they run under the window's buttons
+const TAB_MIN: f32 = 64.0;
+const PLUS: f32 = 32.0;
 const ROW: f32 = 36.0;
 const TIME: f32 = 14.0;
 const TRACK_THIN: f32 = 4.0;
@@ -60,10 +71,22 @@ fn font(family: &str, size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(family.into()))
 }
 
-/// what the controls show, read from the player each frame.
+/// what is on screen, read from the player each frame: the tabs, and the one that is up.
+pub struct Screen<'a> {
+    /// every tab's name, and which one is up
+    pub tabs: Vec<&'a str>,
+    pub current: usize,
+    /// its clip, when it has one
+    pub clip: Option<Model<'a>>,
+    /// why its file did not open, when it did not
+    pub error: Option<&'a str>,
+    /// the browser is up: in a tab with nothing in it, or laid over the clip
+    pub browsing: bool,
+    pub fullscreen: bool,
+}
+
+/// the clip on screen, as the controls show it.
 pub struct Model<'a> {
-    /// the file's name, for its tab
-    pub name: &'a str,
     pub frame: usize,
     pub frames: usize,
     pub playing: bool,
@@ -100,7 +123,6 @@ pub struct Model<'a> {
     pub shown_size: (usize, usize),
     pub look: Look,
     pub guides: Guides,
-    pub fullscreen: bool,
 }
 
 /// what the user asked for through the controls.
@@ -123,6 +145,14 @@ pub enum Action {
     Pan((f32, f32)),
     Look(Look),
     Guides(Guides),
+    /// tabs: a new one, this one up, this one closed
+    NewTab,
+    SelectTab(usize),
+    CloseTab(usize),
+    /// open this file in the tab that is up
+    Open(PathBuf),
+    /// lay the browser over the clip, or take it away
+    Browse(bool),
     Fullscreen,
     /// the window: move it with the pointer, whose button is down; minimize; maximize or put back; close
     MoveWindow,
@@ -176,10 +206,12 @@ pub struct Ui {
     menu: Option<Menu>,
     menu_rect: Rect,
     menu_button: Rect,
+    browser: browser::Browser,
 }
 
 impl Ui {
-    pub fn new(size: (u32, u32), scale: f32, timecode: bool) -> Ui {
+    /// `folder` is where the browser starts: the one it was last in.
+    pub fn new(size: (u32, u32), scale: f32, timecode: bool, folder: Option<PathBuf>) -> Ui {
         let ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::empty();
         let files: [(&str, &'static [u8]); 4] = [
@@ -217,7 +249,22 @@ impl Ui {
             menu: None,
             menu_rect: Rect::NOTHING,
             menu_button: Rect::NOTHING,
+            browser: browser::Browser::new(folder),
         }
+    }
+
+    /// a key and a typed character for the browser, while it is up.
+    pub fn browser_key(&mut self, key: Key) {
+        self.browser.key(key);
+    }
+
+    pub fn browser_char(&mut self, c: char) {
+        self.browser.char(c);
+    }
+
+    /// the folder the browser is in: kept between runs.
+    pub fn browser_folder(&self) -> &Path {
+        self.browser.folder()
     }
 
     fn point(&self, x: f32, y: f32) -> Pos2 {
@@ -301,20 +348,43 @@ impl Ui {
     }
 
     /// one pass: takes what the window reported since the last one, lays out and draws the controls.
-    pub fn run(&mut self, model: &Model) -> Output {
+    pub fn run(&mut self, screen: &Screen) -> Output {
         let now = self.started.elapsed().as_secs_f64();
         let mut raw = egui::RawInput { time: Some(now), focused: true, events: std::mem::take(&mut self.events), ..Default::default() };
         raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(self.size.0 / self.scale, self.size.1 / self.scale)));
         raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(self.scale);
         let mut actions = Vec::new();
         let ctx = self.ctx.clone();
-        let out = ctx.run_ui(raw, |ui| self.draw(ui, model, now, &mut actions));
+        let out = ctx.run_ui(raw, |ui| self.draw(ui, screen, now, &mut actions));
         let again = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < Duration::from_secs(3600));
         self.moved = false;
         Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown }
     }
 
-    fn draw(&mut self, ui: &mut egui::Ui, model: &Model, now: f64, actions: &mut Vec<Action>) {
+    fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
+        let full = ui.max_rect();
+        let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
+        match &screen.clip {
+            Some(model) if !screen.browsing => self.clip(ui, screen, model, now, actions),
+            // no clip to look at: the strip stays up, and under it the browser, or why the file did not open
+            _ => {
+                (self.menu, self.shown) = (None, true);
+                let body = Rect::from_min_max(strip.left_bottom(), full.max);
+                match screen.error.filter(|_| !screen.browsing) {
+                    Some(why) => message(ui, body, screen.tabs[screen.current], why),
+                    None => match self.browser.draw(ui, body) {
+                        Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
+                        Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
+                        None => {}
+                    },
+                }
+                self.strip(ui, strip, screen, true, actions);
+            }
+        }
+    }
+
+    /// a clip is up: the picture takes the pointer, and the controls come and go over it.
+    fn clip(&mut self, ui: &mut egui::Ui, screen: &Screen, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let full = ui.max_rect();
         // the picture, under everything else. a plain click on it shows or hides the controls. a drag moves the
         // window while the whole frame is in view, and the picture when it is larger than the window. a double click
@@ -327,7 +397,7 @@ impl Ui {
                     actions.push(Action::Pan((by.x, by.y)));
                 }
             }
-        } else if picture.drag_started_by(egui::PointerButton::Primary) && !model.fullscreen {
+        } else if picture.drag_started_by(egui::PointerButton::Primary) && !screen.fullscreen {
             actions.push(Action::MoveWindow);
         }
         if picture.double_clicked() {
@@ -393,7 +463,7 @@ impl Ui {
             return;
         }
         ui.set_opacity(alpha);
-        self.strip(ui, strip, model, actions);
+        self.strip(ui, strip, screen, false, actions);
         self.bar(ui, bar, model, actions);
         if let Some(menu) = self.menu {
             // the design stands a menu 7 above the bar, its right edge 4 past its button's, and 8 in from the window's
@@ -466,14 +536,14 @@ impl Ui {
         chip(ui, right_top, Align2::RIGHT_TOP, &parts, alpha);
     }
 
-    /// the strip along the top: the clip's tab, and the window's own buttons. it is the title bar: a drag on it
-    /// moves the window and a double click maximizes it.
-    fn strip(&mut self, ui: &mut egui::Ui, strip: Rect, model: &Model, actions: &mut Vec<Action>) {
+    /// the strip along the top: the tabs, and the window's own buttons. it is the title bar: a drag on it moves the
+    /// window and a double click maximizes it. over a clip it is see-through; over the browser, `solid`.
+    fn strip(&mut self, ui: &mut egui::Ui, strip: Rect, screen: &Screen, solid: bool, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
-        painter.rect_filled(strip, 0.0, BAR);
+        painter.rect_filled(strip, 0.0, if solid { STRIP_SOLID } else { BAR });
         painter.rect_filled(Rect::from_min_max(Pos2::new(strip.left(), strip.bottom() - 1.0), strip.max), 0.0, LINE);
         let grab = ui.interact(strip, ui.scope_id().with("strip"), Sense::click_and_drag());
-        if !model.fullscreen {
+        if !screen.fullscreen {
             if grab.double_clicked() {
                 actions.push(Action::ToggleMaximize);
             } else if grab.drag_started_by(egui::PointerButton::Primary) {
@@ -508,19 +578,48 @@ impl Ui {
             }
             if response.clicked() {
                 // in fullscreen the middle button leaves it, which is what putting the window back means there
-                actions.push(if model.fullscreen && action == Action::ToggleMaximize { Action::Fullscreen } else { action });
+                actions.push(if screen.fullscreen && action == Action::ToggleMaximize { Action::Fullscreen } else { action });
             }
         }
 
-        // the clip's tab: the one on screen is the bright, filled one
-        let room = (x - strip.left()).min(TAB_MAX) - 12.0 - 8.0;
-        let galley = painter.layout_no_wrap(model.name.to_string(), font(MONO_MEDIUM, 11.5), Color32::WHITE);
-        let width = galley.size().x.min(room.max(0.0));
-        let tab = Rect::from_min_size(strip.min, Vec2::new(12.0 + width + 8.0, STRIP - 1.0));
-        painter.rect_filled(tab, 0.0, TAB_ON);
-        painter.rect_filled(Rect::from_min_size(Pos2::new(tab.right(), tab.top()), Vec2::new(1.0, tab.height())), 0.0, LINE);
-        let text = Rect::from_min_size(Pos2::new(tab.left() + 12.0, tab.top()), Vec2::new(width, tab.height()));
-        painter.with_clip_rect(text).galley(Pos2::new(text.left(), text.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+        // the tabs, from the left: the one that is up is the bright, filled one, and carries the close mark. each is
+        // as wide as its name up to a limit; too many for the strip, and they all narrow
+        let room = (x - strip.left() - PLUS).max(0.0);
+        let wide = |name: &str| (painter.layout_no_wrap(name.to_string(), font(MONO_MEDIUM, 11.5), FG).size().x + TAB_PAD).min(TAB_MAX);
+        let mut widths: Vec<f32> = screen.tabs.iter().map(|name| wide(name)).collect();
+        if widths.iter().sum::<f32>() > room {
+            let each = (room / widths.len() as f32).max(TAB_MIN);
+            widths.iter_mut().for_each(|w| *w = w.min(each));
+        }
+        let clipped = painter.with_clip_rect(Rect::from_min_max(strip.min, Pos2::new(x, strip.bottom())));
+        let mut left = strip.left();
+        for (i, (name, width)) in screen.tabs.iter().zip(widths).enumerate() {
+            let tab = Rect::from_min_size(Pos2::new(left, strip.top()), Vec2::new(width, STRIP - 1.0));
+            let up = i == screen.current;
+            if ui.interact(tab, ui.scope_id().with(("tab", i)), Sense::click()).clicked() && !up {
+                actions.push(Action::SelectTab(i));
+            }
+            if up {
+                clipped.rect_filled(tab, 0.0, TAB_ON);
+                let close = Rect::from_center_size(Pos2::new(tab.right() - 8.0 - 6.0, tab.center().y), Vec2::splat(16.0));
+                if ui.interact(close, ui.scope_id().with(("tab-close", i)), Sense::click()).clicked() {
+                    actions.push(Action::CloseTab(i));
+                }
+                icons::draw_sized(&clipped, close.center(), 12.0, Icon::Close, Color32::WHITE.gamma_multiply(0.7));
+            }
+            clipped.rect_filled(Rect::from_min_size(Pos2::new(tab.right() - 1.0, tab.top()), Vec2::new(1.0, tab.height())), 0.0, LINE);
+            let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
+            let galley = cut_middle(&clipped, name, font(family, 11.5), color, width - TAB_PAD);
+            clipped.galley(Pos2::new(tab.left() + 12.0, tab.center().y - galley.size().y / 2.0), galley, color);
+            left = tab.right();
+        }
+        // the + that opens a new tab
+        let plus = Rect::from_min_size(Pos2::new(left.min(x - PLUS), strip.top()), Vec2::new(PLUS, STRIP - 1.0));
+        let response = ui.interact(plus, ui.scope_id().with("tab-new"), Sense::click());
+        painter.text(plus.center(), Align2::CENTER_CENTER, "+", font(MONO, 16.0), if response.hovered() { FG } else { DIM });
+        if response.clicked() {
+            actions.push(Action::NewTab);
+        }
     }
 
     /// the bar along the bottom: one row of controls over the full-width timebar.
@@ -651,6 +750,33 @@ impl Ui {
             painter.galley(rect.center() - galley.size() / 2.0, galley, FG);
         }
     }
+}
+
+/// a name cut in its middle to fit `width`, so what ends it (a version, a frame range) stays in view.
+fn cut_middle(painter: &egui::Painter, name: &str, font_id: FontId, color: Color32, width: f32) -> Arc<egui::Galley> {
+    let whole = painter.layout_no_wrap(name.to_string(), font_id.clone(), color);
+    let letters: Vec<char> = name.chars().collect();
+    if whole.size().x <= width || letters.len() < 3 {
+        return whole;
+    }
+    // the type is monospaced: so many letters fit, one of them the mark
+    let keep = ((width / (whole.size().x / letters.len() as f32)).floor() as usize).clamp(2, letters.len() - 1) - 1;
+    let tail = keep / 2;
+    let cut: String = letters[..keep - tail].iter().chain(&['…']).chain(&letters[letters.len() - tail..]).collect();
+    painter.layout_no_wrap(cut, font_id, color)
+}
+
+/// a tab whose file did not open: its name and why, in the middle.
+fn message(ui: &egui::Ui, area: Rect, title: &str, why: &str) {
+    let painter = ui.painter().with_clip_rect(area);
+    painter.rect_filled(area, 0.0, MESSAGE);
+    let width = (area.width() - 40.0).min(460.0);
+    let title = painter.layout(title.to_string(), font("sans-semibold", 15.0), FG, width);
+    let why = painter.layout(why.to_string(), font(MONO, 12.0), DIM, width);
+    let top = area.center().y - (title.size().y + 8.0 + why.size().y) / 2.0;
+    let under = top + title.size().y + 8.0;
+    painter.galley(Pos2::new(area.center().x - title.size().x / 2.0, top), title, FG);
+    painter.galley(Pos2::new(area.center().x - why.size().x / 2.0, under), why, DIM);
 }
 
 /// what the loop analysis chip says, while it is on.

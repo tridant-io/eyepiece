@@ -97,6 +97,7 @@ pub struct Guides {
 pub const LADDER: [f32; 14] = [0.125, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 64.0];
 const NEAR: f32 = 1e-4;
 
+#[derive(Clone)]
 pub struct Framing {
     /// the picture's size in its own pixels
     video: (f32, f32),

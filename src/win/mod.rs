@@ -13,9 +13,12 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     // the header is read before the window exists, so the window has the clip's shape from the start and never
     // jumps. that takes a few milliseconds; the graphics device takes a few hundred, and meanwhile the first frame
     // is already being read
-    let first = first.map(|path| Clip::open(&path));
+    let first = first.map(|path| {
+        let clip = Clip::open(&path);
+        (path, clip)
+    });
     let client = match &first {
-        Some(Ok(clip)) => window::client_for((clip.width, clip.height)),
+        Some((_, Ok(clip))) => window::client_for((clip.width, clip.height)),
         _ => (1180, 720),
     };
     let (tx, rx) = mpsc::channel();
