@@ -126,7 +126,10 @@ Send-Key 0x25 1 2; Assert-Title 'alt + left moves the picture right by an eighth
 Send-Key 0x30; Assert-Frame '0 fits the picture' 0 3
 
 # speed, loop and loop analysis, by key
-Send-Key 0xBB; Assert-Title '= is one stop faster' ' . 1\.5.$'
+# - and = zoom; with shift they step the speed
+Send-Key 0xBB; Assert-Title '= zooms in one stop: from fit, 562.5%, to 600%' ' . 600% . x 32 y 32 . '
+Send-Key 0xBD; Assert-Frame '- zooms out one stop, back to fit' 0 3
+Send-Key 0xBB 1 1; Assert-Title 'shift + = is one stop faster' ' . 1\.5.$'
 Send-Key 0x08; Assert-Frame 'backspace is 1x again' 0 3
 Send-Key 0x52; Assert-Title 'R turns looping off' ' . loop off$'
 Send-Key 0x52; Assert-Frame 'and on again' 0 3

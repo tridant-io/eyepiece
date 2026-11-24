@@ -374,8 +374,13 @@ impl View {
             (Key::J, _) => self.transport.shuttle(-1),
             (Key::K, _) => self.transport.shuttle_stop(),
             (Key::L, _) => self.transport.shuttle(1),
-            (Key::Minus, _) => self.transport.speed_step(-1),
-            (Key::Equals, _) => self.transport.speed_step(1),
+            // - and = zoom out and in one stop, about the pointer (the owner's keys); with shift they step the speed
+            (Key::Minus | Key::Equals, false) => {
+                self.framing.step(if key == Key::Equals { 1 } else { -1 }, at, window);
+                return true;
+            }
+            (Key::Minus, true) => self.transport.speed_step(-1),
+            (Key::Equals, true) => self.transport.speed_step(1),
             (Key::Backspace, _) => self.transport.speed_reset(),
             (Key::H, _) => self.set_look(Look { mirror: !self.look.mirror, ..self.look }),
             (Key::V, _) => self.set_look(Look { flip: !self.look.flip, ..self.look }),

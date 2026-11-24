@@ -55,7 +55,7 @@ fn looping(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
 }
 
 fn speed(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
-    widgets::heading(ui, "speed", &["-", "="]);
+    widgets::heading(ui, "speed", &["shift -", "shift ="]);
     let stops = [("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0), ("2×", 2.0), ("4×", 4.0)];
     let on = stops.iter().position(|s| s.1 == model.speed);
     if let Some(i) = widgets::segments(ui, "speed-stops", &stops.map(|s| s.0), on) {
@@ -70,7 +70,7 @@ fn speed(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
 }
 
 fn zoom(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
-    widgets::heading(ui, "zoom", &["0", "1", "2"]);
+    widgets::heading(ui, "zoom", &["0", "1", "2", "-", "="]);
     let stops: [(&str, Option<f32>); 5] = [("fit", None), ("1:1", Some(1.0)), ("2×", Some(2.0)), ("4×", Some(4.0)), ("8×", Some(8.0))];
     let on = stops.iter().position(|(_, z)| match z {
         None => !model.zoomed,
