@@ -26,6 +26,8 @@ needs rust (stable, msvc target) and the visual studio c++ build tools.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup.ps1
 cargo test
 cargo run --release -- some-clip.mov
+# end to end: drives the built program with real keys and checks what it says (a window opens for a few seconds)
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e.ps1
 ```
 
 keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. drop a file on the window to open it.

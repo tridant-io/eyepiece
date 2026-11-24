@@ -22,6 +22,8 @@ function Invoke-Checked {
 
 Invoke-Checked 'the tests' { cargo test --quiet --manifest-path (Join-Path $repo 'Cargo.toml') }
 Invoke-Checked 'the build' { cargo build --quiet --release --manifest-path (Join-Path $repo 'Cargo.toml') }
+# the real program, driven by real keys: a window opens for a few seconds
+Invoke-Checked 'the end-to-end test' { powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'tests\e2e.ps1') }
 
 $dist = Join-Path $repo 'dist\eyepiece'
 New-Item -ItemType Directory -Force $dist | Out-Null

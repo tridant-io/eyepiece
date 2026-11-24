@@ -187,7 +187,7 @@ impl Gpu {
     pub fn clear(&self) {
         unsafe {
             // a flip-model swapchain unbinds its target at every present
-            self.ctx.OMSetRenderTargets(Some(&[self.rtv.clone()]), None);
+            self.ctx.OMSetRenderTargets(Some(std::slice::from_ref(&self.rtv)), None);
             if let Some(rtv) = &self.rtv {
                 self.ctx.ClearRenderTargetView(rtv, &[0.0, 0.0, 0.0, 1.0]);
             }

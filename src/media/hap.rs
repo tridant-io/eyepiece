@@ -89,7 +89,7 @@ fn layer(kind: u8, body: &[u8]) -> Result<Layer<'_>, String> {
             }
             let data = &body[used..];
             let (mut comp, mut sizes, mut offsets): (&[u8], Vec<usize>, Vec<usize>) = (&[], Vec::new(), Vec::new());
-            let le = |b: &[u8]| b.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize).collect::<Vec<_>>();
+            let le = |b: &[u8]| b.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c) as usize).collect::<Vec<_>>();
             while !di.is_empty() {
                 let (t, b, used) = section(di)?;
                 match t {
