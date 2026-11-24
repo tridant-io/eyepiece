@@ -182,15 +182,16 @@ fn numbered(name: &str, at: usize) -> Option<((&str, &str), Frame<'_>)> {
     Some(((before, ext), Frame { n: digits.parse().ok()?, digits, at }))
 }
 
-/// the width that writes every frame's digits back as `{n:0pad$}`, 0 when nothing is zero-padded.
-/// None when no one width does: a.1.exr beside a.01.exr.
+/// the width that writes every frame's digits back as `{n:0pad$}`: the padded width when a number is zero-padded
+/// or all share one width (1001-1240), else 0. None when no one width does: a.1.exr beside a.01.exr.
 fn pad_of(run: &[Frame]) -> Option<usize> {
     let zero_led = |f: &&Frame| f.digits.len() > 1 && f.digits.starts_with('0');
     let width = run.iter().map(|f| f.digits.len()).min()?;
     if run.iter().filter(zero_led).any(|f| f.digits.len() != width) {
         return None;
     }
-    Some(if run.iter().any(|f| zero_led(&f)) { width } else { 0 })
+    let padded = run.iter().any(|f| zero_led(&f)) || (width > 1 && run.iter().all(|f| f.digits.len() == width));
+    Some(if padded { width } else { 0 })
 }
 
 /// folds each numbered run of stills into one entry; everything else stays as it is.
@@ -396,7 +397,8 @@ mod tests {
         assert_eq!(run.kind, seq(1, 5, &[3], 4));
         assert_eq!((run.size, run.path), (Some(40), s.dir.join("shot_010.0001.exr")));
         assert!(run.modified.is_some());
-        assert_eq!(s.entry("plate-[1001-1002].dpx").kind, seq(1001, 1002, &[], 0));
+        // one width throughout counts as padded to it
+        assert_eq!(s.entry("plate-[1001-1002].dpx").kind, seq(1001, 1002, &[], 4));
         assert_eq!(s.entry("frame_0042.png").kind, Kind::Clip);
         assert_eq!(s.entry("shot_010.0003.jpg").kind, Kind::Clip);
         assert_eq!(s.entry("take_v001.mov").kind, Kind::Clip);
