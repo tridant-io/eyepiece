@@ -1,6 +1,6 @@
 //! every command that has a key, in one table. the table of keys (`?`, fig. 21), the right-click menu and the tooltips
 //! on the strip's and the bar's buttons are all read from it, so they say the same. it holds only keys that work:
-//! markup (E) and a folder's previous and next clip (page up and down) come into it when they are built.
+//! markup (E) comes into it when it is built.
 
 use super::{font, text_top, widgets, DIM, FG, HOVER, MONO, MONO_MEDIUM, SANS};
 use crate::event::{Key, Mods};
@@ -48,7 +48,7 @@ const fn table_only(line: &'static str, key: &'static str) -> Command {
 
 /// the table: the menu's sections, in the order of the design's table of keys. the design's words, except where the
 /// build differs: - and = zoom (the owner's keys) and speed takes shift, a double click is fullscreen (the owner's
-/// change), and looping is off or one until folders play. the left and right arrows and ↔ are not in the type, so
+/// change). the left and right arrows and ↔ are not in the type, so
 /// those arrows are named in words and the readout switches "frames / timecode".
 const SECTIONS: &[(&str, &[Command])] = &[
     (
@@ -95,6 +95,8 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("new tab", "new tab", "N", Key::N, NONE),
             both("switch tabs", "previous tab", "[", Key::BracketLeft, NONE),
             both("switch tabs", "next tab", "]", Key::BracketRight, NONE),
+            both("previous / next clip", "previous clip of the folder", "page up", Key::PageUp, NONE),
+            both("previous / next clip", "next clip of the folder", "page down", Key::PageDown, NONE),
             menu_only("close tab", "ctrl W", Key::W, CTRL),
             menu_only("reopen closed tab", "ctrl shift T", Key::T, CTRL_SHIFT),
         ],
@@ -102,7 +104,7 @@ const SECTIONS: &[(&str, &[Command])] = &[
     (
         "loop and speed",
         &[
-            both("loop off · one", "loop off · one", "R", Key::R, NONE),
+            both("loop off · one · all", "loop off · one · all", "R", Key::R, NONE),
             both("loop analysis", "loop analysis", "A", Key::A, NONE),
             both("slower / faster", "slower", "shift -", Key::Minus, SHIFT),
             both("slower / faster", "faster", "shift =", Key::Equals, SHIFT),
@@ -291,6 +293,8 @@ mod tests {
             Key::Backspace => "backspace".to_string(),
             Key::Home => "home".to_string(),
             Key::End => "end".to_string(),
+            Key::PageUp => "page up".to_string(),
+            Key::PageDown => "page down".to_string(),
             Key::Left => "left".to_string(),
             Key::Right => "right".to_string(),
             Key::Up => "↑".to_string(),
@@ -329,7 +333,7 @@ mod tests {
     #[test]
     fn the_menus_rows_send_the_key_they_show() {
         let rows: Vec<_> = commands().filter_map(|c| Some((c.name?, c.key, c.send?))).collect();
-        assert_eq!(rows.len(), 46);
+        assert_eq!(rows.len(), 48);
         for (name, key, send) in rows {
             assert_eq!(shown(send), key, "{name}");
             assert_eq!(named(send.0, send.1), Some((name.to_string(), key.to_string())));
@@ -337,13 +341,13 @@ mod tests {
         assert!(commands().filter(|c| c.name.is_some()).all(|c| c.send.is_some()), "a row that sends nothing");
     }
 
-    /// the design's table (fig. 21) with what this build does not have left out (markup, a folder's clips), its
+    /// the design's table (fig. 21) with what this build does not have left out (markup), its
     /// words put right where the build differs, and other keys for the same commands beside theirs.
     #[test]
     fn the_table_of_keys_is_the_designs_as_built() {
         let keys: Vec<String> = lines().into_iter().map(|(keys, _)| keys).collect();
         let wanted = [
-            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "M ↑ ↓", "P shift P", "right-click", "?", "esc",
+            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "page up down", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "M ↑ ↓", "P shift P", "right-click", "?", "esc",
         ];
         assert_eq!(keys, wanted);
         assert_eq!(line(Key::Equals, SHIFT), Some(("slower / faster".to_string(), "shift - =".to_string())));
