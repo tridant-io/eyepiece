@@ -182,6 +182,13 @@ fn numbered(name: &str, at: usize) -> Option<((&str, &str), Frame<'_>)> {
     Some(((before, ext), Frame { n: digits.parse().ok()?, digits, at }))
 }
 
+/// a numbered still's name split at its frame number: (the text before it, the number, the extension with its dot).
+/// frame n of its sequence is `{before}{n:0pad$}{ext}`, in the same folder.
+pub fn frame_number(name: &str) -> Option<(&str, u64, &str)> {
+    let ((before, ext), frame) = numbered(name, 0)?;
+    Some((before, frame.n, ext))
+}
+
 /// the width that writes every frame's digits back as `{n:0pad$}`: the padded width when a number is zero-padded
 /// or all share one width (1001-1240), else 0. None when no one width does: a.1.exr beside a.01.exr.
 fn pad_of(run: &[Frame]) -> Option<usize> {

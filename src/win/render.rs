@@ -168,6 +168,7 @@ impl View {
                 }
             }
             Lane::Waiting(_) => return Err("the clip did not start".into()),
+            Lane::Stills(_) => return Err("stills are not drawn yet".into()),
         };
         let ps = gpu.pixel_shader(&source).map_err(text)?;
         // the picture as the file has it: the look changes these two at each draw
@@ -183,7 +184,7 @@ impl View {
         match &self.clip.lane {
             Lane::Hap(hap) => hap.source.want(&want),
             Lane::Video(video) => video.source.want(&want),
-            Lane::Waiting(_) => {}
+            Lane::Waiting(_) | Lane::Stills(_) => {}
         }
         if self.shown == Some(frame) {
             return false;

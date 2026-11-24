@@ -3,11 +3,16 @@
 use super::dec::Hardware;
 use super::ff::{self, Input, Sample, Video};
 use super::hap_source::HapLane;
+use super::seq_source::SeqLane;
+use super::still;
 use super::timeline::Timeline;
 use super::video_source::VideoLane;
+use crate::browse::{self, Kind};
+use std::path::Path;
+use std::sync::Arc;
 
 pub struct Clip {
-    /// the file's name without its folder
+    /// the file's name without its folder; a sequence's as the browser shows it, name.[0001-0240].exr
     pub name: String,
     pub width: usize,
     pub height: usize,
@@ -15,6 +20,12 @@ pub struct Clip {
     pub codec: &'static str,
     pub timeline: Timeline,
     pub lane: Lane,
+    /// the frame to show first: a sequence opened by one of its files opens on that file's frame
+    pub first_frame: usize,
+    /// a sequence's frames that have no file, in order
+    pub missing: Vec<usize>,
+    /// true when the file states no rate and the timeline runs at the assumed one (a sequence: 24)
+    pub rate_assumed: bool,
 }
 
 /// where a clip's frames come from.
@@ -25,6 +36,50 @@ pub enum Lane {
     Waiting(Waiting),
     /// a clip ffmpeg decodes, running
     Video(VideoLane),
+    /// stills: a numbered run of image files, or one alone
+    Stills(SeqLane),
+}
+
+/// a numbered run of stills, as a clip needs it
+struct Run {
+    name: String,
+    frames: usize,
+    /// the frame of the file the run was found from
+    at: usize,
+    missing: Vec<usize>,
+    path_of: Box<dyn Fn(usize) -> String + Send>,
+}
+
+/// the file's name without its folder.
+fn file_name(path: &str) -> String {
+    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string())
+}
+
+/// the numbered run in the file's folder that the file is a frame of, from the folder's listing alone: what the
+/// listing lacks is missing, and no other file is opened.
+fn run_of(file: &Path) -> Option<Run> {
+    let name = file.file_name()?.to_str()?;
+    let (before, n, ext) = browse::frame_number(name)?;
+    // a bare name is in the folder the program runs in
+    let folder = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    browse::list(folder).ok()?.into_iter().find_map(|entry| {
+        let Kind::Sequence { first, last, missing, pad } = entry.kind else { return None };
+        // the run's own spelling of the name, which a path typed by hand may not match in case
+        let (b, _, x) = browse::frame_number(entry.path.file_name()?.to_str()?)?;
+        // runs can share a stem and differ in padding (a.1.exr, a.01.exr): the file's own name has to come back
+        let own = b.eq_ignore_ascii_case(before) && x.eq_ignore_ascii_case(ext) && format!("{b}{n:0pad$}{x}").eq_ignore_ascii_case(name);
+        if !own || !(first..=last).contains(&n) || missing.binary_search(&n).is_ok() {
+            return None;
+        }
+        let (folder, b, x) = (folder.to_path_buf(), b.to_string(), x.to_string());
+        Some(Run {
+            name: entry.name,
+            frames: (last - first + 1) as usize,
+            at: (n - first) as usize,
+            missing: missing.iter().map(|m| (m - first) as usize).collect(),
+            path_of: Box::new(move |i| folder.join(format!("{b}{:0pad$}{x}", first + i as u64)).to_string_lossy().into_owned()),
+        })
+    })
 }
 
 pub struct Waiting {
@@ -83,12 +138,15 @@ pub(super) fn frames(video: &Video, mut samples: Vec<Sample>) -> (Vec<Sample>, T
 }
 
 impl Clip {
-    /// reads the header. a hap clip starts reading at once; any other waits for `start`.
+    /// reads the header. a hap clip or stills start reading at once; any other waits for `start`.
     pub fn open(path: &str) -> Result<Clip, String> {
+        if still::is_still(path) {
+            return Clip::open_stills(path);
+        }
         let input = Input::open(path)?;
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
         let tag = ff::fourcc(video.tag);
-        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
+        let name = file_name(path);
         let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, prores, h.264 and hevc.", video.codec_name))?;
         let (samples, timeline, step) = frames(&video, input.samples(video.index));
         let lane = if hap_variant(&tag).is_some() {
@@ -110,7 +168,22 @@ impl Clip {
                 Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, step, size })
             }
         };
-        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane })
+        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false })
+    }
+
+    /// a still, or the numbered run of stills it is a frame of, opened on its frame. the file's own picture gives the
+    /// size and codec, and is the first frame shown.
+    fn open_stills(path: &str) -> Result<Clip, String> {
+        let image = Arc::new(still::decode(path)?);
+        let (width, height, codec, rate) = (image.width, image.height, image.codec, image.rate);
+        let alone = path.to_string();
+        let run = run_of(Path::new(path)).unwrap_or_else(|| Run { name: file_name(path), frames: 1, at: 0, missing: Vec::new(), path_of: Box::new(move |_| alone.clone()) });
+        // the file's own rate when it states one (exr), else the design's assumption until the user types another
+        let rate_assumed = rate.is_none() && run.frames > 1;
+        let (num, den) = rate.unwrap_or((24, 1));
+        let timeline = Timeline::even((den, num), run.frames, 1);
+        let lane = SeqLane::open(run.frames, run.missing.clone(), (run.at, image), run.path_of)?;
+        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed })
     }
 
     /// starts decoding, for a clip that was waiting. `hardware` is the renderer's device, when there is one.
@@ -122,14 +195,15 @@ impl Clip {
         Ok(())
     }
 
-    /// the frame rate as text: the file's own ratio, or that it has none.
+    /// the frame rate as text: the file's own ratio, the one assumed, or that it has none.
     pub fn rate_text(&self) -> String {
-        match self.timeline.rate() {
+        let text = match self.timeline.rate() {
             Some((n, 1)) => format!("{n} fps"),
             Some((n, d)) => format!("{n}/{d} fps"),
             None if self.timeline.frames() < 2 => "still".to_string(),
             None => "variable rate".to_string(),
-        }
+        };
+        if self.rate_assumed { format!("{text} assumed") } else { text }
     }
 }
 
@@ -235,6 +309,59 @@ mod tests {
         }
     }
 
+    /// the red of a still frame's first pixel, or why the frame cannot be shown.
+    fn red(c: &Clip, frame: usize) -> Result<u8, String> {
+        let Lane::Stills(stills) = &c.lane else { panic!("not the stills lane") };
+        stills.source.want(frame, false);
+        match stills.source.get(frame, Duration::from_secs(10)) {
+            Frame::Ready(image) => Ok(image.data[0]),
+            Frame::Pending => panic!("frame {frame} never arrived"),
+            Frame::Failed(why) => Err(why),
+        }
+    }
+
+    /// tests/media/seq.0001.png to seq.0005.png, with seq.0003.png left out: frame n (from 1) is red 40n.
+    #[test]
+    fn a_numbered_run_of_stills_is_one_clip_with_its_gap() {
+        let c = Clip::open(&media("seq.0001.png")).expect("open");
+        assert_eq!((c.name.as_str(), c.width, c.height, c.codec, c.timeline.frames(), c.first_frame), ("seq.[0001-0005].png", 16, 16, "png", 5, 0));
+        assert_eq!((c.missing.as_slice(), c.rate_text().as_str()), ([2].as_slice(), "24 fps assumed"));
+        // the frame with no file fails as missing, and the clip plays on
+        let missing = Err("this frame's file is missing".to_string());
+        for (frame, expect) in [(0, Ok(40)), (4, Ok(200)), (2, missing), (3, Ok(160)), (1, Ok(80))] {
+            assert_eq!(red(&c, frame), expect, "frame {frame}");
+        }
+        // opened by its third file, it starts on that file's frame
+        let c = Clip::open(&media("seq.0004.png")).expect("open");
+        assert_eq!((c.timeline.frames(), c.first_frame), (5, 3));
+        assert_eq!(red(&c, 3), Ok(160));
+    }
+
+    #[test]
+    fn a_lone_still_is_a_clip_of_one_frame() {
+        let c = Clip::open(&media("still_8bit.png")).expect("open");
+        assert_eq!((c.name.as_str(), c.codec, c.timeline.frames(), c.first_frame, c.rate_text().as_str()), ("still_8bit.png", "png", 1, 0, "still"));
+        assert!(c.missing.is_empty());
+        assert_eq!(red(&c, 0), Ok(0));
+    }
+
+    #[test]
+    fn a_run_of_exr_plays_at_the_rate_its_files_state() {
+        let dir = std::env::temp_dir().join(format!("eyepiece-test-{}-exr-run", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let files = [dir.join("shot.0001.exr"), dir.join("shot.0002.exr")];
+        for file in &files {
+            std::fs::copy(media("still_float.exr"), file).unwrap();
+        }
+        let c = Clip::open(files[1].to_str().unwrap()).expect("open");
+        assert_eq!((c.name.as_str(), c.timeline.frames(), c.first_frame, c.rate_text().as_str()), ("shot.[0001-0002].exr", 2, 1, "30000/1001 fps"));
+        drop(c);
+        for file in &files {
+            std::fs::remove_file(file).unwrap();
+        }
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
     #[test]
     fn something_that_is_not_media_is_an_error() {
         assert!(Clip::open(&media("hap_64.frame0.rgb")).is_err());
@@ -243,10 +370,10 @@ mod tests {
 
     /// gate 5, against the player's own way of holding a file: a render must be able to overwrite it in place, rename
     /// a new file over it, and delete and recreate it, all while the clip is open. hap reads through our own handle
-    /// and the others through ffmpeg on our handle, so both are held here.
+    /// and the others through ffmpeg on our handle, so both are held here; a still is read whole and let go.
     #[test]
     fn a_render_can_replace_a_clip_that_is_open() {
-        for name in ["hap_64.mov", "h264_64.mp4"] {
+        for name in ["hap_64.mov", "h264_64.mp4", "still_8bit.png"] {
             let dir = std::env::temp_dir().join(format!("eyepiece-test-{}-{name}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let (path, beside) = (dir.join(name), dir.join("beside.tmp"));
