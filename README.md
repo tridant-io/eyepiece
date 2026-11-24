@@ -28,7 +28,6 @@ with the controls away, what a key did is said at the lower left for a moment, a
 
 known gaps:
 
-- **a key that types nothing eats the next lone character.** the player drops the character a command key types; a key that types none (an arrow, home, control + W) or a command chosen in the right-click menu leaves the next character that comes without a key of the player's own to be dropped. it shows as a first digit from 3 to 9 typed into a menu's field going missing, and, after "open" or "new tab" from the right-click menu, as a first letter typed in the browser that the player has no key for (b, u, x, y) selecting nothing. found by reading the code, not tested.
 - **the timebar's picture is not the design's hybrid yet.** there is no strip of frames kept ready (one every two seconds), so nothing shows at once: the picture comes when its frame has been read, which is not measured. for h.264, hevc and vp9 with key frames apart the exact frame is read, which decodes every frame from the key frame before it (the design shows the key frame there); while such a clip plays, the timebar shows no picture, so the second decoder does not take the first one's time.
 
 - **a sequence is watched by its first file only.** a render that writes over a sequence is picked up when that file changes; frames written after that are read as they are on disk when they are next wanted, and a frame already in memory stays the old one until the clip is opened again.

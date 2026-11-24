@@ -17,6 +17,8 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    /// any key the player has no use for: it is still a key pressed, which a character typed may follow
+    Other,
     Digit0,
     Digit1,
     Digit2,

@@ -346,7 +346,10 @@ fn key(vk: u16) -> Option<Key> {
         0x56 => Key::V,
         0x57 => Key::W,
         0x5a => Key::Z,
-        _ => return None,
+        // the keys that only hold or lock (shift, control, alt, the windows keys, caps, num and scroll lock) are no
+        // key pressed by themselves
+        0x10..=0x12 | 0x14 | 0x5b | 0x5c | 0x90 | 0x91 | 0xa0..=0xa5 => return None,
+        _ => Key::Other,
     })
 }
 
@@ -463,7 +466,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         // a key with alt held arrives this way. ours are taken; the system keeps its own (alt + f4, alt + space)
         WM_SYSKEYDOWN => match key(wp.0 as u16) {
-            Some(key) if !matches!(key, Key::Space) => {
+            // (a key the player has no use for stays the system's: alt + f4 among them)
+            Some(key) if !matches!(key, Key::Space | Key::Other) => {
                 send(Event::Key { key, mods: mods() });
                 LRESULT(0)
             }

@@ -167,6 +167,12 @@ Click-At -219 -143; Send-Key 0x41 1 4; Send-Char '1600'; Send-Key 0x0D; Send-Key
 Move-Pointer $mid[0] $mid[1]; Assert-Title 'escape closes the menu; at 1600% the middle of the picture is still under the middle of the window' ' . 1600% . x 32 y 32 . '
 Send-Key 0x25 1 2; Assert-Title 'alt + left moves the picture right by an eighth of the window' ' . 1600% . x 2\d y 32 . '
 Send-Key 0x30; Assert-Frame '0 fits the picture' 0 3
+# a digit the player has no key for (3), typed by its key right after a key that types nothing (home), reaches the
+# field: the character of one press is never taken for the command before it. the field holds the fit's 563, and
+# what is typed goes in before it
+Send-Key 0x24; Click-At -203 -32; Click-At -219 -143; Send-Key 0x33; Send-Key 0x0D
+Assert-Title 'a digit typed after a key that types nothing reaches the zoom field' ' . 3563%'
+Send-Key 0x1B; Send-Key 0x30; Move-Pointer $mid[0] $mid[1]; Assert-Frame '0 fits the picture again' 0 3
 
 # speed, loop and loop analysis, by key
 # - and = zoom; with shift they step the speed
