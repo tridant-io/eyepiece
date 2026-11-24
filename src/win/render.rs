@@ -21,7 +21,7 @@ use crate::play::{Show, Transport};
 use crate::preview::spare::{Answer, Ask, Seam};
 use crate::settings::{self, Settings};
 use crate::shot;
-use crate::ui::{Action, Facts, Model, Screen, Shot, Ui};
+use crate::ui::{Action, Facts, FolderList, ListItem, Model, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -562,7 +562,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
@@ -691,6 +691,34 @@ struct Played {
     title: String,
     items: Vec<std::path::PathBuf>,
     at: usize,
+    /// each clip's name, and what its header says, as far as the headers have been read; the reader, while it reads
+    names: Vec<String>,
+    facts: Vec<Option<Result<crate::media::clip::Facts, String>>>,
+    reading: Option<Receiver<(usize, Result<crate::media::clip::Facts, String>)>>,
+}
+
+impl Played {
+    /// a folder's clips, with their headers being read in the background: no reader is started for them and no
+    /// frame read, so a folder of hundreds costs its headers.
+    fn new(title: String, items: Vec<std::path::PathBuf>, wake: &Sender<Event>) -> Played {
+        let (read, reading) = mpsc::channel();
+        let (files, wake) = (items.clone(), wake.clone());
+        std::thread::spawn(move || {
+            for (i, file) in files.iter().enumerate() {
+                if read.send((i, crate::media::clip::facts(&file.to_string_lossy()))).is_err() {
+                    return;
+                }
+                // the list fills in as it is read, a few clips a look
+                if i % 16 == 15 {
+                    let _ = wake.send(Event::Wake);
+                }
+            }
+            drop(read);
+            let _ = wake.send(Event::Wake);
+        });
+        let names = items.iter().map(|file| file.file_name().map_or_else(|| file.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())).collect();
+        Played { title, at: 0, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading) }
+    }
 }
 
 /// why a clip is on its way to a tab
@@ -1097,8 +1125,32 @@ impl Tabs {
         let Some(first) = items.first().map(|first| first.to_string_lossy().into_owned()) else { return Some("no video in this folder".into()) };
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let coming = self.open(gpu, first, wake, true);
-        (coming.played, coming.play) = (Some(Played { title, items, at: 0 }), true);
+        (coming.played, coming.play) = (Some(Played::new(title, items, wake)), true);
         (left_out > 0).then(|| format!("{left_out} file{} not on this disk left out", if left_out == 1 { " is" } else { "s are" }))
+    }
+
+    /// takes in what has been read of a played folder's clips. once all are read the window is sized to the biggest
+    /// of them by its count of pixels (the first in name order of two that tie): once, and only ever larger, so
+    /// nothing jumps when the folder plays on (the design's fig. 14). true when something new came.
+    fn settle(&mut self, window: Handle) -> bool {
+        let Some(played) = &mut self.tab().played else { return false };
+        let Some(reading) = &played.reading else { return false };
+        let mut new = false;
+        let done = loop {
+            match reading.try_recv() {
+                Ok((i, facts)) => (played.facts[i], new) = (Some(facts), true),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+        if done {
+            played.reading = None;
+            // the last of the biggest, from the end: the first of them in name order
+            if let Some(size) = played.facts.iter().flatten().flatten().map(|f| (f.width, f.height)).rev().max_by_key(|(w, h)| w * h) {
+                window::fit(window, window::client_for(size));
+            }
+        }
+        new || done
     }
 
     /// starts bringing in another of the folder's clips.
@@ -1259,8 +1311,10 @@ impl Tabs {
             view.transport.set_playing(true);
         }
         if coming.why == Why::Opened {
-            window::fit(window, window::client_for((view.clip.width, view.clip.height)));
             tab.played = coming.played.take();
+            if tab.played.is_none() {
+                window::fit(window, window::client_for((view.clip.width, view.clip.height)));
+            }
             tab.mode = match (&tab.played, settings.loop_file) {
                 (Some(_), _) => settings.loop_folder,
                 (None, settings::Loop::Off) => settings::Loop::Off,
@@ -1632,6 +1686,27 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 clip: tab.view.as_ref().map(|v| v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some()))),
                 error: tab.error.as_deref(),
                 opening: opening.as_deref().filter(|_| tab.view.is_none() && tab.error.is_none()),
+                list: tab.played.as_ref().map(|played| FolderList {
+                    title: &played.title,
+                    at: played.at,
+                    items: played
+                        .names
+                        .iter()
+                        .zip(&played.facts)
+                        .map(|(name, facts)| {
+                            let first = played.facts[0].as_ref().and_then(|f| f.as_ref().ok());
+                            let facts = facts.as_ref().and_then(|f| f.as_ref().ok());
+                            ListItem {
+                                name,
+                                size: facts.map(|f| (f.width, f.height)),
+                                rate: facts.and_then(|f| f.rate.as_deref()),
+                                frames: facts.and_then(|f| f.frames),
+                                odd_size: facts.zip(first).is_some_and(|(f, first)| f.other_size(first)),
+                                odd_rate: facts.zip(first).is_some_and(|(f, first)| f.other_rate(first)),
+                            }
+                        })
+                        .collect(),
+                }),
                 browsing: tab.browsing(),
                 fullscreen,
                 toast: opening.as_deref().filter(|_| tab.view.is_some() || tab.error.is_some()).or(toast.as_ref().map(|(said, _)| said.as_str())),
@@ -1646,6 +1721,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             match action {
                 Action::NewTab => tabs.new_tab(),
                 Action::SelectTab(to) => tabs.select(*to),
+                Action::GoClip(to) => tabs.go_item(*to, Why::Stepped, &gpu, &wake),
                 Action::CloseTab(at) => tabs.close(*at),
                 Action::Open(path) => {
                     tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
@@ -1782,6 +1858,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             Err(why) => toast = say(why),
         }
         tabs.park(&gpu, &wake);
+        again |= tabs.settle(window);
         let tab = tabs.tab();
         if let Some(v) = &mut tab.view {
             let ends = folder::clip_loop(tab.mode, tab.played.as_ref().map_or(1, |p| p.items.len()), v.transport.shuttle_rate() < 0);

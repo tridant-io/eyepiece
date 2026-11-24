@@ -286,15 +286,61 @@ impl Clip {
     /// the frame rate as text: the file's own ratio, one derived from rounded times, the one assumed, or that it has
     /// none.
     pub fn rate_text(&self) -> String {
-        let text = match (self.timeline.rate(), self.timeline.derived()) {
-            (Some((n, 1)), _) => format!("{n} fps"),
-            (Some((n, d)), _) => format!("{n}/{d} fps"),
-            (None, Some(fps)) => format!("{} fps derived", meta::decimal(fps, 3)),
-            (None, None) if self.timeline.frames() < 2 => "still".to_string(),
-            (None, None) => "variable rate".to_string(),
-        };
-        if self.rate_assumed { format!("{text} assumed") } else { text }
+        rate_words(&self.timeline, self.rate_assumed)
     }
+}
+
+fn rate_words(timeline: &Timeline, assumed: bool) -> String {
+    let text = match (timeline.rate(), timeline.derived()) {
+        (Some((n, 1)), _) => format!("{n} fps"),
+        (Some((n, d)), _) => format!("{n}/{d} fps"),
+        (None, Some(fps)) => format!("{} fps derived", meta::decimal(fps, 3)),
+        (None, None) if timeline.frames() < 2 => "still".to_string(),
+        (None, None) => "variable rate".to_string(),
+    };
+    if assumed { format!("{text} assumed") } else { text }
+}
+
+/// what a played folder's list says of one of its clips: its size, and its frames and rate, which a file that
+/// would have to be read through to count them does not give.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Facts {
+    pub width: usize,
+    pub height: usize,
+    pub frames: Option<usize>,
+    pub rate: Option<String>,
+    /// frames a second, for telling whether two clips run at one rate however their files spell it
+    pub fps: Option<f64>,
+}
+
+impl Facts {
+    /// true when both clips state a size and the sizes differ.
+    pub fn other_size(&self, than: &Facts) -> bool {
+        (self.width, self.height) != (than.width, than.height)
+    }
+
+    /// true when both clips state a rate and the rates differ: 15360/256 and 60000/1000 are one rate, 60000/1001
+    /// is another.
+    pub fn other_rate(&self, than: &Facts) -> bool {
+        matches!((self.fps, than.fps), (Some(a), Some(b)) if (a - b).abs() > 1e-9 * a.max(b))
+    }
+}
+
+/// a clip's facts from its header alone, without opening it to play: no reader is started and no frame is read. a
+/// still is decoded for its size, and a sequence's frames come from its folder's listing.
+pub fn facts(path: &str) -> Result<Facts, String> {
+    if still::is_still(path) {
+        let image = still::decode(path)?;
+        let frames = run_of(Path::new(path)).map_or(1, |run| run.frames);
+        let (num, den) = image.rate.unwrap_or((24, 1));
+        let rate = rate_words(&Timeline::even((den, num), frames, 1), image.rate.is_none() && frames > 1);
+        return Ok(Facts { width: image.width, height: image.height, frames: Some(frames), rate: Some(rate), fps: (frames > 1).then(|| num as f64 / den as f64) });
+    }
+    let input = Input::open(path)?;
+    let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
+    let timeline = stored(path, &input, &video, &Count::Known).ok().map(|(samples, shown)| frames(&video, samples, shown).1);
+    let fps = timeline.as_ref().filter(|t| t.frames() > 1).map(Timeline::fps);
+    Ok(Facts { width: video.width, height: video.height, frames: timeline.as_ref().map(Timeline::frames), rate: timeline.as_ref().map(|t| rate_words(t, false)), fps })
 }
 
 #[cfg(test)]
@@ -433,6 +479,26 @@ mod tests {
         }
         // a file with its table opens either way
         assert!(Clip::open_known(&media("h264_64.mp4")).is_ok());
+    }
+
+    /// a folder's list says of a clip what opening it would, from its header alone
+    #[test]
+    fn a_clips_facts_are_its_headers() {
+        for name in ["hapq_64.mov", "h264_320.mp4", "prores_64.mov", "hevc10_64.mp4", "seq.0001.png", "still_8bit.png", "still_half.exr"] {
+            let clip = Clip::open(&media(name)).unwrap_or_else(|e| panic!("{e}"));
+            let found = facts(&media(name)).unwrap();
+            assert_eq!((found.width, found.height, found.frames, found.rate.clone()), (clip.width, clip.height, Some(clip.timeline.frames()), Some(clip.rate_text())), "{name}");
+            assert_eq!(found.fps, (clip.timeline.frames() > 1).then(|| clip.timeline.fps()), "{name}");
+        }
+        // a rate is another by its value, not by how the file spells it
+        let at = |fps: f64| Facts { width: 64, height: 64, frames: Some(2), rate: None, fps: Some(fps) };
+        assert!(!at(15360.0 / 256.0).other_rate(&at(60000.0 / 1000.0)) && at(60000.0 / 1001.0).other_rate(&at(60.0)));
+        assert!(!at(60.0).other_rate(&Facts { fps: None, ..at(60.0) }) && Facts { width: 32, ..at(60.0) }.other_size(&at(60.0)));
+        // a file that would have to be counted says its size and no more
+        let copy = std::env::temp_dir().join(format!("eyepiece-facts-{}.mkv", std::process::id()));
+        std::fs::copy(media("h264_64.mkv"), &copy).unwrap();
+        assert_eq!(facts(copy.to_str().unwrap()).unwrap(), Facts { width: 64, height: 64, frames: None, rate: None, fps: None });
+        std::fs::remove_file(&copy).unwrap();
     }
 
     /// a count that is told to stop ends with an error, and the file stays uncounted

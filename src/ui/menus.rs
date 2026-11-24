@@ -1,21 +1,73 @@
 //! the menus that open over the bar, laid out as the design has them.
 
 use super::widgets::{self, ROW};
-use super::{font, Action, Facts, Menu, Model, Shot, ACCENT, DIM, MONO};
+use super::{cut_middle, font, text_top, Action, Facts, FolderList, Menu, Model, Shot, ACCENT, AMBER, DIM, FG, HOVER, MONO, MONO_MEDIUM};
 use crate::settings::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
-use egui::{Align2, Pos2, Rect};
+use egui::{Align2, Color32, Pos2, Rect, Sense};
 
 const WIDTH: f32 = 268.0;
 const SHOT_WIDTH: f32 = 308.0;
 const FACTS_WIDTH: f32 = 372.0;
+const LIST_WIDTH: f32 = 456.0;
 /// the ends of the speed slider (the transport holds speed to the same)
 const SLOWEST: f64 = 0.1;
 const FASTEST: f64 = 8.0;
 
+/// the clips a tab plays, with its left top corner on `corner`: each with its size, rate and frames, the one that is
+/// up marked. a size or a rate that differs from the first clip's is amber, which is how the odd one in a folder is
+/// found (the design's fig. 14). a click on a row goes to that clip. it is no taller than `room`. returns where it was
+/// drawn.
+pub fn list(ui: &mut egui::Ui, corner: Pos2, alpha: f32, room: f32, list: &FolderList, actions: &mut Vec<Action>) -> Rect {
+    // the columns after the name, from the right: frames, rate, size, with 10 between
+    const COLUMNS: [f32; 3] = [56.0, 104.0, 84.0];
+    widgets::menu(ui, "list-menu", corner, Align2::LEFT_TOP, LIST_WIDTH, alpha, |ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        widgets::heading_note(ui, "this tab plays", &format!("{} · {} clips", list.title, list.items.len()));
+        // the heading and the menu's own edges take 60 of the room
+        let most = (room - 60.0).max(46.0);
+        // both limits are given: a menu is as tall as it was last drawn, and a list that grew would stay that short
+        egui::ScrollArea::vertical().max_height(most).min_scrolled_height(most).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, item) in list.items.iter().enumerate() {
+                let row = widgets::row(ui, 23.0);
+                let response = ui.interact(row, ui.scope_id().with(("clip", i)), Sense::click());
+                let painter = ui.painter();
+                if i == list.at {
+                    painter.rect_filled(row, 0.0, Color32::from_white_alpha(23));
+                } else if response.hovered() {
+                    painter.rect_filled(row, 0.0, HOVER);
+                }
+                let odd = |differs: bool| if differs { AMBER } else { DIM };
+                let size = item.size.map_or_else(|| "…".to_string(), |(w, h)| format!("{w} × {h}"));
+                let rate = item.rate.map_or("…", |r| r.trim_end_matches(" fps"));
+                let frames = item.frames.map_or_else(|| "…".to_string(), |f| format!("{f} f"));
+                let cells = [
+                    (frames, DIM),
+                    (rate.to_string(), odd(item.odd_rate)),
+                    (size, odd(item.odd_size)),
+                ];
+                let mut right = row.right() - 6.0;
+                for ((words, color), width) in cells.into_iter().zip(COLUMNS) {
+                    let galley = painter.layout_no_wrap(words, font(MONO, 11.0), color);
+                    painter.galley(Pos2::new(right - width, text_top(painter, font(MONO, 11.0), row.center().y)), galley, color);
+                    right -= width + 10.0;
+                }
+                let name = cut_middle(painter, item.name, font(MONO_MEDIUM, 11.0), FG, right - row.left() - 6.0);
+                painter.galley(Pos2::new(row.left() + 6.0, text_top(painter, font(MONO_MEDIUM, 11.0), row.center().y)), name, FG);
+                if response.clicked() {
+                    actions.push(Action::GoClip(i));
+                }
+            }
+        });
+    })
+}
+
 /// draws `menu` standing with its right bottom corner on `corner`. returns where it was drawn.
 pub fn show(ui: &mut egui::Ui, menu: Menu, corner: Pos2, alpha: f32, model: &Model, actions: &mut Vec<Action>) -> Rect {
     let (name, width) = match menu {
+        // the folder's list is not the clip's: `list` draws it
+        Menu::List => return Rect::NOTHING,
         Menu::Loop => ("loop-menu", WIDTH),
         Menu::Speed => ("speed-menu", WIDTH),
         Menu::Zoom => ("zoom-menu", WIDTH),
@@ -23,6 +75,7 @@ pub fn show(ui: &mut egui::Ui, menu: Menu, corner: Pos2, alpha: f32, model: &Mod
         Menu::Shot => ("shot-menu", SHOT_WIDTH),
     };
     widgets::menu(ui, name, corner, Align2::RIGHT_BOTTOM, width, alpha, |ui| match menu {
+        Menu::List => {}
         Menu::Loop => looping(ui, model, actions),
         Menu::Speed => speed(ui, model, actions),
         Menu::Zoom => zoom(ui, model, actions),

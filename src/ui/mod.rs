@@ -120,6 +120,8 @@ pub struct Screen<'a> {
     pub error: Option<&'a str>,
     /// a file is on its way to a tab that shows nothing else: what to say meanwhile, which is nothing at first
     pub opening: Option<&'a str>,
+    /// the folder the tab that is up plays, when it plays one
+    pub list: Option<FolderList<'a>>,
     /// the browser is up: in a tab with nothing in it, or laid over the clip
     pub browsing: bool,
     pub fullscreen: bool,
@@ -142,6 +144,24 @@ pub enum Shot {
     /// the picture as the window shows it
     View,
     Copy,
+}
+
+/// a played folder, for its list: its name, its clips in order, and which of them is up
+pub struct FolderList<'a> {
+    pub title: &'a str,
+    pub at: usize,
+    pub items: Vec<ListItem<'a>>,
+}
+
+/// one clip of a played folder: its name, and what its header says, as far as that has been read
+pub struct ListItem<'a> {
+    pub name: &'a str,
+    pub size: Option<(usize, usize)>,
+    pub rate: Option<&'a str>,
+    pub frames: Option<usize>,
+    /// its size, or its rate, is not the folder's first clip's
+    pub odd_size: bool,
+    pub odd_rate: bool,
 }
 
 /// the clip on screen, as the controls show it.
@@ -219,6 +239,8 @@ pub enum Action {
     NewTab,
     SelectTab(usize),
     CloseTab(usize),
+    /// go to this clip of the played folder
+    GoClip(usize),
     /// open this file in the tab that is up
     Open(PathBuf),
     /// play this folder: asked for in the browser
@@ -260,6 +282,8 @@ pub struct Output {
 /// the menus that open over the bar
 #[derive(Clone, Copy, PartialEq)]
 enum Menu {
+    /// a played folder's clips, under its tab
+    List,
     Loop,
     Speed,
     Zoom,
@@ -442,7 +466,7 @@ impl Ui {
     /// the wheel, when the pointer is over the metadata panel or the right-click menu: it turns their list. false when
     /// the pointer is elsewhere and the wheel is the player's.
     pub fn wheel(&mut self, notches: i32) -> bool {
-        let over = self.ctx.pointer_latest_pos().is_some_and(|p| ((self.facts_pinned || self.facts_up) && self.facts_rect.contains(p)) || (self.commands.is_some() && self.commands_rect.contains(p)));
+        let over = self.ctx.pointer_latest_pos().is_some_and(|p| (self.menu == Some(Menu::List) && self.menu_rect.contains(p)) || ((self.facts_pinned || self.facts_up) && self.facts_rect.contains(p)) || (self.commands.is_some() && self.commands_rect.contains(p)));
         if over {
             self.events.push(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Line,
@@ -689,7 +713,15 @@ impl Ui {
         if let Some(menu) = self.menu {
             // the design stands a menu 7 above the bar, its right edge 4 past its button's, and 8 in from the window's
             let corner = Pos2::new((self.menu_button.right() + 4.0).min(bar.right() - 8.0), bar.top() - 7.0);
-            self.menu_rect = menus::show(ui, menu, corner, alpha, model, actions);
+            self.menu_rect = match (menu, &screen.list) {
+                // the folder's list stands under the strip, at the left (the design's fig. 14)
+                (Menu::List, Some(list)) => menus::list(ui, Pos2::new(full.left() + 8.0, strip.bottom() + 8.0), alpha, full.height() - 104.0, list, actions),
+                (Menu::List, None) => {
+                    self.menu = None;
+                    Rect::NOTHING
+                }
+                _ => menus::show(ui, menu, corner, alpha, model, actions),
+            };
             // what a menu changes about the view is said by the chip
             self.view_changed |= actions.iter().any(|a| matches!(a, Action::Zoom(_)));
         }
@@ -818,8 +850,13 @@ impl Ui {
         for (i, (name, width)) in screen.tabs.iter().zip(widths).enumerate() {
             let tab = Rect::from_min_size(Pos2::new(left, strip.top()), Vec2::new(width, STRIP - 1.0));
             let up = i == screen.current;
-            if ui.interact(tab, ui.scope_id().with(("tab", i)), Sense::click()).clicked() && !up {
+            let clicked = ui.interact(tab, ui.scope_id().with(("tab", i)), Sense::click()).clicked();
+            if clicked && !up {
                 actions.push(Action::SelectTab(i));
+            } else if clicked && screen.list.is_some() && screen.clip.is_some() && !screen.browsing {
+                // the tab that is up, when it plays a folder: a click shows the folder's clips, and another puts
+                // the list away
+                self.toggle_menu(Menu::List, tab);
             }
             if up {
                 clipped.rect_filled(tab, 0.0, TAB_ON);
@@ -1353,7 +1390,7 @@ mod tests {
 
     /// drives the controls over that clip with the pointer, a pass for each step, and gathers what they asked for
     fn drive(ui: &mut Ui, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
-        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, opening: None, browsing: false, fullscreen: false, toast: None };
+        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
         let mut actions = Vec::new();
         for &(x, y, button) in steps {
             match button {

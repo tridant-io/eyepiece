@@ -483,6 +483,12 @@ Send-Key 0x22; Assert-Title 'page down goes to the next clip, round the end' " .
 Send-Key 0x21; Assert-Title 'page up goes back' " . clip $up of 3"
 foreach ($i in 1..3) { if ((Get-ClipUp) -eq 1) { break }; Send-Key 0x22; Start-Sleep -Milliseconds 500 }
 Assert-Title 'the first clip is the first by name' '^hap_64\.mov . \d / 3 . .* . clip 1 of 3'
+# a click on the tab that is up lists the folder's clips under it: 8 in from the left and 8 under the strip, a
+# heading, then rows 23 high. a click on the third row goes to the third clip; esc puts the list away
+Click-At 80 16; Start-Sleep -Milliseconds 400; Click-At 100 133
+Assert-Title 'a click on a row of the folder''s list goes to that clip' '^x_roll\.mov . \d / 3 . .* . clip 3 of 3'
+Send-Key 0x1B
+foreach ($i in 1..3) { if ((Get-ClipUp) -eq 1) { break }; Send-Key 0x22; Start-Sleep -Milliseconds 500 }
 # a folder opens on loop all, which the title leaves unsaid; R goes to off, one, and all again
 Send-Key 0x52; Assert-Title 'R on a folder turns looping off' ' . loop off . clip 1 of 3'
 Send-Key 0x20
