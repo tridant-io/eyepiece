@@ -100,7 +100,8 @@ fn ram() -> usize {
 
 /// workers for a lane whose frames stand alone: every core but two, which stay free for the render thread and for
 /// the rest of the program and the system, so the frame on screen is drawn on time. at most eight: each holds a
-/// whole frame in flight, 133 MB at 4K in float.
+/// whole frame in flight (133 MB at 4K in float), and on the dev machine (20 threads) sixteen played 4K exr, png and
+/// notchlc no better than eight, where four left png 10 frames of 48 late and notchlc 44 of 120.
 fn workers() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get()).saturating_sub(2).clamp(1, MOST_WORKERS)
 }
