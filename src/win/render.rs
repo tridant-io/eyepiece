@@ -639,6 +639,8 @@ struct Tab {
     /// the folder it plays, when it plays one, and the clip on its way to take the place of the one on screen
     played: Option<Played>,
     coming: Option<Coming>,
+    /// the folder's clips before and after the one on screen, kept opened with their first frame read
+    parked: Vec<Coming>,
     /// refreshes the last frame of a clip was held while play waited for the folder's next clip
     held: u64,
     /// what the strip calls a tab that plays a folder
@@ -725,6 +727,12 @@ struct Coming {
     counted: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     view: Option<View>,
+    /// why it did not open, once that is known
+    failed: Option<String>,
+    /// the tab has handed on to it what carries over (the speed, the look, a frame to come up on)
+    seeded: bool,
+    /// for a clip kept ready: its file's size and time when it was opened
+    stamp: Option<(u64, std::time::SystemTime)>,
     /// when it was asked for, and when the window last said how far it has got
     since: Instant,
     said: Instant,
@@ -746,7 +754,35 @@ impl Coming {
         };
         let worker = std::thread::Builder::new().name("opening".into()).spawn(work).ok();
         let now = Instant::now();
-        Coming { item, path, why, play: why == Why::Ran, played: None, place: None, opening: Some(opening), worker, counted, stop, view: None, since: now, said: now }
+        Coming { item, path, why, play: why == Why::Ran, played: None, place: None, opening: Some(opening), worker, counted, stop, view: None, failed: None, seeded: false, stamp: None, since: now, said: now }
+    }
+
+    /// takes the clip once it is opened, makes its view, and reads the frame its transport is on, waiting up to
+    /// `patience` for each. true when that frame is in its painter. Err, every time, for a clip that did not open.
+    fn arrive(&mut self, gpu: &Gpu, hz: f64, patience: Duration) -> Result<bool, String> {
+        if let Some(why) = &self.failed {
+            return Err(why.clone());
+        }
+        if let Some(opening) = &self.opening {
+            let clip = match opening.recv_timeout(patience) {
+                Err(RecvTimeoutError::Timeout) => return Ok(false),
+                Err(RecvTimeoutError::Disconnected) => Err("its reader did not start".to_string()),
+                Ok(clip) => clip,
+            };
+            self.opening = None;
+            match clip.and_then(|clip| View::new(gpu, clip, hz)) {
+                Ok(view) => self.view = Some(view),
+                Err(why) => {
+                    self.failed = Some(why.clone());
+                    return Err(why);
+                }
+            }
+        }
+        let Some(view) = &mut self.view else { return Ok(false) };
+        // its one frame, and nothing read ahead until it is up
+        let frame = view.transport.frame();
+        view.load_wanting(gpu, patience, &[frame]);
+        Ok(!view.waiting())
     }
 
     /// what there is to say of a clip that is slow to come: that it is being opened, and for a file that lists no
@@ -761,6 +797,54 @@ impl Coming {
             frames => format!("opening {name} · {frames} frames counted"),
         })
     }
+}
+
+/// what a tab hands on to the clip coming to it. a file opened in the tab starts as a clip does (a closed tab
+/// brought back, on its frame, zoom and pan). a step by hand between clips of one size and length keeps the frame,
+/// zoom and pan, so two versions flip on the spot, and so does a file that changed on disk, as far as the new file
+/// has them; the speed, the look and loop analysis are the tab's and stay through a folder's cuts.
+fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: Option<&View>) {
+    match (why, old) {
+        (Why::Opened, _) => {
+            if let Some((frame, framing, look)) = place {
+                view.transport.go(frame as i64);
+                (view.framing, view.look) = (framing, look);
+            }
+        }
+        (why, Some(old)) => {
+            view.transport.set_speed(old.transport.speed());
+            view.set_look(old.look);
+            let same = (view.size() == old.size(), view.clip.timeline.frames() == old.clip.timeline.frames());
+            if why == Why::Changed || (why == Why::Stepped && same == (true, true)) {
+                view.transport.go(old.transport.frame() as i64);
+            }
+            if why != Why::Ran && same.0 && (why == Why::Changed || same.1) {
+                view.framing = old.framing.clone();
+            }
+            if let Some(seconds) = old.transport.seam() {
+                view.transport.set_seam(Some(seconds));
+            }
+        }
+        (_, None) => {}
+    }
+}
+
+/// lets a clip that was on its way, or kept ready, go without waiting for it: a count of its frames is stopped, its
+/// view is closed off the drawing thread, and its opening thread is left to finish by itself. that thread has the
+/// graphics device in hand, so it is waited for when the window closes (`stragglers`).
+fn let_go(mut coming: Coming, stragglers: &mut Vec<std::thread::JoinHandle<()>>) {
+    coming.stop.store(true, Ordering::Relaxed);
+    stragglers.retain(|worker| !worker.is_finished());
+    stragglers.extend(coming.worker.take());
+    if let Some(view) = coming.view.take() {
+        view.retire();
+    }
+}
+
+/// a file's size and time, as its folder has them now.
+fn stamp(path: &str) -> Option<(u64, std::time::SystemTime)> {
+    let file = std::fs::metadata(path).ok()?;
+    Some((file.len(), file.modified().ok()?))
 }
 
 impl Drop for Coming {
@@ -816,7 +900,7 @@ type Closed = (String, usize, Framing, Look);
 
 impl Tab {
     fn empty() -> Tab {
-        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, held: 0, label: String::new(), watch: None }
+        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch: None }
     }
 
     /// a tab for a file: its clip, or why there is none.
@@ -827,7 +911,7 @@ impl Tab {
             Err(why) => (None, Some(why)),
         };
         let mode = if settings.loop_file == settings::Loop::Off { settings::Loop::Off } else { settings::Loop::One };
-        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, held: 0, label: String::new(), watch }
+        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch }
     }
 
     /// play or pause, asked for while play waits on a clip's last frame for the folder's next, or while a file is
@@ -918,6 +1002,17 @@ struct Tabs {
     closed: Vec<Closed>,
     /// the display's refresh rate, which every clip opened is paced to
     hz: f64,
+    /// opening threads of clips that were let go before they were done (`let_go`)
+    stragglers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Tabs {
+    /// an opening thread has the graphics device in hand: each is done before the device goes.
+    fn drop(&mut self) {
+        for worker in self.stragglers.drain(..) {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Tabs {
@@ -949,6 +1044,11 @@ impl Tabs {
         if to == self.up || to >= self.all.len() {
             return;
         }
+        // the tab left keeps nothing ready: each clip kept holds a decoder
+        let Tabs { all, up, stragglers, .. } = self;
+        for gone in all[*up].parked.drain(..) {
+            let_go(gone, stragglers);
+        }
         let carried = self.tab().view.as_mut().map(|v| {
             v.transport.set_playing(false);
             (v.size(), v.clip.timeline.frames(), v.transport.frame(), v.framing.clone(), v.look)
@@ -977,10 +1077,12 @@ impl Tabs {
             self.all.push(Tab::empty());
             self.select(self.all.len() - 1);
         }
-        let tab = self.tab();
+        let Tabs { all, up, stragglers, .. } = self;
+        let tab = &mut all[*up];
         tab.browsing = false;
-        // the one before, if it is still on its way, is let go first: it has the device in hand
-        tab.coming = None;
+        if let Some(before) = tab.coming.take() {
+            let_go(before, stragglers);
+        }
         tab.coming.insert(Coming::start(0, path, Why::Opened, gpu.hardware(), wake.clone()))
     }
 
@@ -1001,14 +1103,29 @@ impl Tabs {
 
     /// starts bringing in another of the folder's clips.
     fn go_item(&mut self, to: usize, why: Why, gpu: &Gpu, wake: &Sender<Event>) {
-        let tab = self.tab();
+        let Tabs { all, up, stragglers, .. } = self;
+        let tab = &mut all[*up];
         let Some(path) = tab.played.as_ref().and_then(|p| p.items.get(to)) else { return };
         let path = path.to_string_lossy().into_owned();
         // a step by hand while play waits at a cut: play goes on in the clip stepped to
         let playing_on = tab.cutting();
-        // the one before, if it is still on its way, is let go first: it has the device in hand
-        tab.coming = None;
-        let mut coming = Coming::start(to, path, why, gpu.hardware(), wake.clone());
+        if let Some(before) = tab.coming.take() {
+            let_go(before, stragglers);
+        }
+        // a clip kept ready is taken as it is, unless its file has changed since it was opened
+        let kept = tab.parked.iter().position(|c| c.item == to && c.path == path).map(|at| tab.parked.swap_remove(at));
+        let mut coming = match kept {
+            Some(mut kept) if kept.stamp == stamp(&path) => {
+                (kept.why, kept.play, kept.since) = (why, why == Why::Ran, Instant::now());
+                kept
+            }
+            stale => {
+                if let Some(stale) = stale {
+                    let_go(stale, stragglers);
+                }
+                Coming::start(to, path, why, gpu.hardware(), wake.clone())
+            }
+        };
         coming.play |= playing_on;
         tab.coming = Some(coming);
     }
@@ -1016,10 +1133,50 @@ impl Tabs {
     /// the file at `path` changed on disk: every tab that has it open opens it again, and shows the new file in
     /// place of the old when the tab is up.
     fn reload(&mut self, path: &str, gpu: &Gpu, wake: &Sender<Event>) {
-        for tab in self.all.iter_mut().filter(|tab| tab.path.as_deref() == Some(path)) {
+        let Tabs { all, stragglers, .. } = self;
+        for tab in all.iter_mut().filter(|tab| tab.path.as_deref() == Some(path)) {
             let item = tab.played.as_ref().map_or(0, |p| p.at);
-            tab.coming = None;
+            if let Some(before) = tab.coming.take() {
+                let_go(before, stragglers);
+            }
             tab.coming = Some(Coming::start(item, path.to_string(), Why::Changed, gpu.hardware(), wake.clone()));
+        }
+    }
+
+    /// keeps the clips of the folder before and after the one on screen opened, each with its first frame read, so
+    /// a cut or a page key finds its clip ready and only swaps (the design's neighbor pre-open). those that are no
+    /// longer next to the clip on screen are let go. nothing changes while another clip is on its way.
+    fn park(&mut self, gpu: &Gpu, wake: &Sender<Event>) {
+        let hz = self.hz;
+        let Tabs { all, up, stragglers, .. } = self;
+        let tab = &mut all[*up];
+        let near: Vec<(usize, String)> = match &tab.played {
+            Some(_) if tab.coming.is_some() || tab.view.is_none() => return,
+            Some(played) => {
+                let mut near: Vec<usize> = [1, -1].into_iter().filter_map(|by| folder::step(played.items.len(), played.at, by)).collect();
+                near.dedup();
+                near.into_iter().map(|item| (item, played.items[item].to_string_lossy().into_owned())).collect()
+            }
+            None => Vec::new(),
+        };
+        let mut at = 0;
+        while at < tab.parked.len() {
+            if near.iter().any(|(item, path)| (*item, path) == (tab.parked[at].item, &tab.parked[at].path)) {
+                at += 1;
+            } else {
+                let_go(tab.parked.swap_remove(at), stragglers);
+            }
+        }
+        for (item, path) in near {
+            if !tab.parked.iter().any(|c| c.item == item) {
+                let mut kept = Coming::start(item, path, Why::Stepped, gpu.hardware(), wake.clone());
+                kept.stamp = stamp(&kept.path);
+                tab.parked.push(kept);
+            }
+        }
+        for kept in &mut tab.parked {
+            // one that does not open says so when it is stepped to
+            let _ = kept.arrive(gpu, hz, Duration::ZERO);
         }
     }
 
@@ -1045,27 +1202,18 @@ impl Tabs {
 
     /// brings the clip that is on its way nearer the screen: makes its view once it is opened, reads its first
     /// frame, and puts it up in place of what the tab shows when that frame is in its painter. it waits up to
-    /// `patience` for what it needs next.
-    /// a file opened in the tab starts as a clip does, and the window grows to it. a step by hand between clips of
-    /// one size and length keeps the frame, zoom and pan (two versions flip on the spot), and so does a file that
-    /// changed on disk, as far as the new file has them; the speed, the look and loop analysis are the tab's and
-    /// stay through a folder's cuts.
+    /// `patience` for what it needs next. what the tab hands on to it is `seed`'s; the window grows to a file opened
+    /// in the tab.
     /// Some when the tab shows something new, with what there is to say about it; Err says why a clip of a folder
     /// did not open, and the clip on screen then stays.
     fn bring_in(&mut self, gpu: &Gpu, window: Handle, settings: &Settings, wake: &Sender<Event>, patience: Duration) -> Result<Option<String>, String> {
         let hz = self.hz;
         let tab = self.tab();
         let Some(coming) = &mut tab.coming else { return Ok(None) };
-        if let Some(opening) = &coming.opening {
-            let clip = match opening.recv_timeout(patience) {
-                Err(RecvTimeoutError::Timeout) => return Ok(None),
-                Err(RecvTimeoutError::Disconnected) => Err("its reader did not start".to_string()),
-                Ok(clip) => clip,
-            };
-            coming.opening = None;
-            let mut view = match clip.and_then(|clip| View::new(gpu, clip, hz)) {
-                Ok(view) => view,
-                Err(why) => {
+        let mut ready = match coming.arrive(gpu, hz, patience) {
+            Ok(ready) => ready,
+            Err(why) => {
+                {
                     let Some(mut coming) = tab.coming.take() else { return Ok(None) };
                     return match coming.why {
                         // a file opened in the tab that does not open is what the tab then says, with its facts as
@@ -1083,37 +1231,17 @@ impl Tabs {
                         Why::Stepped | Why::Ran => Err(why),
                     };
                 }
-            };
-            match (coming.why, &tab.view) {
-                (Why::Opened, _) => {
-                    if let Some((frame, framing, look)) = coming.place.take() {
-                        view.transport.go(frame as i64);
-                        (view.framing, view.look) = (framing, look);
-                    }
-                }
-                (why, Some(old)) => {
-                    view.transport.set_speed(old.transport.speed());
-                    view.set_look(old.look);
-                    let same = (view.size() == old.size(), view.clip.timeline.frames() == old.clip.timeline.frames());
-                    if why == Why::Changed || (why == Why::Stepped && same == (true, true)) {
-                        view.transport.go(old.transport.frame() as i64);
-                    }
-                    if why != Why::Ran && same.0 && (why == Why::Changed || same.1) {
-                        view.framing = old.framing.clone();
-                    }
-                    if let Some(seconds) = old.transport.seam() {
-                        view.transport.set_seam(Some(seconds));
-                    }
-                }
-                (_, None) => {}
             }
-            coming.view = Some(view);
+        };
+        // what the tab hands on to it, once, when its view is there: the frame it comes up on may then be another
+        if let (false, Some(view)) = (coming.seeded, &mut coming.view) {
+            seed(view, coming.why, coming.place.take(), tab.view.as_ref());
+            coming.seeded = true;
+            let frame = view.transport.frame();
+            view.load_wanting(gpu, Duration::ZERO, &[frame]);
+            ready = !view.waiting();
         }
-        let Some(view) = &mut coming.view else { return Ok(None) };
-        // its one frame, and nothing read ahead until it is up
-        let frame = view.transport.frame();
-        view.load_wanting(gpu, patience, &[frame]);
-        if view.waiting() {
+        if !ready {
             return Ok(None);
         }
         let Some(mut coming) = tab.coming.take() else { return Ok(None) };
@@ -1157,6 +1285,9 @@ impl Tabs {
             return;
         }
         let mut tab = self.all.remove(at);
+        for gone in tab.parked.drain(..).chain(tab.coming.take()) {
+            let_go(gone, &mut self.stragglers);
+        }
         if let (Some(path), Some(view)) = (tab.path.take(), tab.view.take()) {
             self.closed.push((path, view.transport.frame(), view.framing.clone(), view.look));
             view.retire();
@@ -1268,7 +1399,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // what just happened, said in the window until then; and where screenshots go, as the menu names it
     let mut toast: Option<(String, Instant)> = None;
     let shots_label = shots_to(&shots_folder(settings));
-    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz };
+    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new() };
     if let Some(path) = to_count {
         tabs.open(&gpu, path, &wake, true);
     }
@@ -1650,6 +1781,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             }
             Err(why) => toast = say(why),
         }
+        tabs.park(&gpu, &wake);
         let tab = tabs.tab();
         if let Some(v) = &mut tab.view {
             let ends = folder::clip_loop(tab.mode, tab.played.as_ref().map_or(1, |p| p.items.len()), v.transport.shuttle_rate() < 0);
