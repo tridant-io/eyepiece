@@ -223,7 +223,23 @@ fn flags(name: &str, meta: &Metadata) -> (bool, bool, bool) {
     (a & FILE_ATTRIBUTE_DIRECTORY.0 != 0, a & (FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0) != 0 || name.starts_with('.'), away)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn flags(name: &str, meta: &Metadata) -> (bool, bool, bool) {
+    use std::os::macos::fs::MetadataExt;
+    let (hidden, away) = marks(meta.st_flags());
+    (meta.is_dir(), hidden || name.starts_with('.'), away)
+}
+
+/// (hidden, away), from a file's flags on macos: finder's hidden mark, and the mark of a file whose data is not on
+/// the disk (icloud drive and the like keep such files as names only; reading one downloads it).
+#[cfg(target_os = "macos")]
+fn marks(flags: u32) -> (bool, bool) {
+    const HIDDEN: u32 = 0x8000;
+    const DATALESS: u32 = 0x4000_0000;
+    (flags & HIDDEN != 0, flags & DATALESS != 0)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn flags(name: &str, meta: &Metadata) -> (bool, bool, bool) {
     (meta.is_dir(), name.starts_with('.'), false)
 }
@@ -546,6 +562,16 @@ mod tests {
     fn media_by_extension_without_case() {
         assert!(is_media("a.MOV") && is_media("b.Exr") && is_media("c.webm") && is_media("d.jpeg"));
         assert!(!is_media("e.pdf") && !is_media("mov") && !is_media(".mov"));
+    }
+
+    /// a file whose data is in the cloud and not on the disk is away, by the mark the system gives it (SF_DATALESS
+    /// in sys/stat.h), and finder's hidden mark hides; a file made here has neither.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_not_on_the_disk_is_away() {
+        assert_eq!((marks(0), marks(0x4000_0000), marks(0x8000), marks(0x4000_8040)), ((false, false), (false, true), (true, false), (true, true)));
+        let listed = list(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/media"))).unwrap();
+        assert!(listed.iter().any(|entry| entry.name == "hap_64.mov") && listed.iter().all(|entry| !entry.away));
     }
 
     /// the startup volume and what is on it are local; what no mount point holds is taken for network.

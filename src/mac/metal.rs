@@ -101,8 +101,8 @@ pub struct Gpu {
     /// the frame last sent to the gpu, which may still be reading the textures it draws from
     sent: RefCell<Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>>,
     shown: Arc<Mutex<Shown>>,
-    /// frames presented so far
-    presents: u32,
+    /// turns of the loop that came to a present so far, with a frame or without
+    turns: u32,
 }
 
 /// metal needs no lock of ours around its calls: the decoder writes into surfaces of its own.
@@ -131,14 +131,14 @@ impl Gpu {
 
     fn on(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Result<Gpu, String> {
         let queue = device.newCommandQueue().ok_or("no command queue")?;
-        Ok(Gpu { device, queue, layer: None, w: 0, h: 0, pass: RefCell::new(None), sent: RefCell::new(None), shown: Arc::default(), presents: 0 })
+        Ok(Gpu { device, queue, layer: None, w: 0, h: 0, pass: RefCell::new(None), sent: RefCell::new(None), shown: Arc::default(), turns: 0 })
     }
 
     /// true once a frame is known to have reached the display. the first presents after a window opens do not
-    /// (phase 0): until one has, the window's picture is drawn again. after two seconds of presents it is taken as
-    /// said, so a window that cannot be seen is not drawn for ever.
+    /// (phase 0): until one has, the window's picture is drawn again. after two seconds of turns it is taken as said,
+    /// so a window that cannot be seen is not drawn for ever.
     pub fn reached(&self) -> bool {
-        self.layer.is_none() || self.presents > 120 || self.shown.lock().unwrap().reached
+        self.layer.is_none() || self.turns > 120 || self.shown.lock().unwrap().reached
     }
 
     /// waits until the gpu is done with the frame last sent: the textures it reads are about to be written again.
@@ -338,6 +338,7 @@ impl Gpu {
             }
             shown.count
         };
+        self.turns = self.turns.saturating_add(1);
         let Some(pass) = self.pass.take() else {
             std::thread::sleep(refresh);
             return 0;
@@ -365,7 +366,6 @@ impl Gpu {
         }
         pass.buffer.commit();
         self.sent.replace(Some(pass.buffer));
-        self.presents = self.presents.saturating_add(1);
         if !counting {
             return 0;
         }
