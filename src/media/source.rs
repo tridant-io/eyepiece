@@ -144,6 +144,13 @@ impl<T: Send + Sync + 'static> Source<T> {
         Ok(source)
     }
 
+    /// from now on nothing stays ready but the frames wanted, whatever the lane's budget: for a reader that takes
+    /// one frame at a time and does not come back to it (the browser's pictures).
+    pub fn keep_only_wanted(&self) {
+        self.shared.state.lock().unwrap().fit = 0;
+        self.shared.wake.notify_all();
+    }
+
     /// tells the workers which frames to keep ready, most urgent first: the one on screen, then the ones that come
     /// next (`play::Transport::ahead`), as many as the workers can use. the rest may be let go.
     pub fn want(&self, frames: &[usize]) {
@@ -342,6 +349,20 @@ mod tests {
         // dropping it joins every worker, and with them goes every loader
         drop(source);
         assert_eq!(Arc::strong_count(&counts), 1);
+    }
+
+    #[test]
+    fn a_source_keeps_only_the_frames_wanted_once_told_to() {
+        let counts = Arc::new(Counts::default());
+        let source = Source::start_shared(Slow(counts.clone()), 6, 1, (0, Arc::new(0))).unwrap();
+        source.want(&[1, 2, 3]);
+        assert!((1..=3).all(|f| ready(&source, f)));
+        source.keep_only_wanted();
+        source.want(&[3]);
+        // the workers let the rest go when they next look, which is at once
+        std::thread::sleep(Duration::from_millis(100));
+        let kept: Vec<usize> = source.shared.state.lock().unwrap().ready.iter().map(|r| r.0).collect();
+        assert_eq!(kept, [3]);
     }
 
     #[test]

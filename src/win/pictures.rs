@@ -3,9 +3,10 @@
 
 use super::d3d::Gpu;
 use super::render::View;
-use crate::media::clip::Clip;
+use crate::media::clip::{Clip, Lane};
 use crate::preview::make::{self, Pictures, Reader};
 use crate::preview::Cache;
+use std::cell::OnceCell;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -18,9 +19,10 @@ const WAIT: Duration = Duration::from_secs(5);
 pub fn start(playing: Arc<AtomicBool>) -> Option<Pictures> {
     let (pictures, wants, got) = Pictures::new();
     let work = move || {
-        // with no device there are no pictures: the cards stay plain
-        let Ok(gpu) = Gpu::offscreen() else { return };
-        make::serve(wants, got, Cache::open(), &playing, |path| Open::new(&gpu, path));
+        // the device is made when the first picture is wanted, not at launch: a player that never shows its browser
+        // never pays for it. with no device there are no pictures, and the cards stay plain
+        let gpu: OnceCell<Option<Gpu>> = OnceCell::new();
+        make::serve(wants, got, Cache::open(), &playing, |path| Open::new(gpu.get_or_init(|| Gpu::offscreen().ok()).as_ref()?, path));
     };
     std::thread::Builder::new().name("pictures".into()).spawn(work).ok().map(|_| pictures)
 }
@@ -34,7 +36,15 @@ impl<'a> Open<'a> {
     fn new(gpu: &'a Gpu, path: &Path) -> Option<Open<'a>> {
         let clip = Clip::open(path.to_str()?).ok()?;
         // the rate of the display is nothing to a clip that never plays
-        Some(Open { gpu, view: View::new(gpu, clip, 60.0).ok()? })
+        let view = View::new(gpu, clip, 60.0).ok()?;
+        // one frame at a time, and none kept: 24 frames of a 4K float sequence would be 3 GB
+        match &view.clip.lane {
+            Lane::Hap(hap) => hap.source.keep_only_wanted(),
+            Lane::Video(video) => video.source.keep_only_wanted(),
+            Lane::Stills(stills) => stills.source.keep_only_wanted(),
+            Lane::Waiting(_) => {}
+        }
+        Some(Open { gpu, view })
     }
 }
 

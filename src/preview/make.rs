@@ -15,6 +15,8 @@ const COUNT: usize = 24;
 const BOX: (u32, u32) = (320, 180);
 /// a frame is drawn at up to this many times the picture's size each way and averaged down
 const OVER: u32 = 4;
+/// how many frames are tried for a poster before the card stays plain
+const POSTER_TRIES: usize = 3;
 
 /// a clip opened for its pictures
 pub trait Reader {
@@ -203,7 +205,12 @@ fn make<R: Reader>(want: &Want, cache: Option<&Cache>, got: &Sender<Got>, playin
     let by = (clip.0 / small.0).min(clip.1 / small.1).clamp(1, OVER);
     let of = frames(clip_frames);
     let (mut made, mut left) = (false, false);
-    for frame in order(of.len()).into_iter().map(|i| of[i]).take(if want.all { COUNT } else { 1 }) {
+    // the poster is the first of these that can be read: a sequence may have a gap at its middle. it gives up
+    // after a few, so a file that cannot be read is not read through
+    for frame in order(of.len()).into_iter().map(|i| of[i]).take(if want.all { COUNT } else { POSTER_TRIES }) {
+        if !want.all && made {
+            break;
+        }
         if have.contains_key(&frame) {
             continue;
         }
@@ -270,8 +277,9 @@ mod tests {
         assert_eq!(shrink(&big, 2, 1, 2), [255, 255, 255, 127, 127, 127]);
     }
 
-    /// a clip of ten gray frames, each as bright as its number; it counts how often it is opened and read.
-    struct Gray(Arc<AtomicUsize>);
+    /// a clip of ten gray frames, each as bright as its number; it counts how often it is read. its frames 5 and 0
+    /// cannot be read when `.1` is set.
+    struct Gray(Arc<AtomicUsize>, bool);
 
     impl Reader for Gray {
         fn frames(&self) -> usize {
@@ -282,7 +290,7 @@ mod tests {
         }
         fn read(&mut self, frame: usize, w: u32, h: u32) -> Option<Vec<u16>> {
             self.0.fetch_add(1, Ordering::Relaxed);
-            Some(vec![frame as u16 * 257; (w * h * 4) as usize])
+            (!self.1 || !matches!(frame, 5 | 0)).then(|| vec![frame as u16 * 257; (w * h * 4) as usize])
         }
     }
 
@@ -306,7 +314,7 @@ mod tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let (pictures, wants, got) = Pictures::new();
         let theirs = reads.clone();
-        let worker = std::thread::spawn(move || serve(wants, got, None, &AtomicBool::new(false), |_| Some(Gray(theirs.clone()))));
+        let worker = std::thread::spawn(move || serve(wants, got, None, &AtomicBool::new(false), |_| Some(Gray(theirs.clone(), false))));
         let path = std::env::temp_dir().join("eyepiece-no-such-clip.mov");
         // the poster: the middle frame, and nothing else read
         assert_eq!(ask(&pictures, &path, false), [(5, 5)]);
@@ -315,6 +323,19 @@ mod tests {
         let all = ask(&pictures, &path, true);
         assert_eq!(all[..3], [(5, 5), (0, 0), (2, 2)]);
         assert_eq!(all.len(), 10);
+        drop(pictures);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_poster_whose_frame_cannot_be_read_is_the_next_one_that_can() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let (pictures, wants, got) = Pictures::new();
+        let theirs = reads.clone();
+        let worker = std::thread::spawn(move || serve(wants, got, None, &AtomicBool::new(false), |_| Some(Gray(theirs.clone(), true))));
+        // the middle frame and the first cannot be read: the third in the order is the poster, and no more is read
+        assert_eq!(ask(&pictures, &std::env::temp_dir().join("eyepiece-no-such-clip.mov"), false), [(2, 2)]);
+        assert_eq!(reads.load(Ordering::Relaxed), 3);
         drop(pictures);
         worker.join().unwrap();
     }
