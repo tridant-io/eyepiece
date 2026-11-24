@@ -17,6 +17,7 @@ pub enum Icon {
     Mute,
     Full,
     Close,
+    Pin,
     // markup's tools, and undo
     Rectangle,
     Circle,
@@ -114,6 +115,12 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         }
         Icon::Rectangle => {
             painter.rect_stroke(Rect::from_min_max(p(3.0, 4.5), p(13.0, 11.5)), 0.0, stroke, egui::StrokeKind::Middle);
+        }
+        Icon::Pin => {
+            // a pushpin, upright: its head, its collar, its needle
+            line(&[(5.5, 3.0), (10.5, 3.0)]);
+            line(&[(6.5, 3.0), (6.5, 7.4), (4.4, 9.6), (11.6, 9.6), (9.5, 7.4), (9.5, 3.0)]);
+            line(&[(8.0, 9.6), (8.0, 13.6)]);
         }
         Icon::Circle => {
             painter.circle_stroke(p(8.0, 8.0), 5.0 * unit, stroke);

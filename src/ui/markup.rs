@@ -437,14 +437,14 @@ mod tests {
         assert!(!out.cross, "out of the window");
     }
 
-    /// a click and a double click on the picture neither toggle the controls nor fill the display in markup mode,
-    /// as they do with it off; and the pointer in the middle of the picture does not bring the controls up.
+    /// a click and a double click on the picture neither play or pause nor fill the display in markup mode, as
+    /// they do with it off; and the pointer in the middle of the picture does not bring the controls up.
     #[test]
     fn a_click_and_a_double_click_do_nothing_in_markup_mode() {
         let at = (300.0, 200.0);
         let double = [click(at), click(at)].concat();
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        assert_eq!(drive(&mut ui, &double), vec![Action::Fullscreen], "markup off");
+        assert_eq!(drive(&mut ui, &double), vec![Action::TogglePlay, Action::Fullscreen, Action::PlayAsBefore], "markup off");
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         assert_eq!(drive(&mut ui, &double), vec![]);

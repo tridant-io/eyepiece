@@ -33,6 +33,8 @@ pub struct Settings {
     /// 0 to 1
     pub volume: f32,
     pub mute: bool,
+    /// the controls are pinned up (the pin on the bar)
+    pub pin_controls: bool,
     /// the guides: a grid of tiles, and center lines with a circle
     pub grid: bool,
     pub center: bool,
@@ -62,6 +64,7 @@ impl Default for Settings {
             loop_analysis_seconds: 3.0,
             volume: 0.8,
             mute: false,
+            pin_controls: false,
             grid: false,
             center: false,
             tile: (240, 240),
@@ -125,7 +128,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 19] {
+    fn pairs(&self) -> [(&'static str, String); 20] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -138,6 +141,7 @@ impl Settings {
             ("loop_analysis_seconds", self.loop_analysis_seconds.to_string()),
             ("volume", self.volume.to_string()),
             ("mute", word(&SWITCH, self.mute)),
+            ("pin_controls", word(&SWITCH, self.pin_controls)),
             ("grid", word(&SWITCH, self.grid)),
             ("center", word(&SWITCH, self.center)),
             ("tile", wxh(self.tile)),
@@ -163,6 +167,7 @@ impl Settings {
             "loop_analysis_seconds" => self.loop_analysis_seconds = number(v, 0.5, 10.0)?,
             "volume" => self.volume = number(v, 0.0, 1.0)?,
             "mute" => self.mute = pick(&SWITCH, v)?,
+            "pin_controls" => self.pin_controls = pick(&SWITCH, v)?,
             "grid" => self.grid = pick(&SWITCH, v)?,
             "center" => self.center = pick(&SWITCH, v)?,
             "tile" => self.tile = size(v)?,
@@ -276,6 +281,7 @@ mod tests {
             loop_analysis_seconds: 1.5,
             volume: 0.25,
             mute: true,
+            pin_controls: true,
             grid: true,
             center: true,
             tile: (64, 32),

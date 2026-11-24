@@ -15,6 +15,9 @@ public static class EyepieceE2e {
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetClassLongPtrW(IntPtr h, int index);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
   [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
@@ -162,6 +165,13 @@ Start-Player (Join-Path $media 'hapq_64.mov')
 Assert-Title 'hap q opens on frame 0 and reads the file exactly' '^hapq_64\.mov . 0 / 3 . 64 . 64 . hap q . 60000/1001 fps$'
 # the window's class carries the icon linked into the exe (-14 is GCLP_HICON): what the taskbar shows for it
 Confirm-That 'the window carries the program''s icon' ([EyepieceE2e]::GetClassLongPtrW($script:h, -14) -ne [IntPtr]::Zero) 'the window''s class has no icon'
+# round the picture area, what is seen of the window (9 is DWMWA_EXTENDED_FRAME_BOUNDS) is the system's line and
+# no more, the same on every side: the program asks for it in black, so nothing of the window is bare. with the
+# line on three sides only and no color asked for, a window behind showed through a pixel's width of this one
+$seen = New-Object EyepieceE2e+RECT; $area = New-Object EyepieceE2e+RECT; $corner = New-Object EyepieceE2e+POINT
+[void][EyepieceE2e]::DwmGetWindowAttribute($script:h, 9, [ref]$seen, 16); [void][EyepieceE2e]::GetClientRect($script:h, [ref]$area); [void][EyepieceE2e]::ClientToScreen($script:h, [ref]$corner)
+$line = ($corner.X - $seen.L), ($corner.Y - $seen.T), ($seen.R - $corner.X - $area.R), ($seen.B - $corner.Y - $area.B)
+Confirm-That 'the line round the picture area is the same on every side' (($line | Select-Object -Unique).Count -eq 1 -and $line[0] -le 2) "at the left, top, right, bottom: $($line -join ', ') px"
 Send-Key 0x47; Assert-Frame 'G steps forward' 1 3
 Send-Key 0x27; Assert-Frame 'right arrow steps forward' 2 3
 Send-Key 0x47; Assert-Frame 'a step past the end stays on the last frame' 2 3
@@ -231,12 +241,12 @@ Click-At -347 -86; Send-Key 0x1B; Assert-Frame 'the mirror button again' 0 3
 
 # the keys (fig. 21). a button's tooltip names what it does and its key, a moment after the pointer rests on it, in a
 # chip over the bar: for the play button from its left edge, in the black beside the picture
-$tip = 8, -90, 90, -58
+$tip = 48, -90, 130, -58
 Move-Pointer 300 150; Start-Sleep -Milliseconds 900
 $before = Get-Bright @tip
-Move-Pointer 55 -32; Start-Sleep -Milliseconds 900
+Move-Pointer 95 -32; Start-Sleep -Milliseconds 900
 Confirm-That 'resting on the play button brings its tooltip' ($before -eq 0 -and (Get-Bright @tip) -gt 0) "bright pixels: $before before, $(Get-Bright @tip) after"
-Click-At -256 -32; Move-Pointer 55 -32; Start-Sleep -Milliseconds 900
+Click-At -256 -32; Move-Pointer 95 -32; Start-Sleep -Milliseconds 900
 Confirm-That 'no tooltip while a menu is open' ((Get-Bright @tip) -eq 0) "bright pixels: $(Get-Bright @tip)"
 Send-Key 0x1B
 # ? (shift + slash) lays the table of keys over the clip. a click takes it away and does nothing else: a double click
@@ -272,13 +282,18 @@ Click-At 200 -435; Click-At 200 -435 -Again; Start-Sleep -Milliseconds 500
 Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
 Confirm-That 'and a click at once on the picture under it makes no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
 Send-Key 0x48; Assert-Frame 'H shows it as the file has it again' 0 3
-RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -435
-Assert-Frame 'esc closes the menu: a click where the row was chooses nothing' 0 3
+# the click after esc is one on the picture, which plays; a second pauses, and home goes back
+RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -435; Click-At 200 -435
+Confirm-That 'esc closes the menu: a click where the row was chooses nothing' ((Get-Title) -notmatch 'mirrored') "the title is '$(Get-Title)'"
+Send-Key 0x24; Assert-Frame 'and home is the first frame again' 0 3
 
 # fullscreen: the frame goes and the picture area is a whole display; escape puts the window back
 $before = Get-Width
+# with the pointer on the bar, so the controls are up as it begins
+Move-Pointer 200 -32; Start-Sleep -Milliseconds 300
 Send-Key 0x50; Start-Sleep -Milliseconds 500
 Confirm-That 'P fills the display' ((-not (Test-Framed)) -and (Get-Width) -gt $before) "framed: $(Test-Framed), width $(Get-Width)"
+Confirm-That 'and takes the controls away as it does: the bar''s row is bare' ((Get-Bright 40 -42 150 -22) -eq 0) "bright pixels in the bar's row: $(Get-Bright 40 -42 150 -22)"
 Send-Key 0x47; Assert-Frame 'it still steps in fullscreen' 1 3
 Send-Key 0x1B; Start-Sleep -Milliseconds 500
 Confirm-That 'escape puts the window back as it was' ((Test-Framed) -and (Get-Width) -eq $before) "framed: $(Test-Framed), width $(Get-Width), was $before"
@@ -335,19 +350,34 @@ Send-Key 0x20; Move-Pointer 320 -5; $during = Get-Bright @picture -Any; Send-Key
 Confirm-That 'while a clip with long groups plays, the timebar shows a picture of its timebar strip' ($before -eq 0 -and $during -gt 2000) "lit pixels: $before before, $during on the timebar"
 
 # ---- the controls themselves, with a pointer: the bar's buttons, the timebar, the strip's close button.
-# places are from the design: the row's buttons are 30 wide from 8, 32 up from the bottom; the timebar is the bottom edge
+# places are from the design: the row's buttons are 30 wide, 32 up from the bottom: the pin from 8, then previous
+# frame from 48, play and next frame; the timebar is the bottom edge
 Send-Key 0x24; Assert-Frame 'back to the first frame for the pointer checks' 0 24
-Click-At 87 -32; Assert-Frame 'the next-frame button steps forward' 1 24
-Click-At 87 -32; Assert-Frame 'and again' 2 24
-Click-At 23 -32; Assert-Frame 'the previous-frame button steps back' 1 24
+Click-At 127 -32; Assert-Frame 'the next-frame button steps forward' 1 24
+Click-At 127 -32; Assert-Frame 'and again' 2 24
+Click-At 63 -32; Assert-Frame 'the previous-frame button steps back' 1 24
 # a quarter of the way along 24 frames is frame 6 (5.75, to the nearest frame)
 Click-At ((Get-Width) * 0.25) -3; Assert-Frame 'a click on the timebar goes to that frame' 6 24
 Click-At ((Get-Width) - 1) -3; Assert-Frame 'its right end is the last frame' 23 24
 Click-At 0 -3; Assert-Frame 'its left end is the first' 0 24
 # the play button: the clip is 24 frames and 0.8 s long. a third of a second of play ends inside it, past frame 0,
 # however busy the machine is
-Click-At 55 -32; Start-Sleep -Milliseconds 80; Click-At 55 -32 -Again
+Click-At 95 -32; Start-Sleep -Milliseconds 80; Click-At 95 -32 -Again
 Wait-Title 'the play button plays, and pauses' { param($t) $t -match ' (\d+) / 24 ' -and [int]$Matches[1] -ge 1 } 'a frame past 0'
+# a plain click on the picture plays, and another pauses (the owner's word): two clicks too far apart to be a double
+# click, a third of a second of play between them
+$m = Get-Middle
+Send-Key 0x24; Assert-Frame 'home, for the click on the picture' 0 24
+Click-At $m[0] $m[1]; Click-At $m[0] $m[1]
+Wait-Title 'a click on the picture plays, and another pauses' { param($t) $t -match ' (\d+) / 24 ' -and [int]$Matches[1] -ge 1 } 'a frame past 0'
+Confirm-That 'and two clicks apart are no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
+# the pin at the bar's far left keeps the controls up: the play button's mark is still drawn three seconds after
+# the pointer came to rest on the picture, where without the pin the controls go after 2.4
+$mark = 84, -42, 106, -22
+Click-At 23 -32; Move-Pointer $m[0] $m[1]; Start-Sleep -Milliseconds 3200
+Confirm-That 'pinned, the controls stay up while the pointer rests' ((Get-Bright @mark) -gt 0) "bright pixels of the play button: $(Get-Bright @mark)"
+Click-At 23 -32; Move-Pointer $m[0] $m[1]; Start-Sleep -Milliseconds 3200
+Confirm-That 'unpinned, they go again' ((Get-Bright @mark) -eq 0) "bright pixels of the play button: $(Get-Bright @mark)"
 # shuttle: L runs forward and K stops; J runs backward. a third of a second ends inside the clip, off frame 0
 Send-Key 0x24; Send-Key 0x4C; Start-Sleep -Milliseconds 100; Send-Key 0x4B
 Wait-Title 'L plays forward, K stops' { param($t) $t -match ' (\d+) / 24 ' -and [int]$Matches[1] -ge 1 } 'a frame past 0'

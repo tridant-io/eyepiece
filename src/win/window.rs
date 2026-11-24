@@ -7,13 +7,14 @@
 use super::instance;
 use crate::event::{Button, Event, Key, Mods};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use windows::core::{w, Result, BOOL, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
+use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_VISIBLE_FRAME_BORDER_THICKNESS, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -92,21 +93,38 @@ pub fn client_for(video: (usize, usize)) -> (u32, u32) {
     (((vw * scale).round() as u32).max(MIN_CLIENT.0 as u32), ((vh * scale).round() as u32).max(MIN_CLIENT.1 as u32))
 }
 
-/// how much wider and taller than its picture area the window is: the system's frame on the left, right and bottom.
-/// there is none on top.
-fn frame() -> (i32, i32, i32) {
+/// the line the system draws round what is seen of a window, in pixels: 1 on windows 11, none before it. the
+/// system keeps it just outside the picture area wherever the window has frame, and with no line asked for it drew
+/// nothing there: a window behind showed through a pixel's width of ours, on the left, right and bottom. so the
+/// line is asked for in black (`create`), and the top, which has no frame, is given this much of it
+/// (`frame_without_top`): the line is then outside the picture there too, and covers no row of it.
+static EDGE: AtomicI32 = AtomicI32::new(0);
+
+/// measures the line. the system says none for a window not on screen yet: there it is taken as one pixel, which it
+/// is at every scale tried, and measured again once the window is shown (`create`).
+unsafe fn measure_edge(hwnd: HWND) -> i32 {
+    let mut thick = 0u32;
+    let known = DwmGetWindowAttribute(hwnd, DWMWA_VISIBLE_FRAME_BORDER_THICKNESS, &mut thick as *mut u32 as *mut c_void, 4).is_ok();
+    let edge = if known { (thick as i32).max(1) } else { 0 };
+    EDGE.store(edge, Ordering::Relaxed);
+    edge
+}
+
+/// how much wider and taller than its picture area the window is: the system's frame on the left, right and bottom,
+/// and on top the line round the window alone. (left, right, top, bottom)
+fn frame() -> (i32, i32, i32, i32) {
     let mut r = RECT::default();
     unsafe {
         let _ = AdjustWindowRectEx(&mut r, STYLE, false, WINDOW_EX_STYLE(0));
     }
-    (-r.left, r.right, r.bottom)
+    (-r.left, r.right, EDGE.load(Ordering::Relaxed), r.bottom)
 }
 
 /// the window's position and size that give `client` pixels of picture, centered on the work area.
 fn outer(client: (u32, u32)) -> (i32, i32, i32, i32) {
-    let (left, right, bottom) = frame();
+    let (left, right, top, bottom) = frame();
     let area = work_area();
-    let (w, h) = (client.0 as i32 + left + right, client.1 as i32 + bottom);
+    let (w, h) = (client.0 as i32 + left + right, client.1 as i32 + top + bottom);
     (area.left + ((area.right - area.left) - w) / 2, (area.top + ((area.bottom - area.top) - h) / 2).max(area.top), w, h)
 }
 
@@ -135,14 +153,24 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
         let (x, y, w, h) = outer(client);
         let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), &name, w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, grabbed: (POINT::default(), RECT::default()), moving: false, restore: None, pointer: Pointer::Arrow as usize })) as isize);
-        // square corners and no border line, so no pixel of the picture is covered (windows 11; ignored before it)
-        let (square, no_color) = (1u32, 0xffff_fffeu32);
+        // square corners, and the line round the window black: it lies outside the picture and covers no pixel of
+        // it. with no line at all the system left that pixel's width bare (`EDGE`). (windows 11; ignored before it)
+        let (square, black) = (1u32, 0u32);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const u32 as *const c_void, 4);
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &no_color as *const u32 as *const c_void, 4);
-        // the frame was measured before this procedure was listening: have it measured again, our way
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &black as *const u32 as *const c_void, 4);
+        // the frame was measured before this procedure was listening, and before the line round it was known: have
+        // it measured again, our way, for a window the size that gives the picture its pixels
+        measure_edge(hwnd);
+        let (x, y, w, h) = outer(client);
         let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
         DragAcceptFiles(hwnd, true);
         let _ = ShowWindow(hwnd, SW_SHOW);
+        // on screen, the line's thickness is the system's to say: lay the frame out again if it is not the one taken
+        let taken = EDGE.load(Ordering::Relaxed);
+        if measure_edge(hwnd) != taken {
+            let (x, y, w, h) = outer(client);
+            let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         Ok(Handle(hwnd))
     }
 }
@@ -423,6 +451,10 @@ unsafe fn frame_without_top(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
     let dpi = GetDpiForWindow(hwnd);
     let overhang = if IsZoomed(hwnd).as_bool() { GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) } else { 0 };
     (*params).rgrc[0].top = top + overhang;
+    // the line round the window has its pixel at the top too (`EDGE`). a maximized window has no line in sight
+    if framed(hwnd) && !IsZoomed(hwnd).as_bool() {
+        (*params).rgrc[0].top += measure_edge(hwnd);
+    }
     LRESULT(0)
 }
 
@@ -477,10 +509,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_NCCALCSIZE if wp.0 != 0 => return frame_without_top(hwnd, msg, wp, lp),
         WM_NCHITTEST => return hit(hwnd, msg, wp, lp),
         WM_GETMINMAXINFO => {
-            let (left, right, bottom) = frame();
+            let (left, right, top, bottom) = frame();
             let scale = GetDpiForWindow(hwnd).max(96) as i32;
             let info = lp.0 as *mut MINMAXINFO;
-            (*info).ptMinTrackSize = POINT { x: MIN_CLIENT.0 * scale / 96 + left + right, y: MIN_CLIENT.1 * scale / 96 + bottom };
+            (*info).ptMinTrackSize = POINT { x: MIN_CLIENT.0 * scale / 96 + left + right, y: MIN_CLIENT.1 * scale / 96 + top + bottom };
             return LRESULT(0);
         }
         _ => {}

@@ -60,6 +60,8 @@ pub(crate) struct View {
     /// the spare reader has been asked how the clip's last frame and its first compare, and what it said
     seam_asked: bool,
     seam_change: Option<Seam>,
+    /// whether it played and the frame it was on before play was last toggled, for a double click to put back
+    before_toggle: Option<(bool, usize)>,
 }
 
 impl View {
@@ -71,7 +73,7 @@ impl View {
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new((clip.width, clip.height));
-        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, seam_asked: false, seam_change: None })
+        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None })
     }
 
     /// looks for the clip's sound, once. stills have none. returns why, when there is sound that cannot be played.
@@ -407,7 +409,19 @@ impl View {
     /// does what the controls asked of the clip. the tabs' and the window's own are not for it.
     fn act(&mut self, action: &Action, window: (f32, f32), settings: &mut Settings) {
         match action {
-            Action::TogglePlay => self.transport.set_playing(!self.transport.playing()),
+            Action::TogglePlay => {
+                self.before_toggle = Some((self.transport.playing(), self.transport.frame()));
+                self.transport.set_playing(!self.transport.playing());
+            }
+            Action::PlayAsBefore => {
+                if let Some((playing, frame)) = self.before_toggle.take() {
+                    self.transport.set_playing(playing);
+                    // a clip that stood still goes back to the frame it stood on
+                    if !playing {
+                        self.transport.go(frame as i64);
+                    }
+                }
+            }
             Action::Step(by) => self.transport.step(*by),
             Action::Seek(frame) => self.transport.go(*frame as i64),
             Action::SeekPlace(place) => self.transport.go_place(*place),
@@ -1413,6 +1427,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let playing_now = Arc::new(AtomicBool::new(false));
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
+    ui.set_pinned(settings.pin_controls);
     ui.set_buttons_room(window::buttons_room());
     // the player's one way out to the speakers, as loud as it was left
     let mut speaker = Speaker::new();
@@ -1743,6 +1758,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if settings.browser_recent != ui.browser_recent() {
             settings.browser_recent = ui.browser_recent().to_vec();
         }
+        settings.pin_controls = ui.pinned();
         for action in &out.actions {
             match action {
                 Action::NewTab => tabs.new_tab(),

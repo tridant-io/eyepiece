@@ -265,6 +265,9 @@ pub struct Model<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Action {
     TogglePlay,
+    /// the second click of a double click on the picture: play and the frame go back to what the first click, which
+    /// played or paused as any click does, found
+    PlayAsBefore,
     Step(i64),
     Seek(usize),
     /// loop analysis: to this place in its round
@@ -358,6 +361,12 @@ pub struct Ui {
     /// the controls are wanted on screen, and until when with the pointer at rest
     shown: bool,
     awake_until: f64,
+    /// the controls are pinned: up wherever the pointer goes or rests. kept between runs
+    pinned: bool,
+    /// the window filled the display at the last pass, and until when the pointer's moves do not bring the controls
+    /// up: the moment after it began to
+    was_full: bool,
+    still_until: f64,
     /// the zoom chip shows until then; the view changed since the last pass, which brings it back
     chip_until: f64,
     view_changed: bool,
@@ -429,6 +438,9 @@ impl Ui {
             cross: false,
             shown: false,
             awake_until: 0.0,
+            pinned: false,
+            was_full: false,
+            still_until: 0.0,
             chip_until: 0.0,
             view_changed: false,
             timecode,
@@ -489,6 +501,15 @@ impl Ui {
     /// them there, draws none of its own, and the tabs start after it.
     pub fn set_buttons_room(&mut self, room: Option<f32>) {
         self.buttons_room = room;
+    }
+
+    /// whether the controls are pinned up (the pin at the bar's far left), which is kept between runs.
+    pub fn pinned(&self) -> bool {
+        self.pinned
+    }
+
+    pub fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
     }
 
     pub fn set_browser_recent(&mut self, recent: Vec<PathBuf>) {
@@ -720,7 +741,7 @@ impl Ui {
     /// a clip is up: the picture takes the pointer, and the controls come and go over it.
     fn clip(&mut self, ui: &mut egui::Ui, screen: &Screen, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let full = ui.max_rect();
-        // the picture, under everything else. a plain click on it shows or hides the controls. a drag moves the
+        // the picture, under everything else. a plain click on it plays or pauses. a drag moves the
         // window while the whole frame is in view, and the picture when it is larger than the window. a double click
         // fills the display with it, or puts the window back (the owner's word, in place of the design's fit and
         // last zoom). in markup mode a drag draws instead, and a click and a double click do nothing of the kind
@@ -740,9 +761,9 @@ impl Ui {
         let pointer = ui.ctx().pointer_latest_pos();
         let pressed = ui.input(|i| i.pointer.any_pressed());
         // egui counts a double click by time and place, not by what was hit: one whose first press chose a row of the
-        // right-click menu or took the table of keys away is not one on the picture
+        // right-click menu, closed a menu or took the table of keys away is not one on the picture
         if pressed {
-            self.taken = [self.taken[1], self.keys || (self.commands.is_some() && pointer.is_some_and(|p| self.commands_rect.contains(p)))];
+            self.taken = [self.taken[1], self.keys || self.commands.is_some() || self.menu.is_some()];
         }
         if picture.double_clicked() && !self.taken[0] && !self.markup.on {
             actions.push(Action::Fullscreen);
@@ -770,23 +791,35 @@ impl Ui {
         self.keys &= !pressed;
 
         // the design's rule: moving the pointer brings the controls up; they go when it rests for a while off them,
-        // or leaves the window; a plain click on the picture shows or hides them at once. an open menu keeps them up.
+        // or leaves the window. an open menu keeps them up.
         // marking up, only the top 40 and the bottom 60 bring them up, so the picture is free to draw on: in between
         // they go 0.9 s after the pointer comes there (prototype `wake`)
         let middle = self.markup.on && pointer.is_some_and(|p| p.y > full.top() + 40.0 && p.y < full.bottom() - 60.0);
+        // filling the display takes the controls away at once (the owner's word, 2026-11-24): the picture and nothing
+        // else, until the pointer next moves. the window says the pointer moved as it changes size, so for half a
+        // second its moves do not count
+        if screen.fullscreen && !std::mem::replace(&mut self.was_full, screen.fullscreen) {
+            (self.shown, self.still_until) = (false, now + 0.5);
+        }
+        self.was_full = screen.fullscreen;
+        let still = now < self.still_until;
         if self.moved && middle {
             self.awake_until = self.awake_until.min(now + 0.9);
-        } else if self.moved {
+        } else if self.moved && !still {
             (self.shown, self.awake_until) = (true, now + IDLE);
         }
         if self.moved || std::mem::take(&mut self.view_changed) {
             self.chip_until = now + CHIP_IDLE;
         }
-        if picture.clicked() && !self.markup.on {
-            self.shown = !self.shown || self.moved;
-            self.awake_until = now + IDLE;
+        // a plain click on the picture plays or pauses: the owner's word (2026-11-24), in place of the design's show
+        // and hide. not the click that closed a menu or took the table of keys away, nor the second of two whose
+        // first did, nor one on the metadata panel. the second click of a double click takes the first one back, so
+        // filling the display leaves play, and the frame of a clip that stood still, as they were
+        let on_facts = (self.facts_pinned || self.facts_up) && pointer.is_some_and(|p| self.facts_rect.contains(p));
+        if picture.clicked() && !self.markup.on && !self.taken[1] && !(picture.double_clicked() && self.taken[0]) && !on_facts {
+            actions.push(if picture.double_clicked() { Action::PlayAsBefore } else { Action::TogglePlay });
         }
-        if self.menu.is_some() || self.commands.is_some() {
+        if self.menu.is_some() || self.commands.is_some() || self.pinned {
             self.shown = true;
         } else {
             if !self.inside && !held {
@@ -1159,7 +1192,14 @@ impl Ui {
             x += lead + w + GAP;
             r
         };
-        let prev = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
+        // the pin, first and a little apart: while it is on the controls stay up, wherever the pointer goes or rests
+        // (the owner's word, 2026-11-24). it has no key
+        let pin = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "pin", Icon::Pin, if self.pinned { Lit::Active } else { Lit::No });
+        if pin.clicked() {
+            self.pinned = !self.pinned;
+        }
+        self.hint(&pin, Some((if self.pinned { "let the controls go" } else { "keep the controls up" }.to_string(), String::new())));
+        let prev = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
         if prev.clicked() {
             actions.push(Action::Step(-1));
         }
@@ -1336,7 +1376,8 @@ impl Ui {
         let (left, low) = (button.center().x < full.center().x, button.center().y > full.center().y);
         let corner = Pos2::new(if left { button.left() } else { button.right() }, if low { full.bottom() - (1.0 + ROW + TIME) - 7.0 } else { full.top() + STRIP + 7.0 });
         let anchor = Align2([if left { egui::Align::Min } else { egui::Align::Max }, if low { egui::Align::Max } else { egui::Align::Min }]);
-        chip(ui, corner, anchor, &[(does, FG), (format!(" · {key}"), DIM)], 1.0);
+        let key = if key.is_empty() { key } else { format!(" · {key}") };
+        chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0);
     }
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
@@ -1760,6 +1801,73 @@ mod tests {
         [(x, y, None), (x, y, Some((Left, true))), (x, y, Some((Left, false))), (x, y, None)]
     }
 
+    /// the pin at the bar's far left keeps the controls up when the pointer leaves the window, where they go at
+    /// once without it; a second click lets them go again. the bar's row is 32 above the window's bottom, the pin
+    /// 23 in, and the previous-frame button after it.
+    #[test]
+    fn the_pin_keeps_the_controls_up() {
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        assert_eq!(drive(&mut ui, &click(23.0, 328.0)), vec![]);
+        assert!(ui.pinned() && ui.shown);
+        ui.pointer_leave();
+        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None });
+        out.textures.clear();
+        assert!(ui.shown && out.shown, "pinned, the controls stay when the pointer leaves");
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive(&mut ui, &click(63.0, 328.0)), vec![Action::Step(-1)], "the previous-frame button stands after the pin");
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive(&mut ui, &click(23.0, 328.0)), vec![]);
+        assert!(!ui.pinned());
+        ui.pointer_leave();
+        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None });
+        out.textures.clear();
+        assert!(!ui.shown, "not pinned, they go with the pointer");
+    }
+
+    /// filling the display takes the controls away at once (the owner's word), though the pointer is on the bar and
+    /// the window, changing size, says it moved; pinned, they stay.
+    #[test]
+    fn entering_fullscreen_takes_the_controls_away() {
+        let screen = |fullscreen| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen, toast: None };
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        drive_on(&mut ui, &screen(false), &[(600.0, 328.0, None), (601.0, 328.0, None)]);
+        assert!(ui.shown, "the pointer on the bar brings the controls up");
+        drive_on(&mut ui, &screen(true), &[(601.0, 328.0, None), (640.0, 300.0, None)]);
+        assert!(!ui.shown, "they went as the display was filled");
+        std::thread::sleep(Duration::from_millis(700));
+        drive_on(&mut ui, &screen(true), &[(650.0, 300.0, None)]);
+        assert!(ui.shown, "and a move of the pointer a moment later brings them back");
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        ui.set_pinned(true);
+        drive_on(&mut ui, &screen(false), &[(600.0, 328.0, None)]);
+        drive_on(&mut ui, &screen(true), &[(601.0, 328.0, None)]);
+        assert!(ui.shown, "pinned, they stay");
+    }
+
+    /// a plain click on the picture plays or pauses (the owner's word, in place of the design's show and hide). of
+    /// a double click the first does too, and the second takes it back and fills the display. a drag does not, nor
+    /// does the click that only closes the right-click menu.
+    #[test]
+    fn a_plain_click_on_the_picture_plays_or_pauses() {
+        use crate::event::Button::{Left, Right};
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        assert_eq!(drive(&mut ui, &click(450.0, 180.0)), vec![Action::TogglePlay]);
+        std::thread::sleep(Duration::from_millis(350));
+        let twice = [(450.0, 180.0, None), (450.0, 180.0, Some((Left, true))), (450.0, 180.0, Some((Left, false))), (450.0, 180.0, Some((Left, true))), (450.0, 180.0, Some((Left, false))), (450.0, 180.0, None)];
+        assert_eq!(drive(&mut ui, &twice), vec![Action::TogglePlay, Action::Fullscreen, Action::PlayAsBefore]);
+        std::thread::sleep(Duration::from_millis(350));
+        let drag = [(450.0, 180.0, None), (450.0, 180.0, Some((Left, true))), (480.0, 200.0, None), (480.0, 200.0, Some((Left, false))), (480.0, 200.0, None)];
+        assert_eq!(drive(&mut ui, &drag), vec![Action::MoveWindow]);
+        std::thread::sleep(Duration::from_millis(350));
+        let menu = [(450.0, 180.0, None), (450.0, 180.0, Some((Right, true))), (450.0, 180.0, Some((Right, false))), (450.0, 180.0, None)];
+        assert_eq!(drive(&mut ui, &menu), vec![]);
+        assert!(ui.commands.is_some(), "the right-click menu is up");
+        assert_eq!(drive(&mut ui, &click(60.0, 300.0)), vec![], "the click that closes the menu");
+        assert!(ui.commands.is_none());
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive(&mut ui, &click(60.0, 300.0)), vec![Action::TogglePlay]);
+    }
+
     /// on a mac the window's buttons are the system's own, at the strip's left: the strip keeps their room, has none
     /// of its own there or at the right, and the tabs start after the room. "clip" is 4 of the type's 6.9-wide
     /// letters in a tab 40 wider, with its close mark 14 from the tab's end.
@@ -1886,8 +1994,8 @@ mod tests {
     fn the_click_that_takes_the_table_of_keys_away_does_nothing_else() {
         use crate::event::Button::Left;
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        // the bar's next-frame button: 30 wide from 68, 32 up from the bottom
-        let next = (83.0, 328.0);
+        // the bar's next-frame button: 30 wide from 112, 32 up from the bottom
+        let next = (127.0, 328.0);
         drive(&mut ui, &[(next.0, next.1, None)]);
         ui.show_keys();
         let actions = drive(&mut ui, &[(next.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
