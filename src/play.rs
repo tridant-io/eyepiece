@@ -899,6 +899,8 @@ mod tests {
         t.go(99);
         assert!(!t.follow(0.3) || t.frame() == 99);
         assert_eq!(t.length(), 100.0 / 60.0);
+        // a clip whose frames do not all last the same is as long as the end of its last
+        assert_eq!(Transport::new(4, 4.0, 60.0).with_starts(Some(vec![0.0, 0.1, 0.5, 0.6, 1.0])).length(), 1.0);
     }
 
     #[test]

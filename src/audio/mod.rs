@@ -196,9 +196,11 @@ fn work(mut decoder: Decoder, commands: Receiver<Option<Play>>) {
 }
 
 impl Play {
-    /// how many frames of sound `seconds` of the clip come to, at the play's speed and the device's rate.
-    fn frames(&self, seconds: f64) -> u64 {
-        (seconds / self.speed * self.rate as f64).round() as u64
+    /// the frame of the play's sound at which it comes to the end of its clip, `round` seconds long, for the `n`th
+    /// time (the first is none). each is counted from the play's start: counted round by round, the part of a frame
+    /// each round's length is rounded by would add up, and the sound leave its clock.
+    fn seam(&self, round: f64, n: u64) -> u64 {
+        (((round - self.seconds).max(0.0) + n as f64 * round) / self.speed * self.rate as f64).round() as u64
     }
 }
 
@@ -209,9 +211,10 @@ struct Job {
     /// decoded, and not yet all in the ring
     chunk: Vec<f32>,
     sent: usize,
-    /// the play, for starting its sound again; and, for one that goes round, how many frames of the round it is
-    /// in are still to be made
+    /// the play, for starting its sound again; and, for one that goes round, how many times it has come round and
+    /// how many frames of the round it is in are still to be made
     play: Play,
+    rounds: u64,
     left: u64,
 }
 
@@ -220,8 +223,8 @@ impl Job {
     fn start(decoder: &mut Decoder, play: Play) -> Option<Job> {
         match guarded(|| Speed::start(decoder, play.seconds, play.speed, play.rate, play.channels)) {
             Ok(speed) => {
-                let left = play.round.map_or(0, |round| play.frames((round - play.seconds).max(0.0)));
-                Some(Job { feed: play.feed.clone(), speed, chunk: Vec::new(), sent: 0, play, left })
+                let left = play.round.map_or(0, |round| play.seam(round, 0));
+                Some(Job { feed: play.feed.clone(), speed, chunk: Vec::new(), sent: 0, play, rounds: 0, left })
             }
             Err(_) => {
                 play.feed.end();
@@ -262,7 +265,10 @@ impl Job {
             self.left -= made.min(self.left);
             if self.left == 0 {
                 match guarded(|| Speed::start(decoder, 0.0, self.play.speed, self.play.rate, self.play.channels)) {
-                    Ok(speed) => (self.speed, self.left) = (speed, self.play.frames(round)),
+                    Ok(speed) => {
+                        self.rounds += 1;
+                        (self.speed, self.left) = (speed, self.play.seam(round, self.rounds) - self.play.seam(round, self.rounds - 1));
+                    }
                     // the sound will not start again: it ends here, and the clock runs on in silence
                     Err(_) => self.play.round = None,
                 }
@@ -457,6 +463,21 @@ mod tests {
         commands.send(None).unwrap();
         drop(commands);
         worker.join().unwrap();
+    }
+
+    /// a round of 48,000.48 frames: counted one at a time each would be 48,000, and a hundred of them 48 frames
+    /// short of where the clock, which counts in seconds, comes round.
+    #[test]
+    fn the_seams_of_a_sound_that_goes_round_stay_with_its_clock() {
+        let round = 1.00001;
+        let play = Play { feed: Arc::new(Feed::new(48_000, 2)), seconds: 0.25, speed: 1.0, rate: 48_000, channels: 2, round: Some(round) };
+        assert_eq!((play.seam(round, 0), play.seam(round, 1), play.seam(round, 100)), (36_000, 84_001, 4_836_048));
+        // at the hundredth seam the clock is within a frame of the clip's start, or of its end
+        let at = place(0.25, play.seam(round, 100), 48_000, 1.0, Some(round));
+        assert!(at.min(round - at) < 1.0 / 48_000.0, "{at}");
+        // at half speed a round takes twice the frames
+        let slow = Play { speed: 0.5, seconds: 0.0, ..play };
+        assert_eq!(slow.seam(round, 0), 96_001);
     }
 
     #[test]
