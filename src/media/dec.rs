@@ -7,8 +7,9 @@ use ffmpeg_sys_next as ffi;
 use std::ffi::{c_void, CStr};
 use std::ptr;
 
-/// surfaces a hardware decoder may hold beyond its own needs: the frames kept ready around the one on screen.
-const EXTRA_SURFACES: i32 = 16;
+/// surfaces a hardware decoder is given beyond its own needs and the frames the caller keeps: the frames ready around
+/// the one on screen, and the one being drawn.
+const SPARE_SURFACES: usize = 8;
 
 /// what a hardware decoder needs from the renderer: its device, and the one lock both sides take around device calls.
 /// ffmpeg requires that lock to be recursive.
@@ -153,7 +154,7 @@ unsafe extern "C" fn pick_format(ctx: *mut ffi::AVCodecContext, formats: *const 
 
 /// hands ffmpeg the renderer's device and lock.
 #[cfg(windows)]
-unsafe fn attach(ctx: *mut ffi::AVCodecContext, hardware: &Hardware) -> Result<(), String> {
+unsafe fn attach(ctx: *mut ffi::AVCodecContext, hardware: &Hardware, kept: usize) -> Result<(), String> {
     use windows::core::Interface;
     use windows::Win32::Graphics::Direct3D11::ID3D11Device;
     let hw = ffi::av_hwdevice_ctx_alloc(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
@@ -170,14 +171,16 @@ unsafe fn attach(ctx: *mut ffi::AVCodecContext, hardware: &Hardware) -> Result<(
     }
     (*ctx).hw_device_ctx = hw;
     (*ctx).get_format = Some(pick_format);
-    (*ctx).extra_hw_frames = EXTRA_SURFACES;
+    // the decoder's surfaces are one pool of a fixed size: a picture the caller still holds is a surface it cannot
+    // decode into, so the pool has to cover what the caller keeps
+    (*ctx).extra_hw_frames = (kept + SPARE_SURFACES) as i32;
     // the gpu does the decoding: threads of our own would only hold frames back
     (*ctx).thread_count = 1;
     Ok(())
 }
 
 #[cfg(not(windows))]
-unsafe fn attach(_ctx: *mut ffi::AVCodecContext, _hardware: &Hardware) -> Result<(), String> {
+unsafe fn attach(_ctx: *mut ffi::AVCodecContext, _hardware: &Hardware, _kept: usize) -> Result<(), String> {
     Ok(())
 }
 
@@ -185,7 +188,8 @@ impl Decoder {
     /// a decoder for `stream`. with `hardware`, the system's decoder is tried first and software is the fallback.
     /// `one_frame_at_a_time` makes all cores work on the slices of one frame, so a frame comes out for every packet
     /// that goes in: right for codecs whose frames stand alone, where a lone step must not wait behind other frames.
-    pub fn open(input: &Input, stream: usize, hardware: Option<&Hardware>, one_frame_at_a_time: bool) -> Result<Decoder, String> {
+    /// `kept` is how many decoded pictures the caller will hold on to at once.
+    pub fn open(input: &Input, stream: usize, hardware: Option<&Hardware>, one_frame_at_a_time: bool, kept: usize) -> Result<Decoder, String> {
         unsafe {
             let st = *(*input.ctx).streams.add(stream);
             let par = (*st).codecpar;
@@ -206,7 +210,7 @@ impl Decoder {
                 (*ctx).thread_type = ffi::FF_THREAD_SLICE;
             }
             let attached = match hardware {
-                Some(h) => attach(ctx, h),
+                Some(h) => attach(ctx, h, kept),
                 None => Ok(()),
             };
             let opened = attached.and_then(|()| match ffi::avcodec_open2(ctx, codec, ptr::null_mut()) {

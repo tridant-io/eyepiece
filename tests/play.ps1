@@ -5,8 +5,9 @@
 # big clips are not in the repo: pass your own. a window opens for each. a clip fails when it did not open, when any
 # frame could not be shown, or when it was later than -MaxLate. exits 1 if any clip fails.
 param([Parameter(Mandatory = $true)][string[]]$Clips, [int]$Seconds = 10, [int]$MaxLate = 5,
-    [string]$Exe = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target\release\eyepiece.exe'))
+    [string]$Exe)
 $ErrorActionPreference = 'Stop'
+if (-not $Exe) { $Exe = Join-Path (Split-Path $PSScriptRoot -Parent) 'target\release\eyepiece.exe' }
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class EyepiecePlay {

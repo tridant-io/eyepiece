@@ -8,8 +8,24 @@ use super::source::{Loader, Source};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// decoded pictures the loader keeps after handing them out, so a frame passed on the way to another is not decoded twice
-const RECENT: usize = 4;
+/// memory given to decoded pictures kept after they were handed out. in a clip with key frames far apart, a frame
+/// that is not kept costs a decode of everything since the key frame before it, so the frames just played or just
+/// passed are kept: a step back inside them is one refresh. (with four kept, every fourth step back on a 4K h.264
+/// clip with key frames 250 apart cost 1.5 s. measured.)
+const KEPT_BYTES: usize = 512 << 20;
+/// never fewer than this, and never more: a hardware decoder's surfaces are one array, and drivers cap its length
+const KEPT_RANGE: (usize, usize) = (8, 32);
+/// a clip whose frames all stand alone needs none kept for decoding; a few save repeating work
+const KEPT_ALONE: usize = 4;
+
+/// how many decoded pictures to keep for a clip of this size. sized for the largest layout a gpu decodes (two bytes a
+/// sample, 4:2:0), since the layout is not known until the first frame is decoded.
+fn kept(width: usize, height: usize, alone: bool) -> usize {
+    if alone {
+        return KEPT_ALONE;
+    }
+    (KEPT_BYTES / (width * height * 3).max(1)).clamp(KEPT_RANGE.0, KEPT_RANGE.1)
+}
 /// a frame this close ahead of the decoder is reached by decoding on, even past a key frame: restarting the decoder at
 /// a key frame costs far more than a few frames of decoding (about 150 ms for 4K hevc in hardware, measured)
 const NEAR: usize = 16;
@@ -31,28 +47,34 @@ struct VideoLoader {
     /// the frame the decoder puts out next, when that is known
     next: Option<usize>,
     recent: VecDeque<(usize, Arc<Picture>)>,
+    /// how many pictures `recent` holds at most
+    kept: usize,
+    /// samples that are decoded and not shown (an edit list hides them): frame n is at about place n + hidden
+    hidden: usize,
 }
 
 impl VideoLane {
     /// opens the file for decoding and decodes the first frame, which says how pictures are stored. `step` is the
     /// time between frames in the stream's units (the file's constant frame duration).
-    pub fn open(path: &str, stream: usize, samples: Vec<Sample>, step: i64, hardware: Option<Hardware>) -> Result<VideoLane, String> {
+    pub fn open(path: &str, stream: usize, samples: Vec<Sample>, step: i64, size: (usize, usize), hardware: Option<Hardware>) -> Result<VideoLane, String> {
         let input = Input::open(path)?;
         // when every sample is a key frame the frames stand alone: in software, decode one at a time, so a step
         // never waits behind other frames
         let alone = samples.iter().all(|s| s.key);
-        let mut decoder = Decoder::open(&input, stream, hardware.as_ref(), alone)?;
+        let kept = kept(size.0, size.1, alone);
+        let mut decoder = Decoder::open(&input, stream, hardware.as_ref(), alone, kept)?;
         let mut first = decoder.next(&input)?.ok_or("no picture in this file")?;
         if hardware.is_some() && !first.hardware() {
             // the gpu did not take this stream (prores, 10-bit h.264, 4:2:2 on most cards): start again in software,
             // which wants its own threads
-            decoder = Decoder::open(&input, stream, None, alone)?;
+            decoder = Decoder::open(&input, stream, None, alone, kept)?;
             decoder.seek(&input, samples.first().map_or(0, |s| s.time))?;
             first = decoder.next(&input)?.ok_or("no picture in this file")?;
         }
         let layout = first.layout()?;
-        let frames = samples.len();
-        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), step: step.max(1), next: Some(1), recent: VecDeque::new() };
+        let hidden = samples.iter().filter(|s| s.hidden).count();
+        let frames = samples.len() - hidden;
+        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), step: step.max(1), next: Some(1), recent: VecDeque::new(), kept, hidden };
         loader.remember(0, Arc::new(first));
         Ok(VideoLane { source: Source::start(frames, loader)?, layout })
     }
@@ -60,7 +82,7 @@ impl VideoLane {
 
 impl VideoLoader {
     fn remember(&mut self, frame: usize, picture: Arc<Picture>) {
-        if self.recent.len() == RECENT {
+        if self.recent.len() == self.kept {
             self.recent.pop_front();
         }
         self.recent.push_back((frame, picture));
@@ -85,11 +107,11 @@ impl Loader for VideoLoader {
             return Ok(Some(picture.clone()));
         }
         // a key frame's place in decode order is never later than its place in display order, so the last key frame
-        // at or before this frame's number is where decoding can start
-        let mut key = self.key_at_or_before(frame);
+        // at or before this frame's place is where decoding can start
+        let mut key = self.key_at_or_before(frame + self.hidden);
         // decode on from where the decoder is when the frame is ahead and either near, or with no key frame in
         // between to start from instead. otherwise start at the key frame
-        let walk = self.next.is_some_and(|next| next <= frame && (frame - next <= NEAR || key <= next));
+        let walk = self.next.is_some_and(|next| next <= frame && (frame - next <= NEAR || key <= next + self.hidden));
         if !walk {
             self.decoder.seek(&self.input, self.samples[key].time)?;
             self.next = None;
@@ -122,5 +144,21 @@ impl Loader for VideoLoader {
             self.decoder.seek(&self.input, self.samples[key].time)?;
             self.next = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kept_frames_follow_the_memory_budget() {
+        // 4K: 25 MB a picture at most, so about twenty fit in the budget
+        assert_eq!(kept(3840, 2160, false), 21);
+        // small pictures stop at the cap, huge ones at the floor
+        assert_eq!(kept(1920, 1080, false), 32);
+        assert_eq!(kept(7680, 4320, false), 8);
+        // frames that stand alone need none kept for decoding
+        assert_eq!(kept(3840, 2160, true), 4);
     }
 }

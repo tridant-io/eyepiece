@@ -32,6 +32,7 @@ pub struct Waiting {
     stream: usize,
     samples: Vec<Sample>,
     step: i64,
+    size: (usize, usize),
 }
 
 /// hap's variants by their container tag. ffmpeg knows only the first three; the rest it reports as no codec at all.
@@ -57,7 +58,9 @@ impl Clip {
         let mut samples = input.samples(video.index);
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
         let (codec, timeline, lane) = if let Some(codec) = hap_variant(&tag) {
-            // every hap frame stands alone, so file order is free to differ from time order: time order is what plays
+            // every hap frame stands alone, so file order is free to differ from time order: time order is what plays.
+            // what an edit list hides is not part of the clip
+            samples.retain(|s| !s.hidden);
             samples.sort_by_key(|s| s.time);
             let timeline = Timeline::new(video.time_base, &samples);
             (codec, timeline, Lane::Hap(HapLane::open(path, samples, video.width, video.height)?))
@@ -69,15 +72,24 @@ impl Clip {
                 other => return Err(format!("{path}: {other} ({tag}) does not play yet. this build plays hap, prores, h.264 and hevc.")),
             };
             // the samples stay in decode order. their decode times are evenly spaced exactly when the frames are
-            let timeline = Timeline::new(video.time_base, &samples);
-            let step = match (timeline.step(), samples.len()) {
+            let step = match (Timeline::new(video.time_base, &samples).step(), samples.len()) {
                 (Some(step), _) => step,
                 // mkv and fragmented mp4 carry no table of frames: they have to be counted by reading the file, which is not built
                 (None, 0) => return Err(format!("{path}: this kind of file does not list its frames up front. it does not play yet.")),
                 (None, 1) => 1,
                 (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates do not play yet.")),
             };
-            (codec, timeline, Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, step }))
+            // the clip's frames are the samples that are shown: what an edit list hides is decoded and never counted
+            let timeline = Timeline::even(video.time_base, samples.iter().filter(|s| !s.hidden).count(), step);
+            let size = (video.width, video.height);
+            let lane = if codec == "prores" {
+                // prores decodes in software here, so it need not wait for the graphics device: its first frame is
+                // being decoded while the device is made, which takes longer than anything else in a start
+                Lane::Video(VideoLane::open(path, video.index, samples, step, size, None)?)
+            } else {
+                Lane::Waiting(Waiting { path: path.to_string(), stream: video.index, samples, step, size })
+            };
+            (codec, timeline, lane)
         };
         Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane })
     }
@@ -85,7 +97,7 @@ impl Clip {
     /// starts decoding, for a clip that was waiting. `hardware` is the renderer's device, when there is one.
     pub fn start(&mut self, hardware: Option<Hardware>) -> Result<(), String> {
         if let Lane::Waiting(w) = &mut self.lane {
-            let lane = VideoLane::open(&w.path, w.stream, std::mem::take(&mut w.samples), w.step, hardware)?;
+            let lane = VideoLane::open(&w.path, w.stream, std::mem::take(&mut w.samples), w.step, w.size, hardware)?;
             self.lane = Lane::Video(lane);
         }
         Ok(())
@@ -142,10 +154,10 @@ mod tests {
     }
 
     /// a number that changes when a picture's luma changes.
-    fn luma(picture: &Picture) -> u64 {
+    fn luma(picture: &Picture, width: usize) -> u64 {
         let layout = picture.layout().expect("layout");
         let (data, stride, rows) = picture.plane(0, layout.chroma_shift);
-        let row_bytes = 64 * (layout.stored.texel_bits as usize / 8);
+        let row_bytes = width * (layout.stored.texel_bits as usize / 8);
         (0..rows).flat_map(|r| &data[r * stride..r * stride + row_bytes]).fold(0xcbf29ce484222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
     }
 
@@ -160,7 +172,7 @@ mod tests {
             .map(|&frame| {
                 video.source.want(frame, false);
                 match video.source.get(frame, Duration::from_secs(10)) {
-                    Frame::Ready(picture) => luma(&picture),
+                    Frame::Ready(picture) => luma(&picture, c.width),
                     Frame::Pending => panic!("{name}: frame {frame} never arrived"),
                     Frame::Failed(why) => panic!("{name}: frame {frame}: {why}"),
                 }
@@ -184,6 +196,23 @@ mod tests {
             for (frame, picture) in order.iter().zip(jumped) {
                 assert_eq!(picture, straight[*frame], "{name}: frame {frame} reached by a jump is not frame {frame}");
             }
+        }
+    }
+
+    /// a clip cut out of a longer one without re-encoding keeps the frames its first shown frame was built from, and
+    /// hides them with an edit list. they are not frames of the clip: the count leaves them out, frame 0 is the first
+    /// frame shown, and the last frame can be reached. (tests/media/h264_cut_320.mp4 is h264_320.mp4 from its seventh
+    /// frame on: 24 samples stored, 18 shown.)
+    #[test]
+    fn frames_an_edit_list_hides_are_not_frames_of_the_clip() {
+        let cut = Clip::open(&media("h264_cut_320.mp4")).expect("open");
+        assert_eq!(cut.timeline.frames(), 18);
+        assert_eq!(cut.rate_text(), "15360/512 fps");
+        let whole = frames("h264_320.mp4", &(0..24).collect::<Vec<_>>());
+        let order = [0, 17, 9, 1, 16, 2, 17, 0];
+        let got = frames("h264_cut_320.mp4", &order);
+        for (frame, picture) in order.iter().zip(got) {
+            assert_eq!(picture, whole[frame + 6], "frame {frame} of the cut clip is not frame {} of the clip it was cut from", frame + 6);
         }
     }
 

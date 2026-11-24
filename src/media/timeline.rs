@@ -15,6 +15,11 @@ impl Timeline {
         Timeline { time_base, times: samples.iter().map(|s| s.time).collect() }
     }
 
+    /// `frames` frames that each last `step` time units.
+    pub fn even(time_base: (i64, i64), frames: usize, step: i64) -> Timeline {
+        Timeline { time_base, times: (0..frames as i64).map(|i| i * step).collect() }
+    }
+
     pub fn frames(&self) -> usize {
         self.times.len()
     }

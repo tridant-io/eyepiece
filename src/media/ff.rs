@@ -113,6 +113,9 @@ pub struct Sample {
     pub size: usize,
     pub time: i64,
     pub key: bool,
+    /// stored but not shown: an edit list starts the clip after it (a clip cut out of a longer one keeps the frames
+    /// its first shown frame was built from). the decoder still needs it; it is not a frame of the clip
+    pub hidden: bool,
 }
 
 pub struct Input {
@@ -171,7 +174,7 @@ impl Input {
             (0..n)
                 .filter_map(|i| {
                     let e = ffi::avformat_index_get_entry(st, i);
-                    (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp, key: (*e).flags() & ffi::AVINDEX_KEYFRAME != 0 })
+                    (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp, key: (*e).flags() & ffi::AVINDEX_KEYFRAME != 0, hidden: (*e).flags() & ffi::AVINDEX_DISCARD_FRAME != 0 })
                 })
                 .collect()
         }

@@ -21,3 +21,6 @@ ffmpeg -v error -y -f lavfi -i 'testsrc2=s=320x180:r=30' -frames:v 24 -c:v libx2
 # a stream gpus do not take (4:2:2, 10-bit), and a container that lists no frames up front
 ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30' -frames:v 6 -c:v libx264 -g 3 -pix_fmt yuv422p10le -an (Out-Clip 'h264_422_64.mp4')
 ffmpeg -v error -y -i (Out-Clip 'h264_64.mp4') -c copy (Out-Clip 'h264_64.mkv')
+# a clip cut from a longer one without re-encoding, starting between key frames: 24 samples stored, an edit list
+# hides the first 6, 18 are shown
+ffmpeg -v error -y -ss 0.2 -i (Out-Clip 'h264_320.mp4') -c copy (Out-Clip 'h264_cut_320.mp4')

@@ -12,10 +12,13 @@ what has been played on real files, at 4K and 60 frames a second:
 
 known gaps:
 
-- **stepping back in h.264 and hevc is not instant past a key frame.** one step back inside the frames kept ready is one refresh. a step back across a key frame decodes that whole group again: measured on the dev machine, 1.5 s for 4K h.264 with a key frame every 250 frames, and one refresh for 4K hevc with a key frame every 60 only because the group was still on hand. the design's answer, frames kept on the gpu for stepping back, is not built.
+- **stepping back in h.264 and hevc is instant only inside the frames kept.** the player keeps the frames it last decoded, as many as fit in 512 MB (about 20 at 4K, 32 at most), and a step back inside them is one or two refreshes. the step that leaves them decodes again from the key frame before: on the dev machine that one step took 357 ms on 4K hevc with a key frame every 60, and up to 1.5 s on 4K h.264 with a key frame every 250. `tests\backstep.ps1` measures it on a clip of your own. hap and prores frames stand alone and are not affected.
+- **a cold start is slower than the 250 ms target.** from the process starting to the first picture, on the dev machine, six launches each: hap q 285 ms, prores 332 ms, h.264 360 ms, hevc 376 ms (4K clips, medians; `tests\launch.ps1`). making the graphics device is most of it, as phase 0 found.
+- the installed folder is 113 MB against a 60 MB target: ffmpeg's decoder library is 100 MB of it, built with every decoder there is. a build with only ours is later work.
 - chroma is read at the nearest sample, not blended at the file's siting yet.
 - a file that does not name its color matrix gets the usual assumption (bt.709 at 720 lines and up, bt.601 below), and nothing on screen says so until the metadata panel exists.
 - variable frame rates do not play. mkv and fragmented mp4 do not play: they carry no table of frames, and counting them by reading the file is not built.
+- the frame count leaves out what an edit list hides (a clip cut from a longer one without re-encoding), which is tested. pictures that are stored but cannot be decoded are not yet left out, and the counts have only been checked on clips made for the tests, not on files from cameras or other tools.
 - prores decodes in software only, with ffmpeg's decoder; alpha in a prores file is not drawn.
 - dropping a file on the window is written and not yet tested.
 
@@ -36,7 +39,7 @@ the title bar also says what went wrong: ` · n late` (refreshes that went by wi
 
 ## run it (windows)
 
-needs rust (stable, msvc target) and the visual studio c++ build tools.
+needs rust (stable, msvc target) and the visual studio c++ build tools. the tests need a gpu with a video decoder: one unit test and the end-to-end test check hardware decoding, and fail on a machine without it.
 
 ```powershell
 # once: fetches the pinned lgpl ffmpeg and a libclang into third_party (ignored by git)
@@ -47,6 +50,9 @@ cargo run --release -- some-clip.mov
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e.ps1
 # pacing on real clips of your own: plays each for 10 s; fails a clip that did not open, lost frames, or ran late
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& tests\play.ps1 -Clips a.mov,b.mov"
+# measurements on clips of your own: start to first picture, and what stepping back costs
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& tests\launch.ps1 -Clips a.mov,b.mp4"
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\backstep.ps1 -Clip a.mp4 -Frames 600 -KeyEvery 60
 ```
 
 keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. drop a file on the window to open it.
