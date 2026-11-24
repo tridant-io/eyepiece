@@ -54,8 +54,11 @@ struct Shared {
     /// the test seam: input is posted to the window, marked as the tests' own, and the real pointer and keyboard
     /// are not listened to
     posted: bool,
-    /// where on the screen the pointer was when its button last went down: a drag that moves the window starts there
-    pressed: POINT,
+    /// where on the screen the pointer was, and where the window, when the button last went down: a drag that moves
+    /// the window is measured from these
+    grabbed: (POINT, RECT),
+    /// the window is following the pointer
+    moving: bool,
     /// while fullscreen: where the window was, to put it back
     restore: Option<WINDOWPLACEMENT>,
     pointer_hidden: bool,
@@ -121,7 +124,7 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
         let posted_pointer = std::env::var_os("EYEPIECE_POSTED_POINTER").is_some();
         let (x, y, w, h) = outer(client);
         let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("eyepiece"), w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, pressed: POINT::default(), restore: None, pointer_hidden: false })) as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, grabbed: (POINT::default(), RECT::default()), moving: false, restore: None, pointer_hidden: false })) as isize);
         // square corners and no border line, so no pixel of the picture is covered (windows 11; ignored before it)
         let (square, no_color) = (1u32, 0xffff_fffeu32);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const u32 as *const c_void, 4);
@@ -195,8 +198,8 @@ pub fn set_title(window: Handle, title: &str) {
     post(window, WM_TITLE);
 }
 
-/// hands the window to the system to move with the pointer, whose button is down: snapping to the screen's edges
-/// included. the picture keeps playing meanwhile.
+/// has the window follow the pointer, whose button is down, until the button comes up. the picture keeps playing
+/// meanwhile.
 pub fn begin_move(window: Handle) {
     post(window, WM_BEGIN_MOVE);
 }
@@ -332,6 +335,14 @@ unsafe fn hit(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     } as isize)
 }
 
+/// puts the window where the pointer has carried it since the press.
+unsafe fn follow(hwnd: HWND, grabbed: &(POINT, RECT)) {
+    let mut now = POINT::default();
+    if GetCursorPos(&mut now).is_ok() {
+        let _ = SetWindowPos(hwnd, None, grabbed.1.left + now.x - grabbed.0.x, grabbed.1.top + now.y - grabbed.0.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
 unsafe extern "system" fn list_display(display: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> BOOL {
     (*(list.0 as *mut Vec<HMONITOR>)).push(display);
     true.into()
@@ -414,6 +425,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
+        // the window is being moved: it goes with the pointer, and the controls hear nothing of it
+        WM_MOUSEMOVE if (*shared).moving => {
+            follow(hwnd, &(*shared).grabbed);
+            LRESULT(0)
+        }
+        // the pointer was taken from us in the middle of a move (alt + tab, a dialog): the button's release will not
+        // come, so the move ends here
+        WM_CAPTURECHANGED if (*shared).moving => {
+            (*shared).moving = false;
+            let mut p = POINT::default();
+            let _ = GetCursorPos(&mut p);
+            let _ = ScreenToClient(hwnd, &mut p);
+            let _ = (*shared).events.send(Event::PointerButton { button: Button::Left, down: false, x: p.x as f32, y: p.y as f32 });
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             if !(*shared).tracking {
                 let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
@@ -440,9 +466,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // a drag that leaves the window keeps reporting to it until the button comes up
             if button == Button::Left {
                 if down {
-                    let _ = GetCursorPos(&mut (*shared).pressed);
+                    let _ = GetCursorPos(&mut (*shared).grabbed.0);
+                    let _ = GetWindowRect(hwnd, &mut (*shared).grabbed.1);
                     SetCapture(hwnd);
                 } else {
+                    (*shared).moving = false;
                     let _ = ReleaseCapture();
                 }
             }
@@ -450,28 +478,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let _ = (*shared).events.send(Event::PointerButton { button, down, x: x as f32, y: y as f32 });
             LRESULT(0)
         }
+        // the move is our own, not the system's: started this way (from a point that is no title bar, a moment after
+        // the press) the system's move sometimes did not start at all, and sometimes left the window a few pixels
+        // off the pointer. ours is measured from the press, so the window moves with the very point that was grabbed
         WM_BEGIN_MOVE => {
-            let _ = ReleaseCapture();
-            // only while the button is really still down: started after a quick flick has ended, the system's move
-            // would hold on to the window until the next click
+            // only while the button is really still down: a quick flick may have ended before this arrives
             let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
             if GetAsyncKeyState(primary.0 as i32) < 0 {
-                // the pointer has gone some way since the press, while the drag was being told from a click: the
-                // window catches up first, so it moves with the very point that was pressed. (a maximized window is
-                // put back by the system as it starts to move.)
-                let (mut now, mut at) = (POINT::default(), RECT::default());
-                if !IsZoomed(hwnd).as_bool() && GetCursorPos(&mut now).is_ok() && GetWindowRect(hwnd, &mut at).is_ok() {
-                    let pressed = (*shared).pressed;
-                    let _ = SetWindowPos(hwnd, None, at.left + now.x - pressed.x, at.top + now.y - pressed.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                if IsZoomed(hwnd).as_bool() {
+                    // a maximized window is put back to its own size first, with the pointer as far across it and as
+                    // far down it as it was, as a title bar does
+                    let (at, was) = (*shared).grabbed;
+                    let across = (at.x - was.left) as f32 / (was.right - was.left).max(1) as f32;
+                    let down = (at.y - was.top) as f32 / (was.bottom - was.top).max(1) as f32;
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                    let mut now = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut now);
+                    let (w, h) = (now.right - now.left, now.bottom - now.top);
+                    let (left, top) = (at.x - (across * w as f32) as i32, at.y - (down * h as f32) as i32);
+                    (*shared).grabbed.1 = RECT { left, top, right: left + w, bottom: top + h };
                 }
-                // the system's own move, as if its title bar had been grabbed. it returns when the button comes up
-                SendMessageW(hwnd, WM_SYSCOMMAND, Some(WPARAM((SC_MOVE | HTCAPTION) as usize)), Some(LPARAM(0)));
+                (*shared).moving = true;
+                follow(hwnd, &(*shared).grabbed);
             }
-            // the move took the button's release with it: report it here, where the pointer is now
-            let mut p = POINT::default();
-            let _ = GetCursorPos(&mut p);
-            let _ = ScreenToClient(hwnd, &mut p);
-            send(Event::PointerButton { button: Button::Left, down: false, x: p.x as f32, y: p.y as f32 });
             LRESULT(0)
         }
         WM_MINIMIZE => {

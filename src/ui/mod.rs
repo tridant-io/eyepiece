@@ -369,7 +369,15 @@ impl Ui {
         raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(self.scale);
         let mut actions = Vec::new();
         let ctx = self.ctx.clone();
-        let out = ctx.run_ui(raw, |ui| self.draw(ui, screen, now, &mut actions));
+        let out = ctx.run_ui(raw, |ui| {
+            // while a button is held the controls are looked at again every refresh: a drag is told from a click one
+            // pass after the press, and that pass must come even if the pointer's moves all arrived with the press
+            // (a busy machine hands them over in one lump)
+            if ui.input(|i| i.pointer.any_down()) {
+                ui.ctx().request_repaint();
+            }
+            self.draw(ui, screen, now, &mut actions)
+        });
         let again = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < Duration::from_secs(3600));
         self.moved = false;
         Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown }
