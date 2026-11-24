@@ -134,28 +134,32 @@ impl Transport {
     }
 
     /// the frames a reader should keep ready, most urgent first: the one on screen, then the next ones play will
-    /// show (whatever the speed, the direction, the loop mode or loop analysis make them), or, standing still, the
-    /// ones a single step either way would show.
+    /// show (whatever the speed, the direction, the loop mode or loop analysis make them). standing still, the ones
+    /// a single step either way would show come first, and then what play would show from here: play then starts
+    /// on frames that are already there.
     pub fn ahead(&self) -> Vec<usize> {
         let mut frames = vec![self.frame];
-        if self.playing {
-            let mut then = self.clone();
-            for _ in 0..AHEAD_REFRESHES {
-                then.tick();
-                if !then.playing || frames.len() > AHEAD {
-                    break;
-                }
-                if !frames.contains(&then.frame) {
-                    frames.push(then.frame);
+        let mut then = self.clone();
+        if !self.playing {
+            for by in [1, -1] {
+                let mut stepped = self.clone();
+                stepped.step(by);
+                if !frames.contains(&stepped.frame) {
+                    frames.push(stepped.frame);
                 }
             }
-        } else {
-            for by in [1, -1] {
-                let mut then = self.clone();
-                then.step(by);
-                if !frames.contains(&then.frame) {
-                    frames.push(then.frame);
-                }
+            then.set_playing(true);
+            if !frames.contains(&then.frame) {
+                frames.push(then.frame);
+            }
+        }
+        for _ in 0..AHEAD_REFRESHES {
+            then.tick();
+            if !then.playing || frames.len() > AHEAD {
+                break;
+            }
+            if !frames.contains(&then.frame) {
+                frames.push(then.frame);
             }
         }
         frames
@@ -717,13 +721,15 @@ mod tests {
     #[test]
     fn a_reader_is_told_the_frames_that_come_next() {
         let mut t = Transport::new(10, 60.0, 60.0);
-        // standing still: the frame on screen, then one step either way
+        // standing still: the frame on screen, one step either way, then what play would show from here, so that
+        // play starts on frames that are already there
         t.go(5);
-        assert_eq!(t.ahead(), [5, 6, 4]);
+        assert_eq!(t.ahead(), [5, 6, 4, 7, 8, 9, 0, 1, 2, 3]);
         t.go(0);
-        assert_eq!(t.ahead(), [0, 1]);
+        assert_eq!(t.ahead(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        // on the last frame, play starts again from the first
         t.go(9);
-        assert_eq!(t.ahead(), [9, 8]);
+        assert_eq!(t.ahead(), [9, 8, 0, 1, 2, 3, 4, 5, 6, 7]);
         // playing: what comes next, round the end
         t.go(8);
         t.set_playing(true);
@@ -747,7 +753,7 @@ mod tests {
         let mut t = Transport::new(100, 10.0, 60.0);
         t.set_seam(Some(0.5));
         t.step(4);
-        assert_eq!((t.frame(), t.ahead()), (99, vec![99, 0, 98]));
+        assert_eq!((t.frame(), t.ahead()), (99, vec![99, 0, 98, 1, 2, 3, 4, 95, 96, 97]));
         t.set_playing(true);
         assert_eq!(t.ahead(), [99, 0, 1, 2, 3, 4, 95, 96, 97, 98]);
         // a single frame has nothing next
