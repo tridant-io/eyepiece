@@ -212,9 +212,10 @@ impl Clip {
 mod tests {
     use super::*;
     use crate::media::dec::Picture;
-    use crate::media::source::Frame;
+    use crate::media::source::{Frame, Source};
     use crate::media::still::Samples;
-    use std::time::Duration;
+    use crate::play::Transport;
+    use std::time::{Duration, Instant};
 
     fn media(name: &str) -> String {
         format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -395,6 +396,94 @@ mod tests {
             drop(clip);
             std::fs::remove_file(&path).unwrap();
             std::fs::remove_dir(&dir).unwrap();
+        }
+    }
+
+    /// tells a reader what is wanted, as the render loop does every refresh, and says whether `frame` came within
+    /// `patience`. a frame that failed counts as come: the render loop shows its fault and moves on.
+    fn arrived<T: Send + Sync + 'static>(source: &Source<T>, want: &[usize], frame: usize, patience: Duration) -> bool {
+        source.want(want);
+        !matches!(source.get(frame, patience), Frame::Pending)
+    }
+
+    fn median<T: Copy + Ord>(mut values: Vec<T>) -> T {
+        values.sort();
+        values[values.len() / 2]
+    }
+
+    /// plays clips as the render loop does on a 60 Hz display: each refresh tells the reader `Transport::ahead` and
+    /// waits half a refresh for the frame due, and play moves on only once that frame is shown. for each run it prints
+    /// how long the middle frame took from standing still, then, for the first pass and the second, the frames ready
+    /// when first due out of the frames due, and how long the pass took. the clips are the files in EYEPIECE_PLAY,
+    /// separated by `;` (any frame of a sequence, or a video file), each run EYEPIECE_RUNS times (3 if unset):
+    /// `cargo test --release plays_at_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn plays_at_speed() {
+        let hz = 60.0;
+        let refresh = Duration::from_secs_f64(1.0 / hz);
+        let runs: usize = std::env::var("EYEPIECE_RUNS").map_or(3, |r| r.parse().expect("EYEPIECE_RUNS is a number"));
+        for path in std::env::var("EYEPIECE_PLAY").expect("EYEPIECE_PLAY names the clips").split(';') {
+            let mut results = Vec::new();
+            for run in 0..runs {
+                let mut clip = Clip::open(path).expect("open");
+                clip.start(None).expect("start");
+                let look = |want: &[usize], frame: usize, patience: Duration| match &clip.lane {
+                    Lane::Stills(s) => arrived(&s.source, want, frame, patience),
+                    Lane::Video(v) => arrived(&v.source, want, frame, patience),
+                    Lane::Hap(h) => arrived(&h.source, want, frame, patience),
+                    Lane::Waiting(_) => unreachable!("started"),
+                };
+                let frames = clip.timeline.frames();
+                let mut t = Transport::new(frames, clip.timeline.fps(), hz);
+                let long = Duration::from_secs(30);
+                t.go(clip.first_frame as i64);
+                assert!(look(&t.ahead(), t.frame(), long), "the first frame arrived");
+                t.go((frames / 2) as i64);
+                let asked = Instant::now();
+                assert!(look(&t.ahead(), t.frame(), long), "the middle frame arrived");
+                let lone = asked.elapsed();
+                t.go(0);
+                assert!(look(&t.ahead(), 0, long), "frame 0 arrived");
+                t.set_playing(true);
+                // per pass: frames ready when first due, frames due, and how long it took
+                let mut passes = [(0, 0, Duration::ZERO); 2];
+                let (mut shown, mut last, mut due) = (None, None, 0);
+                let (started, mut next) = (Instant::now(), Instant::now());
+                while due < 2 * frames {
+                    let frame = t.frame();
+                    let ready = look(&t.ahead(), frame, if shown == Some(frame) { Duration::ZERO } else { refresh / 2 });
+                    if last != Some(frame) {
+                        last = Some(frame);
+                        due += 1;
+                        let pass = &mut passes[(due - 1) / frames];
+                        pass.0 += ready as usize;
+                        pass.1 += 1;
+                        if due == frames + 1 {
+                            passes[0].2 = started.elapsed();
+                        }
+                    }
+                    if ready {
+                        shown = Some(frame);
+                        t.tick();
+                    }
+                    next += refresh;
+                    std::thread::sleep(next.saturating_duration_since(Instant::now()));
+                }
+                passes[1].2 = started.elapsed() - passes[0].2;
+                let ms = |d: Duration| d.as_millis();
+                println!("{} run {run}: lone frame {} ms; first pass {}/{} in {} ms; second pass {}/{} in {} ms", clip.name, ms(lone), passes[0].0, passes[0].1, ms(passes[0].2), passes[1].0, passes[1].1, ms(passes[1].2));
+                results.push((lone, passes));
+            }
+            let pick = |f: &dyn Fn(&(Duration, [(usize, usize, Duration); 2])) -> u128| median(results.iter().map(f).collect());
+            println!(
+                "{path} median of {runs}: lone frame {} ms; first pass {} on time in {} ms; second pass {} on time in {} ms",
+                pick(&|r| r.0.as_millis()),
+                pick(&|r| r.1[0].0 as u128),
+                pick(&|r| r.1[0].2.as_millis()),
+                pick(&|r| r.1[1].0 as u128),
+                pick(&|r| r.1[1].2.as_millis()),
+            );
         }
     }
 }
