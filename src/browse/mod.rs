@@ -158,6 +158,11 @@ pub fn is_media(name: &str) -> bool {
     has_ext(name, CLIPS) || has_ext(name, STILLS)
 }
 
+/// a still image by its extension: exr, dpx, png, jpeg, tiff, tga
+pub fn is_still(name: &str) -> bool {
+    has_ext(name, STILLS)
+}
+
 fn has_ext(name: &str, exts: &[&str]) -> bool {
     Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }

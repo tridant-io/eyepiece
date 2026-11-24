@@ -206,6 +206,8 @@ pub enum Action {
     CloseTab(usize),
     /// open this file in the tab that is up
     Open(PathBuf),
+    /// play this folder: asked for in the browser
+    PlayFolder(PathBuf),
     /// lay the browser over the clip, or take it away
     Browse(bool),
     Shot(Shot),
@@ -312,13 +314,17 @@ impl Ui {
         }
     }
 
-    /// a key and a typed character for the browser, while it is up.
-    pub fn browser_key(&mut self, key: Key) {
-        self.browser.key(key);
+    /// a key, a typed character and the wheel for the browser, while it is up.
+    pub fn browser_key(&mut self, key: Key, mods: Mods) {
+        self.browser.key(key, mods);
     }
 
     pub fn browser_char(&mut self, c: char) {
         self.browser.char(c);
+    }
+
+    pub fn browser_wheel(&mut self, notches: i32) {
+        self.browser.wheel(notches);
     }
 
     /// the folder the browser is in: kept between runs.
@@ -462,6 +468,7 @@ impl Ui {
                     Some(why) => message(ui, body, screen.tabs[screen.current], why),
                     None => match self.browser.draw(ui, body) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
+                        Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),
                         Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
                         None => {}
                     },

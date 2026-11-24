@@ -77,8 +77,10 @@ function Assert-Frame([string]$what, [int]$frame, [int]$count, [string]$decoded 
     Wait-Title $what { param($t) $t -match "^$start" -and $t -match 'fps( . \d+ late)?$' -and ($decoded -eq '' -or $t -match ", $decoded . ") }.GetNewClosure() "frame $frame of $count, no fault$(if ($decoded) { ", $decoded" })"
 }
 function Start-Player([string]$clip) {
-    $script:name = Split-Path $clip -Leaf
-    $script:p = Start-Process $Exe -ArgumentList "`"$clip`"" -PassThru
+    # with no clip the player starts on the browser
+    $more = @{}; $script:name = 'eyepiece'
+    if ($clip) { $script:name = Split-Path $clip -Leaf; $more.ArgumentList = "`"$clip`"" }
+    $script:p = Start-Process $Exe @more -PassThru
     $script:h = [IntPtr]::Zero
     foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $script:p.Refresh(); if ($script:p.MainWindowHandle -ne [IntPtr]::Zero) { $script:h = $script:p.MainWindowHandle; return } }
     throw 'the player opened no window'
@@ -324,6 +326,39 @@ Send-Key 0x53
 Confirm-That 'a second S never writes over the first: it gets a name of its own' (Wait-File (Join-Path $shots 'hapq_64.f000000 (2).png')) 'no second file'
 Stop-Player
 foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $shots) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
+# ---- the browser, in a tree of the test's own: a folder of two clips, two clips and a file that is no video. the
+# folder above it holds nothing else, so the columns that fit show only what the test made
+$above = Join-Path $env:APPDATA 'in'; $tree = Join-Path $above 'browse'; $shots = Join-Path $tree 'shots'
+$copies = [ordered]@{ (Join-Path $shots 'h264_320.mp4') = 'h264_320.mp4'; (Join-Path $shots 'wall_v012.mov') = 'hapq_64.mov'; (Join-Path $tree 'hap_64.mov') = 'hap_64.mov'; (Join-Path $tree 'prores_64.mov') = 'prores_64.mov' }
+New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
+New-Item -ItemType Directory $above, $tree, $shots | Out-Null
+foreach ($to in $copies.Keys) { Copy-Item -LiteralPath (Join-Path $media $copies[$to]) -Destination $to }
+Set-Content -LiteralPath (Join-Path $tree 'notes.txt') -Value 'not a clip'
+# the browser starts in the folder it was last in, which the settings name
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree"
+Start-Player
+Assert-Title 'started with no file, the browser is up' '^eyepiece$'
+# folders are listed off the drawing thread: each gets a moment to arrive before the keys move in it
+Start-Sleep -Milliseconds 1000
+# down selects the folder of shots, which the main area shows; right enters it on its first clip, down goes to the next
+Send-Key 0x28; Start-Sleep -Milliseconds 500; Send-Key 0x27; Send-Key 0x28
+$script:name = 'wall_v012.mov'; Send-Key 0x0D; Assert-Frame 'the keys walk to a clip in a folder and enter opens it' 0 3
+Send-Key 0x4F; Assert-Title 'O lays the browser over it' ' . browser$'
+# backspace goes up a folder, where down selects the clip after the folder of shots
+Start-Sleep -Milliseconds 500; Send-Key 0x08; Send-Key 0x28
+$script:name = 'hap_64.mov'; Send-Key 0x0D; Assert-Frame 'backspace and enter on another clip open it' 0 3
+Send-Key 0xDD; Assert-Frame 'in place of the first: ] finds no other tab' 0 3
+# letters select by name. a keyboard sends each letter's key before its character, and so does the test
+Send-Key 0x4F; Start-Sleep -Milliseconds 500; Send-Key 0x50; Send-Char 'p'; Send-Key 0x52; Send-Char 'r'
+$script:name = 'prores_64.mov'; Send-Key 0x0D; Assert-Frame 'typing the first letters of a name selects it' 0 4
+Send-Key 0x4F; Assert-Title 'the browser is over the clip again' ' . browser$'
+Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
+Stop-Player
+# what the section made, file by file, then its folders, each named before it goes. nothing recursive
+foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), $shots, $tree, $above) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 

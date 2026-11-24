@@ -480,7 +480,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
         }
     }
 
@@ -889,13 +889,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         fullscreen = false;
                         window::set_fullscreen(window, false, false);
                     } else if browsing {
-                        ui.browser_key(Key::Escape);
+                        ui.browser_key(Key::Escape, Mods::default());
                     } else {
                         ui.escape();
                     }
                 }
                 // in the browser the keys move about it and letters select by name
-                Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key),
+                Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key, mods),
                 Event::Char(_) if command => {}
                 Event::Char(c) if browsing => ui.browser_char(c),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
@@ -946,6 +946,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         ui.char(c);
                     }
                 }
+                Event::Wheel { notches, .. } if browsing => ui.browser_wheel(notches),
                 // over the metadata panel the wheel turns its list
                 Event::Wheel { notches, .. } if ui.wheel(notches) => {}
                 // with shift, one stop of zoom a notch, about the pointer: away from the user is in
@@ -1015,6 +1016,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     toast = Some((said.to_string(), Instant::now() + Duration::from_millis(2600)));
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
+                // folders do not play yet: until they do, the browser's shift + enter and play folder do nothing
+                Action::PlayFolder(_) => {}
                 Action::Guides(to) => (settings.grid, settings.center, settings.tile) = (to.grid, to.center, to.tile),
                 Action::Fullscreen => {
                     fullscreen = !fullscreen;
