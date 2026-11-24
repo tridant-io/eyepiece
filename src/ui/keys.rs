@@ -237,11 +237,10 @@ pub fn table(ui: &egui::Ui, full: Rect) {
     });
 }
 
-/// the right-click menu: every command with its key beside it, in sections, its corner at `corner` and kept 8 in from
-/// the window's edges by its size when it was `last` drawn; it scrolls when the window is too short. `opened` starts
-/// it at its top. returns where it was drawn, and the key of the row chosen.
-pub fn menu(ui: &egui::Ui, corner: Pos2, full: Rect, last: Rect, opened: bool) -> (Rect, Option<(Key, Mods)>) {
-    let room = full.shrink(8.0);
+/// the right-click menu: every command with its key beside it, in sections, its corner at `corner` and kept inside
+/// `room` by its size when it was `last` drawn; it scrolls when the room is too short. `opened` starts it at its top.
+/// returns where it was drawn, and the key of the row chosen.
+pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool) -> (Rect, Option<(Key, Mods)>) {
     let at = Pos2::new(corner.x.min(room.right() - last.width()).max(room.left()), corner.y.min(room.bottom() - last.height()).max(room.top()));
     let mut chosen = None;
     let drawn = widgets::menu(ui, "commands", at, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {

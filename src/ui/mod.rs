@@ -655,9 +655,12 @@ impl Ui {
             let corner = Pos2::new(full.right() - 10.0, top + 34.0);
             self.facts_rect = menus::facts(ui, corner, Align2::RIGHT_TOP, 1.0, full.bottom() - corner.y - 10.0 - (bar.height() + 7.0) * alpha, model, actions);
         }
-        // the right-click menu, whether the controls are up or not: a row chosen is its key, pressed
+        // the right-click menu, whether the controls are up or not, 8 in from the window's edges and, while a chip is
+        // up, under the chips as the pinned metadata panel stands: a row chosen is its key, pressed
         if let Some(at) = self.commands {
-            let (drawn, chosen) = keys::menu(ui, at, full, self.commands_rect, opened);
+            let chipped = left > full.left() + 10.0 || model.zoomed || model.fault.is_some();
+            let room = Rect::from_min_max(Pos2::new(full.left() + 8.0, if chipped { top + 34.0 } else { full.top() + 8.0 }), full.max - Vec2::splat(8.0));
+            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened);
             self.commands_rect = drawn;
             if let Some((key, mods)) = chosen {
                 actions.push(Action::Key(key, mods));

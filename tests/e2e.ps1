@@ -212,12 +212,10 @@ Confirm-That 'resting on the play button brings its tooltip' ($before -eq 0 -and
 Click-At -256 -32; Move-Pointer 55 -32; Start-Sleep -Milliseconds 900
 Confirm-That 'no tooltip while a menu is open' ((Get-Bright @tip) -eq 0) "bright pixels: $(Get-Bright @tip)"
 Send-Key 0x1B
-# ? (shift + slash) lays the table of keys over the clip. a click takes it away and does nothing else: the next-frame
-# button is clicked twice and steps once
-Send-Key 0xBF 1 1; Click-At 87 -32
-Assert-Frame 'a click takes the table of keys away and does nothing else' 0 3
-Click-At 87 -32; Assert-Frame 'the next click is the button''s' 1 3
-Send-Key 0x24
+# ? (shift + slash) lays the table of keys over the clip. a click takes it away and does nothing else: a double click
+# on the picture over it does not fill the display
+Send-Key 0xBF 1 1; DoubleClick-At $mid[0] $mid[1]; Start-Sleep -Milliseconds 500
+Confirm-That 'a double click over the table of keys only takes it away' (Test-Framed) "framed: $(Test-Framed)"
 # the table is bright keys in the black beside the picture
 $band = 20, 60, 130, 250
 Move-Pointer 300 150; Start-Sleep -Milliseconds 300
