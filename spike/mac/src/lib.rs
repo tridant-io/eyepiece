@@ -9,6 +9,7 @@ use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 use objc2_metal::*;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use spike::hap::Tex as HapTex;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -197,6 +198,42 @@ impl PixelBuffer {
         desc.setStorageMode(MTLStorageMode::Shared);
         gpu.device.newTextureWithDescriptor_iosurface_plane(&desc, unsafe { &*(surface as *const objc2_io_surface::IOSurfaceRef) }, plane)
     }
+}
+
+/// hap q stores scaled ycocg in a bc3 texture; this turns it back into rgb. integer addressing, no filter.
+pub const YCOCG_TO_RGB: &str = r#"
+fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]]) {
+    float4 v = t.read(uint2(in.pos.xy)) + float4(-0.50196078431373, -0.50196078431373, 0.0, 0.0);
+    float scale = v.z * (255.0 / 8.0) + 1.0;
+    float co = v.x / scale, cg = v.y / scale, y = v.w;
+    return float4(y + co - cg, y + cg, y - co - cg, 1.0);
+}
+"#;
+
+/// every other hap variant holds rgb as it is.
+pub const RGB_AS_STORED: &str = r#"
+fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]]) {
+    return float4(t.read(uint2(in.pos.xy)).rgb, 1.0);
+}
+"#;
+
+/// the metal pixel format of a hap texture, taken as stored.
+pub fn hap_format(t: HapTex) -> MTLPixelFormat {
+    match t {
+        HapTex::Bc1 => MTLPixelFormat::BC1_RGBA,
+        HapTex::Bc3 | HapTex::YCoCgBc3 => MTLPixelFormat::BC3_RGBA,
+        HapTex::Bc7 => MTLPixelFormat::BC7_RGBAUnorm,
+        HapTex::Bc4 => MTLPixelFormat::BC4_RUnorm,
+        HapTex::Bc6u => MTLPixelFormat::BC6H_RGBUfloat,
+        HapTex::Bc6s => MTLPixelFormat::BC6H_RGBFloat,
+    }
+}
+
+/// copies one frame's blocks, as stored, into a block-compressed texture: the hap lane's one copy.
+pub fn upload_blocks(tex: &ProtocolObject<dyn MTLTexture>, blocks: &[u8], block_bytes: usize) {
+    let (w, h) = (tex.width(), tex.height());
+    let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
+    unsafe { tex.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, NonNull::new(blocks.as_ptr() as *mut c_void).unwrap(), w / 4 * block_bytes) };
 }
 
 /// the whole of a texture's first level, as bytes.

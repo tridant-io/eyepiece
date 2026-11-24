@@ -17,5 +17,10 @@ objc2-io-surface = "0.3"
 objc2-metal = { version = "0.3", features = ["objc2-io-surface", "block2"] }
 objc2-quartz-core = "0.3"
 
+# the same source as the windows program: it is portable
+[[bin]]
+name = "decode_speed"
+path = "../src/bin/decode_speed.rs"
+
 [profile.release]
 opt-level = 3

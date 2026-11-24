@@ -42,14 +42,14 @@ sh spike/mac/setup.sh
 sh spike/mac/gate.sh gate5_share some-small-clip.mov
 ```
 
-the programs: `gate1_zerocopy`, `gate3_ramp`, `metal_caps` and `gate5_share` run from any shell. `gate2_present` and `gate4_coldstart` open a window, and `sign-test.sh` (the signing and notarization gate) needs the keychain, so those three run inside the login session:
+the programs: `gate1_zerocopy`, `gate3_ramp`, `metal_caps`, `gate5_share`, `hap_lane` and `decode_speed` run from any shell. `gate2_present`, `gate4_coldstart` and `hap_play` open a window, and `sign-test.sh` (the signing and notarization gate) needs the keychain, so those four run inside the login session:
 
 ```sh
 sh spike/mac/session-run.sh gate2 spike/mac/target/release/gate2_present some-10-bit-hevc.mp4 20
 ```
 
-`gate6_browse` is driven from windows by `spike\gate6.ps1 -Mac user@host`. the hap lane and the decode speed measurements are not written for macos yet.
+`gate6_browse` is driven from windows by `spike\gate6.ps1 -Mac user@host`.
 
 ## deploy
 
-nothing ships yet. when it does, every build is signed: windows on the dev machine, macos on tec-mba. the signing gate in `docs/phase-0.md` confirms both before any player code is written.
+nothing ships yet. when it does, every build is signed: windows on the dev machine as "Tridant, Inc.", macos on tec-mba with the owner's personal developer id for now. the signing gate in `docs/phase-0.md` confirms both before any player code is written.

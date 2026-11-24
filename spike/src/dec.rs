@@ -44,8 +44,9 @@ unsafe extern "C" fn pick_d3d11(ctx: *mut ffi::AVCodecContext, fmts: *const ffi:
 }
 
 /// on macos we take the videotoolbox format: each frame is then the decoder's own pixel buffer, not a copy.
+/// a codec videotoolbox does not take gets ffmpeg's usual software format: callers check the frame's format.
 #[cfg(target_os = "macos")]
-unsafe extern "C" fn pick_videotoolbox(_ctx: *mut ffi::AVCodecContext, fmts: *const ffi::AVPixelFormat) -> ffi::AVPixelFormat {
+unsafe extern "C" fn pick_videotoolbox(ctx: *mut ffi::AVCodecContext, fmts: *const ffi::AVPixelFormat) -> ffi::AVPixelFormat {
     let mut p = fmts;
     while *p != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
         if *p == ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX {
@@ -53,7 +54,7 @@ unsafe extern "C" fn pick_videotoolbox(_ctx: *mut ffi::AVCodecContext, fmts: *co
         }
         p = p.add(1);
     }
-    ffi::AVPixelFormat::AV_PIX_FMT_NONE
+    ffi::avcodec_default_get_format(ctx, fmts)
 }
 
 /// a decoder context for the stream, not opened yet.

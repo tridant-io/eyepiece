@@ -27,9 +27,9 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 | what | why it matters | windows | macos |
 |---|---|---|---|
 | does ffmpeg's demuxer hand over hap r and hap hdr packets? | if not, hap needs its own mov sample reader (adr 0003) | **yes** 2026-11-23, on real hap r and hap hdr files too | n/a |
-| hap q at 8K60, including a one-chunk file: disk MB/s, snappy ms per frame by thread count, upload ms | the hap lane's real ceiling | **measured** 2026-11-23: 4K60 solid, 8K60 at the edge | not run |
-| notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | **measured** 2026-11-23: 76 ms | not run |
-| prores 4444 xq at 4K60 in software | no hardware prores decode on windows | **measured** 2026-11-23: 30 to 37 fps on worst-case content | n/a |
+| hap q at 8K60, including a one-chunk file: disk MB/s, snappy ms per frame by thread count, upload ms | the hap lane's real ceiling | **measured** 2026-11-23: 4K60 solid, 8K60 at the edge | **measured** 2026-11-23 at 4K while the mac was busy: 2.1 to 3.5 ms a frame from ram. 8K not run |
+| notchlc: time for one lone frame step at 4K | its decoder is frame-threaded only, so a single frame decodes on one core | **measured** 2026-11-23: 76 ms | **measured** 2026-11-23 while busy: 65 ms |
+| prores 4444 xq at 4K60 in software | no hardware prores decode on windows | **measured** 2026-11-23: 30 to 37 fps on worst-case content | **measured** 2026-11-23 while busy: 14 fps in software, 67 fps through videotoolbox |
 | can a windows touchpad be told from a mouse wheel? | two-finger pan on windows depends on it | not run: this pc has no touchpad (the hid entry is its logitech receiver). needs another windows machine | n/a |
 | does the gpu take hap's block formats (bc1, bc3, bc4, bc5, bc6h, bc7) as stored? | hap's lane uploads blocks undecoded; a gpu without them would need a cpu decode | yes, by construction of direct3d 11 | **yes** 2026-11-23, apple m2, at 8K |
 | sign a throwaway binary here; notarize one on tec-mba | every build is to be signed from the first one | **pass** 2026-11-23 | **pass** 2026-11-23, signed and notarized with ffmpeg inside |
@@ -146,9 +146,7 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| gates 2 and 4 on macos, again | a quiet mac. both ran while it was busy with other work (load average 16 to 25 on 8 cores), so the dropped frames and the times are not yet the mac's own. nobody was at it; the reruns need only that its other work stops. |
-| the hap lane and the decode speeds on macos | the owner's ok to copy about 3 GB of clips to a disk with 17 GB free, and the same quiet. the programs are not written yet. |
-| the name on the mac build | the owner. the mac's only signing identity is a personal developer id; windows signs as "Tridant, Inc.". |
+| gates 2 and 4 and hap playback on macos, again | a quiet mac. all three ran while it was busy with other work (load average 16 to 28 on 8 cores), so the dropped frames and the times are not yet the mac's own. the reruns need only that its other work stops. the speeds measured there carry the same caveat. |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
 | touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
@@ -294,3 +292,47 @@ nobody had touched the mac for over half an hour, so the windows disturbed no on
 - the metal device is quick here (about 30 ms), unlike direct3d's 155 to 250 ms on windows.
 - the last 50 ms is the two dropped presents and the wait for a refresh.
 - this is a bare program, not an app launched from finder, and a hevc file, not the hap or prores the 250 ms target names. the hap lane is not written for the mac yet.
+
+### 2026-11-23, late night: the owner's answers, then the mac's hap lane and decode speeds
+
+the owner said: their personal developer id is fine for the mac build for now; the objc2 crates are fine for the mac renderer (now in adr 0002); copy the clips over. cut-down copies of eight clips went to `/private/tmp/eyepiece-media` (2.4 GB).
+
+the mac was busy throughout, as before: load average 15 to 28 on 8 cores. every number here is "at least this good"; none is the mac's best.
+
+**the hap lane from ram, off screen.** `hap_lane <clip> 30`, 3840 × 2160, 7.9 MB of blocks a frame:
+
+| clip | snappy, 1 thread | snappy, 4 threads | the one copy into the texture | whole lane, drawn at full size | against ffmpeg's decode of frame 0 |
+|---|---|---|---|---|---|
+| hap q, compressible, 8 chunks | 1.47 ms | 0.48 ms | 0.89 ms | 2.83 ms | worst 4 of 255, mean 0.24 |
+| hap alpha, noise, 8 chunks | 6.17 ms | 1.61 ms | 0.78 ms | 3.53 ms | worst 3 of 255, mean 0.24 |
+| hap r from touchdesigner, 12 chunks | 0.36 ms | 0.27 ms | 0.77 ms | 2.21 ms | not checked: ffmpeg has no decoder |
+| hap hdr from touchdesigner, 12 chunks | 1.16 ms | 0.34 ms | 0.81 ms | 2.12 ms | not checked: ffmpeg has no decoder |
+
+- the lane has room: 2 to 3.5 ms of a 16.7 ms refresh, on a busy machine.
+- the picture is right for hap q and hap alpha: the gpu's own block decode and our ycocg shader land within 4 of 255 of ffmpeg's software decode, 0.24 on average. hap r and hap hdr still have no referee on either system.
+- the copy is a plain copy into a texture the cpu and gpu share. the windows rule (never decompress into the gpu's mapped memory) was about write-combined memory and has no counterpart measured here.
+
+**hap playback from the file, in a window: not passed while busy.** `hap_play <clip> 10`:
+
+| clip | load average | presented | after the first half second: never shown | refreshes without a new frame |
+|---|---|---|---|---|
+| hap q, 8 chunks | 24.1 to 22.0 | 596 in 10 s | 1 | 8 |
+| hap r, 12 chunks | 22.0 to 19.2 | 591 in 10 s | 0 | 10 |
+
+- the reader was never the hold-up (0.01 ms waiting a frame). the copy took 3.8 to 4.7 ms here against 0.8 ms off screen, and a few refreshes were missed. on a machine this loaded that settles nothing; rerun owed.
+
+**decode speeds.** `decode_speed`, the same program as on windows, now also through videotoolbox on the mac. 4K, frames decoded and not drawn:
+
+| clip | software, all cores | videotoolbox | one lone step, software (slice threads) | one lone step, videotoolbox |
+|---|---|---|---|---|
+| prores 422 hq, 60 fps | 34 fps | 92 fps | 28 ms | 6 ms (p95 29) |
+| prores 4444 xq, 60 fps | 14 fps | 67 fps | 72 ms | 11 ms (p95 43) |
+| notchlc, 60 fps | 32 fps | not offered | 65 ms | n/a |
+| hevc 10-bit, 59.94 fps, key frame every 60 | 62 fps | 285 fps | 1,253 ms | 79 ms (p95 193) |
+
+- on the mac prores belongs on videotoolbox, not in software: three to five times the throughput, and a lone step in 6 to 11 ms. the plan's software prores path is the fallback there, not the lane.
+- 4444 xq at 60 fps through videotoolbox ran at 1.12 times real time on a busy machine. close; rerun owed.
+- notchlc has no hardware path and managed 32 fps in software here, half of real time. busy or not, 4K60 notchlc on this mac is in doubt; rerun owed.
+- a lone step into long-gop hevc costs up to 52 decoded frames even in hardware: 79 ms, 193 at worst.
+
+**the mac's disk.** it had 16 GB free before the clips and 11 GB after; the clips are 2.4 GB of that, so something else on the mac took about 2.5 GB in the same hour. ours in all: about 3.5 GB (`/private/tmp/eyepiece-media` 2.4 GB, `~/src/eyepiece` 845 MB, `/private/tmp/eyepiece-ffmpeg-src` 188 MB, the rest under 30 MB).

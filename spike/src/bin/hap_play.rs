@@ -8,7 +8,6 @@
 use spike::ff::{self, Input};
 use spike::hap::{self, Tex};
 use spike::{d3d, win};
-use std::sync::mpsc;
 use std::time::Instant;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -39,44 +38,11 @@ fn main() {
     // frame 0, read here once, to learn the texture format
     let own = std::fs::File::open(&path).expect("open");
     let mut first = vec![0u8; index[0].1];
-    std::os::windows::fs::FileExt::seek_read(&own, &mut first, index[0].0).expect("read");
+    hap::read_at(&own, &mut first, index[0].0).expect("read");
     let (tex0, chunks) = { let l = hap::parse(&first).expect("parse"); (l[0].tex, l[0].chunks.len()) };
 
-    // three stages, each on its own thread, each a few frames ahead, buffers handed back for reuse:
-    // read (our own handle, frames by offset) -> decompress in ordinary ram -> the main thread, which copies and presents.
-    // with reading and decompressing on one thread, the 16-chunk 8K clip managed 51 frames a second.
-    let (raw_tx, raw_rx) = mpsc::sync_channel::<(Vec<u8>, usize)>(2);
-    let (raw_spare_tx, raw_spare_rx) = mpsc::channel::<Vec<u8>>();
-    let (frames_tx, frames_rx) = mpsc::sync_channel::<Vec<u8>>(2);
-    let (spare_tx, spare_rx) = mpsc::channel::<Vec<u8>>();
-    let reader_path = path.clone();
-    let reader_index = index.clone();
-    std::thread::spawn(move || {
-        let f = std::fs::File::open(&reader_path).expect("open");
-        let mut i = 0;
-        loop {
-            let (pos, size) = reader_index[i % reader_index.len()];
-            let mut raw = raw_spare_rx.try_recv().unwrap_or_else(|_| vec![0u8; biggest]);
-            std::os::windows::fs::FileExt::seek_read(&f, &mut raw[..size], pos).expect("read");
-            if raw_tx.send((raw, size)).is_err() {
-                break;
-            }
-            i += 1;
-        }
-    });
-    std::thread::spawn(move || {
-        while let Ok((raw, size)) = raw_rx.recv() {
-            let layers = hap::parse(&raw[..size]).expect("parse");
-            let mut blocks = spare_rx.try_recv().unwrap_or_default();
-            blocks.resize(layers[0].len, 0);
-            hap::decompress(&layers[0], &mut blocks, 4).expect("decompress");
-            drop(layers);
-            let _ = raw_spare_tx.send(raw);
-            if frames_tx.send(blocks).is_err() {
-                break;
-            }
-        }
-    });
+    // read -> decompress in ordinary ram -> this thread, which copies and presents
+    let (frames_rx, spare_tx) = hap::read_ahead(&path, index.clone(), 4);
 
     let (pw, ph) = hap::padded(vw, vh);
     let (row_bytes, rows) = (pw / 4 * tex0.block_bytes(), ph / 4);

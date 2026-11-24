@@ -1,7 +1,8 @@
 //! hap frames, parsed and decompressed to the texture blocks exactly as stored (adr 0003).
 //! follows the vidvox spec: https://github.com/Vidvox/hap/blob/master/documentation/HapVideoDRAFT.md
 
-use std::sync::Mutex;
+use std::fs::File;
+use std::sync::{mpsc, Mutex};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tex {
@@ -179,4 +180,65 @@ pub fn decompress(layer: &Layer, out: &mut [u8], threads: usize) -> Result<(), S
 /// the size a hap texture really has: the picture rounded up to whole 4x4 blocks.
 pub fn padded(w: usize, h: usize) -> (usize, usize) {
     (w.div_ceil(4) * 4, h.div_ceil(4) * 4)
+}
+
+/// reads exactly `buf.len()` bytes at `pos`, without a shared file position: safe from any thread.
+pub fn read_at(f: &File, buf: &mut [u8], pos: u64) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            let n = f.seek_read(&mut buf[done..], pos + done as u64)?;
+            if n == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            done += n;
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_exact_at(f, buf, pos)
+    }
+}
+
+/// the read-ahead half of the hap lane. one thread reads frames by their offsets (ffmpeg's index) on its own handle,
+/// a second decompresses them in ordinary ram on `threads` threads; each stays two frames ahead.
+/// frames arrive in order, round and round the clip, as texture blocks ready to upload. hand each buffer back
+/// through the sender when done with it, so it is used again.
+/// (with reading and decompressing on one thread, a 16-chunk 8K clip managed 51 frames a second on the windows pc.)
+pub fn read_ahead(path: &str, index: Vec<(u64, usize)>, threads: usize) -> (mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>) {
+    let biggest = index.iter().map(|e| e.1).max().unwrap_or(0);
+    let (raw_tx, raw_rx) = mpsc::sync_channel::<(Vec<u8>, usize)>(2);
+    let (raw_spare_tx, raw_spare_rx) = mpsc::channel::<Vec<u8>>();
+    let (frames_tx, frames_rx) = mpsc::sync_channel::<Vec<u8>>(2);
+    let (spare_tx, spare_rx) = mpsc::channel::<Vec<u8>>();
+    let f = File::open(path).expect("open");
+    std::thread::spawn(move || {
+        let mut i = 0;
+        loop {
+            let (pos, size) = index[i % index.len()];
+            let mut raw = raw_spare_rx.try_recv().unwrap_or_else(|_| vec![0u8; biggest]);
+            read_at(&f, &mut raw[..size], pos).expect("read");
+            if raw_tx.send((raw, size)).is_err() {
+                break;
+            }
+            i += 1;
+        }
+    });
+    std::thread::spawn(move || {
+        while let Ok((raw, size)) = raw_rx.recv() {
+            let layers = parse(&raw[..size]).expect("parse");
+            let mut blocks = spare_rx.try_recv().unwrap_or_default();
+            blocks.resize(layers[0].len, 0);
+            decompress(&layers[0], &mut blocks, threads).expect("decompress");
+            drop(layers);
+            let _ = raw_spare_tx.send(raw);
+            if frames_tx.send(blocks).is_err() {
+                break;
+            }
+        }
+    });
+    (frames_rx, spare_tx)
 }
