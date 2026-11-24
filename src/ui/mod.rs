@@ -73,6 +73,8 @@ const FADE: f32 = 0.14;
 const IDLE: f64 = 2.4;
 /// the zoom chip goes this long after the pointer rests
 const CHIP_IDLE: f64 = 2.0;
+/// the longer side of the navigator
+const NAVIGATOR: f32 = 112.0;
 /// the metadata panel comes up this long after the pointer comes onto its button, and goes this long after it has
 /// left both the button and the panel
 const FACTS_IN: f64 = 0.35;
@@ -881,10 +883,13 @@ impl Ui {
                 self.flash = Some((parts, now + seconds));
             }
         }
+        // the lower left, 12 up from the bottom and clear of the bar when it is up: the navigator when the picture
+        // is zoomed past the window, and over it what a key did
+        let low = full.bottom() - 12.0 - 50.0 * alpha;
+        let low = self.navigator(ui, full, low, model, now, actions).map_or(low, |navigator| navigator.top() - 8.0);
         match &self.flash {
             Some((parts, until)) if now < *until => {
-                // 12 up from the bottom, and clear of the bar when it is up
-                chip(ui, Pos2::new(full.left() + 10.0, full.bottom() - 12.0 - 50.0 * alpha), Align2::LEFT_BOTTOM, parts, 1.0);
+                chip(ui, Pos2::new(full.left() + 10.0, low), Align2::LEFT_BOTTOM, parts, 1.0);
                 ui.ctx().request_repaint_after(Duration::from_secs_f64(until - now));
             }
             _ => self.flash = None,
@@ -979,6 +984,45 @@ impl Ui {
             let radius = video_w.min(video_h) / 2.0 * w / video_w - width / 2.0;
             painter.circle_stroke(middle, radius * unit, (width * unit, color));
         }
+    }
+
+    /// the navigator (the owner's ask, 2026-11-24): while the picture is zoomed past the window, a small plan of the
+    /// whole of it at the lower left, as a chip is drawn, with the part in view marked in the bar's own white. a
+    /// press or a drag in it brings what is under the pointer to the middle of the window. it is plain while the
+    /// pointer moves or the view changes, and faint when they rest. `foot` is where its lower edge stands.
+    fn navigator(&mut self, ui: &mut egui::Ui, full: Rect, foot: f32, model: &Model, now: f64, actions: &mut Vec<Action>) -> Option<Rect> {
+        let (x, y, w, h) = model.picture;
+        if !model.overflows || w < 1.0 || h < 1.0 {
+            return None;
+        }
+        let size = Vec2::new(w, h) * (NAVIGATOR / w.max(h));
+        let plan = Rect::from_min_size(Pos2::new(full.left() + 10.0, foot - size.y), size);
+        let response = ui.interact(plan, ui.scope_id().with("navigator"), Sense::click_and_drag());
+        // the window on the picture, as parts of it: no further than its edges, since a picture narrower than the
+        // window stands inside it
+        let window = full.size() * self.scale;
+        let part = |from: f32, length: f32, room: f32| ((-from / length).clamp(0.0, 1.0), ((room - from) / length).clamp(0.0, 1.0));
+        let (across, down) = (part(x, w, window.x), part(y, h, window.y));
+        let view = Rect::from_min_max(plan.min + Vec2::new(across.0 * size.x, down.0 * size.y), plan.min + Vec2::new(across.1 * size.x, down.1 * size.y));
+        if response.is_pointer_button_down_on() {
+            if let Some(at) = response.interact_pointer_pos() {
+                let to = ((at - plan.min) / size).clamp(Vec2::ZERO, Vec2::splat(1.0));
+                let middle = Vec2::new((window.x / 2.0 - x) / w, (window.y / 2.0 - y) / h);
+                let by = ((middle.x - to.x) * w, (middle.y - to.y) * h);
+                if by.0.abs() >= 0.5 || by.1.abs() >= 0.5 {
+                    actions.push(Action::Pan(by));
+                }
+            }
+            self.chip_until = now + CHIP_IDLE;
+        }
+        let awake = now < self.chip_until || response.hovered();
+        let alpha = 0.45 + 0.55 * ui.ctx().animate_bool_with_time(ui.scope_id().with("navigator-awake"), awake, FADE);
+        let painter = ui.painter();
+        painter.rect_filled(plan, 0.0, CHIP.gamma_multiply(alpha));
+        painter.rect_stroke(plan, 0.0, (1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+        painter.rect_filled(view, 0.0, HOVER.gamma_multiply(alpha));
+        painter.rect_stroke(view, 0.0, (1.0, FG.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+        Some(plan)
     }
 
     /// the zoom chip, top right: the zoom, whether it is exact, and the pixel under the pointer with its values.
@@ -1799,6 +1843,25 @@ mod tests {
     fn click(x: f32, y: f32) -> [(f32, f32, Option<(crate::event::Button, bool)>); 4] {
         use crate::event::Button::Left;
         [(x, y, None), (x, y, Some((Left, true))), (x, y, Some((Left, false))), (x, y, None)]
+    }
+
+    /// zoomed in past the window, the navigator stands at the lower left, clear of the bar: a plan of the whole
+    /// picture, 112 on its longer side, with the part in view marked. a press in it brings that part of the picture
+    /// to the middle of the window. fitted, there is none, and a click there is a click on the picture.
+    #[test]
+    fn the_navigator_pans_a_picture_zoomed_past_the_window() {
+        let screen = |clip| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(clip), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+        // a 1920 x 1080 picture at 1:1 in the 640 x 360 window, its middle in the window's
+        let zoomed = || Model { picture: (-640.0, -360.0, 1920.0, 1080.0), overflows: true, zoomed: true, ..model() };
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        drive_on(&mut ui, &screen(zoomed()), &[(300.0, 100.0, None)]);
+        // the controls are up once they have faded in: the navigator's foot is then 62 above the window's, and it
+        // is 112 by 63 from 10 in. a quarter of the way along and down it:
+        std::thread::sleep(Duration::from_millis(250));
+        let at = (10.0 + 28.0, 360.0 - 62.0 - 63.0 + 15.75);
+        assert_eq!(drive_on(&mut ui, &screen(zoomed()), &click(at.0, at.1)), vec![Action::Pan((480.0, 270.0))]);
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive_on(&mut ui, &screen(model()), &click(at.0, at.1)), vec![Action::TogglePlay], "fitted, no navigator");
     }
 
     /// the pin at the bar's far left keeps the controls up when the pointer leaves the window, where they go at

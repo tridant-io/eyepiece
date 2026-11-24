@@ -342,10 +342,10 @@ fn rate_row(t: &Timeline) -> Row {
     }
 }
 
-/// shown frames × the frame duration, or the rate derived.
+/// shown frames × the frame duration, or the rate derived. the count of frames is the row above's to give.
 fn duration_row(t: &Timeline) -> Row {
     let n = t.frames();
-    let length = |ms: i128| format!("{}:{:02}:{:02}.{:03} · {} frames", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000, grouped(n as u64));
+    let length = |ms: i128| format!("{}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
     let (value, tone) = match (t.step(), t.derived()) {
         (Some(step), _) => {
             let units = n as i128 * step as i128 * t.time_base.0 as i128;
@@ -354,8 +354,8 @@ fn duration_row(t: &Timeline) -> Row {
         }
         (None, Some(fps)) => (format!("{} · at the rate derived", length((n as f64 * 1000.0 / fps).round() as i128)), Tone::Assumed),
         (None, None) if n == 0 => ("not listed up front in this kind of file".to_string(), Tone::Plain),
-        (None, None) if n == 1 => ("1 frame".to_string(), Tone::Plain),
-        (None, None) => (format!("{} frames · their lengths vary", grouped(n as u64)), Tone::Plain),
+        (None, None) if n == 1 => ("none: a still".to_string(), Tone::Plain),
+        (None, None) => ("not one length: the frames' lengths vary".to_string(), Tone::Plain),
     };
     row("duration", value, tone)
 }
@@ -461,7 +461,7 @@ mod tests {
         let m = read("hapq_64.mov");
         // the file's own ratio, unreduced, then its decimal
         assert_eq!(get(&m, "frame rate"), ("60000/1001 · 59.94", Tone::Plain));
-        assert_eq!(get(&m, "duration"), ("0:00:00.050 · 3 frames", Tone::Plain));
+        assert_eq!(get(&m, "duration"), ("0:00:00.050", Tone::Plain));
         assert_eq!(get(&m, "codec"), ("hap q · HapY · 4 chunks", Tone::Plain));
         assert_eq!(get(&m, "bit depth"), ("8-bit · bc3 scaled ycocg", Tone::Plain));
 
@@ -476,7 +476,7 @@ mod tests {
         let m = read("h264_cut_320.mp4");
         assert_eq!(get(&m, "frames"), ("18 · numbered 0 to 17 · 24 stored, 6 hidden by an edit list", Tone::Plain));
         assert_eq!(get(&m, "frame rate"), ("15360/512 · 30", Tone::Plain));
-        assert_eq!(get(&m, "duration"), ("0:00:00.600 · 18 frames", Tone::Plain));
+        assert_eq!(get(&m, "duration"), ("0:00:00.600", Tone::Plain));
         assert_eq!(get(&m, "codec"), ("h.264 · avc1", Tone::Plain));
         assert_eq!(get(&m, "bit depth"), ("8-bit · 4:2:0", Tone::Plain));
         assert_eq!(get(&m, "container"), ("mpeg-4 · .mp4", Tone::Plain));
@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(get(&m, "frames"), ("12 · numbered 0 to 11", Tone::Plain));
         // milliseconds cannot hold a 30th of a second: the rate is derived from the times, and says so
         assert_eq!(get(&m, "frame rate"), ("30 · derived: the file rounds its frames' times to its clock", Tone::Assumed));
-        assert_eq!(get(&m, "duration"), ("0:00:00.400 · 12 frames · at the rate derived", Tone::Assumed));
+        assert_eq!(get(&m, "duration"), ("0:00:00.400 · at the rate derived", Tone::Assumed));
         assert_eq!(get(&m, "codec"), ("h.264", Tone::Plain));
         let m = read("vp9_64.webm");
         assert_eq!(get(&m, "container"), ("webm · .webm", Tone::Plain));
@@ -576,14 +576,14 @@ mod tests {
         assert_eq!(get(&m, "frame rate"), ("variable: its frames do not all last the same. each is shown for its own time", Tone::Fault));
         let t = Timeline { time_base: (1, 1000), times: vec![0, 40, 90, 120] };
         assert_eq!(rate_row(&t).tone, Tone::Fault);
-        assert_eq!(duration_row(&t).value, "4 frames · their lengths vary");
+        assert_eq!(duration_row(&t).value, "not one length: the frames' lengths vary");
         let t = Timeline { time_base: (1, 2997), times: (0..3).map(|i| i * 100).collect() };
         assert_eq!(rate_row(&t).value, "2997/100 · 29.97");
         // 216,000 frames at 60000/1001 last 3603.6 s; 215,784 last 3599.99640 s, which rounds to the nearest millisecond
         let t = Timeline::even((1, 60000), 216_000, 1001);
-        assert_eq!(duration_row(&t).value, "1:00:03.600 · 216,000 frames");
+        assert_eq!(duration_row(&t).value, "1:00:03.600");
         let t = Timeline::even((1, 60000), 215_784, 1001);
-        assert_eq!(duration_row(&t).value, "0:59:59.996 · 215,784 frames");
+        assert_eq!(duration_row(&t).value, "0:59:59.996");
     }
 
     #[test]

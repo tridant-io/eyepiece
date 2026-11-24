@@ -36,6 +36,10 @@ _Avoid_: playlist, queue, bin
 the budgeted set of decoded frames held for a long-gop clip (h.264, hevc), inside which stepping back is instant.
 _Avoid_: ring, gop cache, frame cache
 
+**navigator**:
+the small plan of the whole picture that stands at the lower left while the picture is zoomed past the window, the part in view marked on it. a press or a drag in it pans.
+_Avoid_: minimap, overview, viewer, thumbnail
+
 **chip**:
 a small label that stays on the picture while the view differs from the plain clip: zoom, speed, loop analysis, mirror, a single channel.
 _Avoid_: badge, toast, pill

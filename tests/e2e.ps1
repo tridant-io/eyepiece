@@ -187,6 +187,14 @@ $mid = Get-Middle
 Move-Pointer $mid[0] $mid[1]
 Send-Key 0x31; Assert-Title '1 is 1:1, and the title names the pixel under the pointer with its values' ' . 100% . x 32 y 32 . \d+ \d+ \d+$'
 [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536 + 0x8004), [IntPtr]0); Assert-Title 'shift + wheel zooms in one stop, about the pointer' ' . 200% . x 32 y 32 . '
+# the navigator: zoomed in past the window (several stops on, to 1200% or more: 64 pixels are then 768 or more), a
+# plan of the picture stands at the lower left, 112 square for this one, its foot 62 above the window's while the bar
+# is up. a press near its upper left corner brings that corner of the picture as near the middle as it goes: at
+# 1200% the window shows 53 by 30 of the picture's pixels, so the middle is then at 26, 15
+foreach ($i in 1..6) { Send-Key 0xBB }
+Move-Pointer $mid[0] $mid[1]; Assert-Title 'zoomed far in, the middle of the picture stays under the middle of the window' ' . 1[26]00% . x 32 y 32 . '
+Click-At 16 -168; Move-Pointer $mid[0] $mid[1]
+Wait-Title 'a press in the navigator brings that part of the picture to the middle' { param($t) $t -match ' x (\d+) y (\d+) ' -and [int]$Matches[1] -le 27 -and [int]$Matches[2] -le 15 } 'x 26 y 15 or less'
 Send-Key 0x30; Assert-Frame '0 fits the picture again' 0 3
 # the bar, from the right: fullscreen, sound, screenshots, metadata and the view (30 wide each), then the zoom, the speed
 # and the loop by name.
