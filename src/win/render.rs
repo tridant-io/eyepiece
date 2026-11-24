@@ -1636,7 +1636,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     Key::M => {
                         settings.mute = !settings.mute;
                         loudness(&mut speaker, settings);
-                        toast = say(if settings.mute { "muted" } else { "sound on" });
+                        ui.flash(if settings.mute { "muted" } else { "sound on" });
                     }
                     // a tenth a press; turning it up ends a mute
                     Key::Up | Key::Down => {
@@ -1644,7 +1644,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         settings.volume = ((settings.volume * 100.0).round() + by).clamp(0.0, 100.0) / 100.0;
                         settings.mute &= !matches!(key, Key::Up);
                         loudness(&mut speaker, settings);
-                        toast = say(format!("volume {}%", (settings.volume * 100.0).round()));
+                        ui.flash(&format!("volume {}%", (settings.volume * 100.0).round()));
                     }
                     // a screenshot: the file's frame at full size; with shift, the view as shown
                     Key::S => {

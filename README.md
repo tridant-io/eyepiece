@@ -24,6 +24,8 @@ loop analysis also says how the seam looks in numbers: a second reader of the cl
 
 the timebar's hover picture: with the pointer on the timebar, the frame under it is shown small over its number. a second reader of the clip reads it, so the picture on screen does not move; while frames are asked for faster than they can be read, only the newest is read, and the last picture stays up meanwhile, dim, since it is not of the frame named.
 
+with the controls away, what a key did is said at the lower left for a moment, as the design's fig. 09 has it: the frame a step landed on (or its timecode, when the readout counts in timecode), the clip another tab or a page key brought up, the loop mode, the volume and the mute.
+
 known gaps:
 
 - **a key that types nothing eats the next lone character.** the player drops the character a command key types; a key that types none (an arrow, home, control + W) or a command chosen in the right-click menu leaves the next character that comes without a key of the player's own to be dropped. it shows as a first digit from 3 to 9 typed into a menu's field going missing, and, after "open" or "new tab" from the right-click menu, as a first letter typed in the browser that the player has no key for (b, u, x, y) selecting nothing. found by reading the code, not tested.

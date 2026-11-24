@@ -70,6 +70,8 @@ const CHIP_IDLE: f64 = 2.0;
 /// left both the button and the panel
 const FACTS_IN: f64 = 0.35;
 const FACTS_OUT: f64 = 0.18;
+/// how long a word about what a key did stays at the lower left
+const FLASH: f64 = 1.1;
 /// a button's tooltip comes this long after the pointer comes onto it
 const TIP_IN: f64 = 0.5;
 
@@ -323,6 +325,10 @@ pub struct Ui {
     facts_button: Rect,
     /// where the mute button and its slider were drawn: the slider is out while the pointer is on either
     volume_rect: Rect,
+    /// what a key just did, said at the lower left until then (the design's fig. 09); and what was up at the last
+    /// pass, by which a change is known: the tab, its name, the frame and the loop mode
+    flash: Option<(Vec<(String, Color32)>, f64)>,
+    flash_seen: Option<(usize, String, usize, Loop)>,
     /// how far the strip's tabs are scrolled, when there are more than fit; the tab that was up, how many there
     /// were and the room they had when it was last drawn; and where the tabs are, while they overflow
     tab_scroll: f32,
@@ -377,6 +383,8 @@ impl Ui {
             facts_rect: Rect::NOTHING,
             facts_button: Rect::NOTHING,
             volume_rect: Rect::NOTHING,
+            flash: None,
+            flash_seen: None,
             tab_scroll: 0.0,
             tab_seen: (0, 0, 0),
             tabs_over: None,
@@ -510,6 +518,13 @@ impl Ui {
     /// the view changed by key or wheel: the zoom chip shows again.
     pub fn view_changed(&mut self) {
         self.view_changed = true;
+    }
+
+    /// says a few words at the lower left for a moment: what a key changed that the picture does not show (the
+    /// volume, the mute).
+    pub fn flash(&mut self, said: &str) {
+        let now = self.ctx.input(|i| i.time);
+        self.flash = Some((vec![(said.to_string(), FG)], now + FLASH));
     }
 
     /// a picture of a frame of the clip on screen, for the timebar: red, green and blue, a byte each.
@@ -694,6 +709,39 @@ impl Ui {
             left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0).right() + 8.0;
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
+        // with the controls away, what a key did is said at the lower left for a moment (the design's fig. 09): the
+        // clip another tab or a page key brought up, the loop mode, the frame a step landed on
+        let seen = (screen.current, screen.tabs[screen.current].to_string(), model.frame, model.looping);
+        if let Some(was) = self.flash_seen.replace(seen.clone()).filter(|was| *was != seen && !self.shown) {
+            let rate = model.rate.map_or_else(String::new, |(n, d)| if d == 1 { n.to_string() } else { format!("{n}/{d}") });
+            let said = if (was.0, &was.1) != (seen.0, &seen.1) {
+                let size = format!(" · {} × {} · ", model.shown_size.0, model.shown_size.1);
+                Some((vec![(seen.1.clone(), FG), (size, DIM), (rate, FG), (" fps".to_string(), DIM)], 2.0))
+            } else if was.3 != seen.3 {
+                let mode = match seen.3 {
+                    Loop::Off => "loop off",
+                    Loop::One => "loop one",
+                    Loop::All => "loop all",
+                };
+                Some((vec![(mode.to_string(), FG)], FLASH))
+            } else if !model.playing {
+                let (label, at) = stamp(model.frame, model.rate, self.timecode);
+                Some((vec![(format!("{label} "), DIM), (at, FG)], FLASH))
+            } else {
+                None
+            };
+            if let Some((parts, seconds)) = said {
+                self.flash = Some((parts, now + seconds));
+            }
+        }
+        match &self.flash {
+            Some((parts, until)) if now < *until => {
+                // 12 up from the bottom, and clear of the bar when it is up
+                chip(ui, Pos2::new(full.left() + 10.0, full.bottom() - 12.0 - 50.0 * alpha), Align2::LEFT_BOTTOM, parts, 1.0);
+                ui.ctx().request_repaint_after(Duration::from_secs_f64(until - now));
+            }
+            _ => self.flash = None,
+        }
         // the metadata panel, pinned: at the right under the chips, whether the controls are up or not
         if self.facts_pinned {
             let corner = Pos2::new(full.right() - 10.0, top + 34.0);
@@ -1314,14 +1362,8 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, ga
 /// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and the total in dim.
 /// on a narrow bar the timecode's total is left out.
 fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
-    let fps = model.rate.map(|(n, d)| (n as f64 / d as f64).round() as usize).filter(|f| *f > 0);
-    let (label, at, total) = match fps.filter(|_| timecode) {
-        Some(fps) => {
-            let tc = |f: usize| format!("{:02}:{:02}:{:02}:{:02}", f / fps / 3600, f / fps / 60 % 60, f / fps % 60, f % fps);
-            ("TC", tc(model.frame), (!narrow).then(|| tc(model.frames)))
-        }
-        None => ("F", format!("{:06}", model.frame), Some(format!("{:06}", model.frames))),
-    };
+    let (label, at) = stamp(model.frame, model.rate, timecode);
+    let total = Some(stamp(model.frames, model.rate, timecode).1).filter(|_| label == "F" || !narrow);
     let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
     let mut job = LayoutJob::default();
     job.append(label, 0.0, text(9.5, DIM, 9.5 * 0.12));
@@ -1330,6 +1372,15 @@ fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
         job.append(&format!(" / {total}"), 0.0, text(11.5, DIM, 11.5 * 0.02));
     }
     job
+}
+
+/// a frame as the readout names it: "F" and its number, or "TC" and its timecode when that is asked for and the clip
+/// has a rate to count it by.
+fn stamp(frame: usize, rate: Option<(i64, i64)>, timecode: bool) -> (&'static str, String) {
+    match rate.map(|(n, d)| (n as f64 / d as f64).round() as usize).filter(|fps| *fps > 0 && timecode) {
+        Some(fps) => ("TC", format!("{:02}:{:02}:{:02}:{:02}", frame / fps / 3600, frame / fps / 60 % 60, frame / fps % 60, frame % fps)),
+        None => ("F", format!("{frame:06}")),
+    }
 }
 
 /// a line of trouble with the amber edge: the one place amber is used, for a fault in the file. returns its box.
@@ -1366,6 +1417,27 @@ mod tests {
             }
         });
         out.textures_delta.clear();
+    }
+
+    /// the design's fig. 09: a step taken with the controls away says the frame it landed on, at the lower left, for
+    /// a moment; with the controls up it says nothing, the readout being there.
+    #[test]
+    fn a_step_with_the_controls_away_says_its_frame() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let screen = |frame| Screen { tabs: vec!["clip"], current: 0, clip: Some(Model { frame, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+        let mut pass = |ui: &mut Ui, frame| ui.run(&screen(frame)).textures.clear();
+        pass(&mut ui, 0);
+        assert!(ui.flash.is_none(), "nothing is said of a clip that only came up");
+        pass(&mut ui, 1);
+        let said: String = ui.flash.as_ref().expect("the step is said").0.iter().map(|(words, _)| words.as_str()).collect();
+        assert_eq!(said, "F 000001");
+        // the pointer over the picture brings the controls up: a step then is not said again
+        ui.flash = None;
+        ui.pointer_move(320.0, 180.0);
+        pass(&mut ui, 1);
+        pass(&mut ui, 2);
+        assert!(ui.flash.is_none(), "said with the controls up");
+        assert_eq!((stamp(742, Some((60000, 1001)), false), stamp(742, Some((24, 1)), true)), (("F", "000742".to_string()), ("TC", "00:00:30:22".to_string())));
     }
 
     /// thirty tabs at their least width in room for five: the strip scrolls to the tab that comes up, and stays
