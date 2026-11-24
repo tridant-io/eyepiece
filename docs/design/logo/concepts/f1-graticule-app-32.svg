@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>eyepiece / graticule / app icon 32 px, pixel-snapped</title>
+  <rect x="1" y="1" width="30" height="30" rx="6" fill="#161616"/>
+  <path fill="#ededed" fill-rule="evenodd" d="M16 5a11 11 0 1 1 0 22a11 11 0 1 1 0-22zM16 7a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM9 18h14v1h-14zM9 16h1v2h-1zM11 16h1v2h-1zM13 16h1v2h-1zM15 16h1v2h-1zM20 16h1v2h-1zM22 16h1v2h-1z"/>
+  <path fill="#ff5a36" d="M17 10h2v12h-2z"/>
+</svg>

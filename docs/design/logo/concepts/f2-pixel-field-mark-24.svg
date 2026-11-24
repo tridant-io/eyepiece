@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+  <title>eyepiece / pixel-field / 24 px, pixel-snapped</title>
+  <path fill-rule="evenodd" d="M9 8V2.46A10 10 0 0 1 15 2.46V8zM15 16V21.54A10 10 0 0 1 9 21.54V16zM8 9H2.46A10 10 0 0 0 2.46 15H8zM16 9H21.54A10 10 0 0 1 21.54 15H16zM8 8H2.83A10 10 0 0 1 8 2.83zM16 8V2.83A10 10 0 0 1 21.17 8zM16 16H21.17A10 10 0 0 1 16 21.17zM8 16V21.17A10 10 0 0 1 2.83 16z"/>
+  <path d="M9 9h6v6h-6z"/>
+</svg>

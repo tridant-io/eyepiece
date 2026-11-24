@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>eyepiece / pixel-field / app icon 32 px, light, pixel-snapped</title>
+  <rect x="1" y="1" width="30" height="30" rx="6" fill="#f0eadb"/>
+  <path fill="#1a1812" fill-rule="evenodd" d="M13 11V5.42A11 11 0 0 1 19 5.42V11zM19 21V26.58A11 11 0 0 1 13 26.58V21zM11 13H5.42A11 11 0 0 0 5.42 19H11zM21 13H26.58A11 11 0 0 1 26.58 19H21zM11 11H6.2A11 11 0 0 1 11 6.2zM21 11V6.2A11 11 0 0 1 25.8 11zM21 21H25.8A11 11 0 0 1 21 25.8zM11 21V25.8A11 11 0 0 1 6.2 21z"/>
+  <path fill="#ff5a36" d="M13 13h6v6h-6z"/>
+</svg>

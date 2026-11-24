@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="currentColor">
+  <title>eyepiece / pixel field</title>
+  <path d="M15 15H5.03A21 21 0 0 1 15 5.03zM18 15V3.88a21 21 0 0 1 12 0V15zM33 15V5.03A21 21 0 0 1 42.97 15zM15 18H3.88a21 21 0 0 0 0 12H15zM33 18h11.12a21 21 0 0 1 0 12H33zM15 33v9.97A21 21 0 0 1 5.03 33zM18 33h12v11.12a21 21 0 0 1-12 0zM33 33h9.97A21 21 0 0 1 33 42.97z"/>
+  <path d="M18 18h12v12H18z"/>
+</svg>

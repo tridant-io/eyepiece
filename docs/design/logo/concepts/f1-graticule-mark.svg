@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="currentColor">
+  <title>eyepiece / graticule</title>
+  <path fill-rule="evenodd" d="M24 3a21 21 0 1 1 0 42a21 21 0 1 1 0-42zm0 3a18 18 0 1 0 0 36a18 18 0 1 0 0-36z"/>
+  <path d="M9 27h30v1.5H9zM9 24h1.5v3H9zm4.5 0H15v3h-1.5zM18 24h1.5v3H18zm4.5 0H24v3h-1.5zM33 24h1.5v3H33zm4.5 0H39v3h-1.5z"/>
+  <path d="M27 13.5h3V33h-3z"/>
+</svg>

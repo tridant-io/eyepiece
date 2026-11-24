@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <title>eyepiece / reticle-e / app icon 24 px, pixel-snapped</title>
+  <rect x="1" y="1" width="22" height="22" rx="4.5" fill="#161616"/>
+  <path fill="#ededed" fill-rule="evenodd" d="M19.37 17.16A9 9 0 1 1 20.94 11L20.94 13H5.07A7 7 0 0 0 17.73 16.02zM5.07 11A7 7 0 0 1 18.93 11z"/>
+  <path fill="#ededed" d="M5.07 11H20.94L20.94 13H5.07z"/>
+</svg>

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+  <title>eyepiece / graticule / 24 px, pixel-snapped</title>
+  <path fill-rule="evenodd" d="M12 2a10 10 0 1 1 0 20a10 10 0 1 1 0-20zM12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16zM6 14h12v1h-12zM6 12h1v2h-1zM8 12h1v2h-1zM10 12h1v2h-1zM15 12h1v2h-1zM17 12h1v2h-1z"/>
+  <path d="M12 7h2v10h-2z"/>
+</svg>
