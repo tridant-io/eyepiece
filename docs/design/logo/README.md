@@ -1,8 +1,9 @@
 # eyepiece mark
 
 not chosen yet. the owner asked for a mark that sits with the product icons on tridant.io and stands on its own
-(2026-11-23). two rounds have been drawn. the drawings are in `concepts/`, the sheets beside this file.
+(2026-11-23). three rounds have been made. the drawings are in `concepts/`, the sheets beside this file.
 
+- `sheet-render.png`, `eyepiece-render.png`, `3d/eyepiece.py`: round three, F rendered in blender (below).
 - `sheet-lens.png`, `sheet-lens-large.png`: round two, the lens (below). six directions, each as an app icon dark and
   light from 256 to 16 px, and its flat mark between starlight and owlette; and the six app icons large.
 - `sheet-family.png`: each of round one's finalists placed in the site's own products strip, light and dark, and at
@@ -20,6 +21,29 @@ not chosen yet. the owner asked for a mark that sits with the product icons on t
 4. each mark nods to its name in geometry, never as a letter.
 5. the desktop app icon follows starlight's: a rounded body on paper or night, with 16, 24 and 32 px layers drawn
    by hand.
+
+## round three: F, rendered (2026-11-24)
+
+the owner took F, asked for it a little more straight on, and for a render of it in blender: a product shot, exact,
+well lit, readable very small and very large.
+
+- `3d/eyepiece.py` builds and renders it: `blender --background --factory-startup --python 3d/eyepiece.py -- --out
+  x.png --size 2048 --samples 512 --tilt 40` (blender 5.0; 19 s for 2048 px on this pc's gpu). every part is a lathe
+  profile in the script. `eyepiece-render.png` is its picture at 40 degrees, on nothing. `sheet-render.png` sets it
+  in the app icon's body at every size, with two other angles, an all-black finish and the two engines side by side.
+- the engine: cycles. blender has two, and in the same scene eevee, the real-time one, shows the dark glass gray and
+  the orange washed out (the sheet's last row). no other engine is installed, and none was added.
+- the angle: 40 degrees off the axis. the drawn F was at 53; 33 and 47 are on the sheet.
+- the finish: a bright turned bezel, a black ribbed grip, a chrome barrel. all black, as most eyepieces are, it is
+  lost on the app icon's dark body but for its edges (on the sheet).
+- the glass shows two things and no more, as the drawing did: a light along its upper left edge and the one orange
+  low on the right, which came out as #eb5231 where the player's is #ff5a36. each is a light placed where that part
+  of the glass looks, and lights nothing else.
+- what is not exact: only the barrel's 31.75 mm is a standard's, the rest is a plossl's proportions by eye; the glass
+  is its upper surface alone, since a whole lens showed every light three times over; the grip's ribs are shading,
+  not shape; nothing is engraved.
+- small: from 48 px down the render made small is a ring and a blur, as the sheet shows. it stands for 64 px and up;
+  16 to 48 still want layers drawn for their size.
 
 ## round two: the lens (2026-11-24)
 
@@ -54,7 +78,7 @@ made small, and show what is lost.
 
 ## open with the owner
 
-- which direction of round two to take further, or what is still missing from all of them.
+- the render of F: the angle, the finish, and what it still lacks.
 - its tone on the site. the player's orange (#ff5a36) reads as a second transmission there, and graphite as
   "disabled"; violet (#7d3fb8 light, #b384ea dark) is the one hue the family does not use. orange stays as the
   single accent inside the app icon.
