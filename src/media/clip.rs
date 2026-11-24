@@ -110,6 +110,7 @@ pub(super) fn codec_name(video: &Video) -> Option<&'static str> {
         "h264" => Some("h.264"),
         "hevc" => Some("hevc"),
         "prores" => Some("prores"),
+        "notchlc" => Some("notchlc"),
         _ => None,
     })
 }
@@ -147,7 +148,7 @@ impl Clip {
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
         let tag = ff::fourcc(video.tag);
         let name = file_name(path);
-        let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, prores, h.264 and hevc.", video.codec_name))?;
+        let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, notchlc, prores, h.264 and hevc.", video.codec_name))?;
         let (samples, timeline, step) = frames(&video, input.samples(video.index));
         let lane = if hap_variant(&tag).is_some() {
             Lane::Hap(HapLane::open(path, samples, video.width, video.height)?)
@@ -160,8 +161,8 @@ impl Clip {
                 (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates do not play yet.")),
             };
             let size = (video.width, video.height);
-            if codec == "prores" {
-                // prores decodes in software here, so it need not wait for the graphics device: its first frame is
+            if codec == "prores" || codec == "notchlc" {
+                // these decode in software here, so they need not wait for the graphics device: the first frame is
                 // being decoded while the device is made, which takes longer than anything else in a start
                 Lane::Video(VideoLane::open(path, video.index, samples, step, size, None)?)
             } else {
