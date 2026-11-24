@@ -1405,7 +1405,8 @@ mod tests {
         let actions = drive(&mut ui, &[(next.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
         assert_eq!(actions, vec![], "the click on the button only took the table away");
         assert!(!ui.keys);
-        let actions = drive(&mut ui, &[(next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
+        // the bar stepped aside for the table: the pointer moves, and it comes back
+        let actions = drive(&mut ui, &[(next.0 + 1.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
         assert_eq!(actions, vec![Action::Step(1)]);
         // nor does a double click on the picture whose first click took the table away fill the display
         ui.show_keys();
