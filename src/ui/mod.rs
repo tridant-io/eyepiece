@@ -167,6 +167,9 @@ pub struct Extras {
     pub markup: bool,
 }
 
+/// a picture for the timebar: the frame it is of, its width and height, and its red, green and blue, a byte each
+type TimePicture = (usize, [usize; 2], Vec<u8>);
+
 /// where a tab that plays a folder is in it: the folder's name, the clip that is up, how many there are, and the
 /// clip's name
 #[derive(Clone, Copy)]
@@ -380,8 +383,11 @@ pub struct Ui {
     tab_scroll: f32,
     tab_seen: (usize, usize, i32),
     tabs_over: Option<Rect>,
-    /// the frame under the pointer on the timebar, and the picture last had for the timebar with the frame it is of
+    /// the frame under the pointer on the timebar; the pictures had for the timebar, each with the frame it is of and
+    /// its size: the clip's timebar strip, in order, and the one read last; and the one shown
     time_hover: Option<usize>,
+    time_strip: Vec<TimePicture>,
+    time_read: Option<TimePicture>,
     time_picture: Option<(usize, egui::TextureHandle)>,
     /// the table of keys is up; the right-click menu is open, from where it was asked for, and was drawn there last
     keys: bool,
@@ -437,6 +443,8 @@ impl Ui {
             tab_seen: (0, 0, 0),
             tabs_over: None,
             time_hover: None,
+            time_strip: Vec::new(),
+            time_read: None,
             time_picture: None,
             keys: false,
             commands: None,
@@ -594,15 +602,21 @@ impl Ui {
         self.flash = Some((vec![(said.to_string(), FG)], now + FLASH));
     }
 
-    /// a picture of a frame of the clip on screen, for the timebar: red, green and blue, a byte each.
-    pub fn timebar_picture(&mut self, frame: usize, (width, height): (u32, u32), pixels: &[u8]) {
-        let image = egui::ColorImage::from_rgb([width as usize, height as usize], pixels);
-        self.time_picture = Some((frame, self.ctx.load_texture("timebar picture", image, egui::TextureOptions::LINEAR)));
+    /// a picture of a frame of the clip on screen, for the timebar: red, green and blue, a byte each. one of the clip's
+    /// `strip` is kept while the clip is up; any other takes the place of the one read before.
+    pub fn timebar_picture(&mut self, frame: usize, (width, height): (u32, u32), pixels: Vec<u8>, strip: bool) {
+        let picture = (frame, [width as usize, height as usize], pixels);
+        if strip {
+            let at = self.time_strip.partition_point(|(of, ..)| *of < frame);
+            self.time_strip.insert(at, picture);
+        } else {
+            self.time_read = Some(picture);
+        }
     }
 
-    /// the clip on screen is another one now: the timebar's picture is not of it.
+    /// the clip on screen is another one now: the timebar's pictures are not of it.
     pub fn forget_timebar_picture(&mut self) {
-        self.time_picture = None;
+        (self.time_strip, self.time_read, self.time_picture) = (Vec::new(), None, None);
     }
 
     /// pins the metadata panel open, or lets it go.
@@ -1338,10 +1352,15 @@ impl Ui {
                 actions.push(if model.seam.is_some() { Action::SeekPlace(to) } else { Action::Seek(to) });
             }
         }
-        // the frame under the pointer: its number, and over it its picture once the spare reader has read one (the
-        // one it read last stays up meanwhile). the design's box: the picture 160 by 90 inside a margin of 2
+        // the frame under the pointer: its number, and over it the picture nearest it of those had, which is at once
+        // one of the clip's strip and then the frame itself, or the key frame nearest it, once the spare reader has
+        // read that. the design's box: the picture 160 by 90 inside a margin of 2
         self.time_hover = response.hover_pos().filter(|_| model.seam.is_none()).map(|p| stop_at(p.x));
         if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
+            let nearest = self.time_strip.iter().chain(&self.time_read).min_by_key(|(of, ..)| of.abs_diff(frame));
+            if let Some((of, size, pixels)) = nearest.filter(|(of, ..)| self.time_picture.as_ref().is_none_or(|(shown, _)| shown != of)) {
+                self.time_picture = Some((*of, ui.ctx().load_texture("timebar picture", egui::ColorImage::from_rgb(*size, pixels), egui::TextureOptions::LINEAR)));
+            }
             let galley = painter.layout_no_wrap(stamp(frame, model.first, model.clock, self.timecode).1, font(MONO_MEDIUM, 10.5), FG);
             let size = match &self.time_picture {
                 Some(_) => Vec2::new(164.0, 2.0 + 90.0 + galley.size().y + 10.0),
@@ -1352,14 +1371,11 @@ impl Ui {
             painter.rect_filled(rect, 0.0, SOLID);
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
             let mut number = rect;
-            if let Some((of, picture)) = &self.time_picture {
+            if let Some((_, picture)) = &self.time_picture {
                 let place = Rect::from_min_size(rect.min + Vec2::splat(2.0), Vec2::new(160.0, 90.0));
                 painter.rect_filled(place, 0.0, Color32::BLACK);
                 let fitted = Rect::from_center_size(place.center(), picture.size_vec2() * (place.width() / picture.size_vec2().x).min(place.height() / picture.size_vec2().y));
-                // a picture of another frame than the one named is the last one read, up while that frame is on
-                // its way (or is not read at all, as while a clip with long groups plays): it is drawn dim
-                let tint = if *of == frame { Color32::WHITE } else { Color32::from_gray(90) };
-                painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
+                painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                 number = Rect::from_min_max(Pos2::new(rect.left(), place.bottom()), rect.max);
             }
             painter.galley(Pos2::new(number.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), number.center().y)), galley, FG);
@@ -1752,6 +1768,31 @@ mod tests {
             }
         });
         out.textures_delta.clear();
+    }
+
+    /// the design's hybrid (fig. 04, plan section 06): in the pass the pointer comes onto the timebar, the picture of
+    /// the strip nearest the frame under it shows; the picture read for that frame takes its place once it comes, and
+    /// stays the nearest had. the timebar is the bottom 13 of the window; 180 frames run along its 640
+    #[test]
+    fn the_timebar_shows_the_nearest_picture_had_at_once() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        for frame in [120, 0] {
+            ui.timebar_picture(frame, (2, 1), vec![frame as u8; 6], true);
+        }
+        // (egui finds what is under the pointer by the pass before: two passes)
+        let shown = |ui: &mut Ui, x: f32| {
+            drive_with(ui, Model { frames: 180, ..model() }, &[(x, 357.0, None), (x, 357.0, None)]);
+            (ui.time_hover, ui.time_picture.as_ref().map(|(of, picture)| (*of, picture.size())))
+        };
+        // frame 60 is as near the strip's 0 as its 120: the earlier
+        assert_eq!(shown(&mut ui, 640.0 / 3.0), (Some(60), Some((0, [2, 1]))));
+        ui.timebar_picture(60, (4, 2), vec![60; 24], false);
+        assert_eq!(shown(&mut ui, 640.0 / 3.0), (Some(60), Some((60, [4, 2]))));
+        assert_eq!(shown(&mut ui, 220.0), (Some(62), Some((60, [4, 2]))));
+        assert_eq!(shown(&mut ui, 600.0), (Some(168), Some((120, [2, 1]))));
+        // another clip: nothing is had of it
+        ui.forget_timebar_picture();
+        assert_eq!(shown(&mut ui, 600.0), (Some(168), None));
     }
 
     /// a right click and the passes after it, at one place

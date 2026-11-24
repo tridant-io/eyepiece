@@ -7,7 +7,7 @@ use super::ff::{Input, Sample};
 use super::source::{self, Loader, Source};
 use ffmpeg_sys_next as ffi;
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// memory given to decoded pictures kept after they were handed out. in a clip with key frames far apart, a frame
 /// that is not kept costs a decode of everything since the key frame before it, so the frames just played or just
@@ -37,6 +37,16 @@ pub struct VideoLane {
     pub layout: Layout,
     /// every frame is a key frame: any one is decoded without the ones before it
     pub alone: bool,
+    /// the clip's key frames, shared with its loader, which puts them right (`keys_only`)
+    keys: Arc<Mutex<Keys>>,
+}
+
+/// a clip's key frames by frame: none when every frame is one. at first each is where the file's table places it,
+/// which in an open group (x265's default) is a few frames before the frame it is shown as
+struct Keys {
+    frames: Vec<usize>,
+    /// a key frame asked for at its place is decoded alone: taken as it is, and put at the frame it turned out to be
+    only: bool,
 }
 
 /// how a decoded picture's time tells which frame it is.
@@ -65,6 +75,7 @@ struct VideoLoader {
     hidden: usize,
     /// the file and the stream, when frames are decoded several at once and each worker opens its own decoder
     reopen: Option<(String, usize)>,
+    keys: Arc<Mutex<Keys>>,
 }
 
 /// true when ffmpeg's decoder for the stream shares one frame out across cores.
@@ -95,11 +106,14 @@ impl VideoLane {
         }
         let layout = first.layout()?;
         let hidden = samples.iter().filter(|s| s.hidden).count();
+        // frame n is at about place n + hidden, as `load` takes it
+        let keys = if alone { Vec::new() } else { (hidden..samples.len()).filter(|&at| samples[at].key).map(|at| at - hidden).collect() };
+        let keys = Arc::new(Mutex::new(Keys { frames: keys, only: false }));
         // frames that stand alone, in software, from a decoder that keeps each frame to one core (notchlc): several at
         // once, each worker with a decoder of its own. prores shares a frame out across cores itself
         let shared = alone && !layout.hardware && !splits_frames(&input, stream);
         let reopen = shared.then(|| (path.to_string(), stream));
-        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), times, next: Some(1), recent: VecDeque::new(), kept: if shared { 0 } else { kept }, hidden, reopen };
+        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), times, next: Some(1), recent: VecDeque::new(), kept: if shared { 0 } else { kept }, hidden, reopen, keys: keys.clone() };
         let first = Arc::new(first);
         let source = if shared {
             // counted as four planes the size of luma: the most a software picture holds (4:4:4 with alpha, as
@@ -110,7 +124,19 @@ impl VideoLane {
             loader.remember(0, first);
             Source::start(loader)?
         };
-        Ok(VideoLane { source, layout, alone })
+        Ok(VideoLane { source, layout, alone, keys })
+    }
+
+    /// the frames decoding can start at, as far as they are known (`Keys`). empty when every frame stands alone.
+    pub fn keys(&self) -> Vec<usize> {
+        self.keys.lock().unwrap().frames.clone()
+    }
+
+    /// for a reader that asks for nothing but key frames (the timebar's): from now on a key frame asked for at its
+    /// place is taken as it is, never the group before it decoded for the frame at that place, and `keys` learns
+    /// the frame it is.
+    pub fn keys_only(&self) {
+        self.keys.lock().unwrap().only = true;
     }
 }
 
@@ -141,6 +167,13 @@ impl VideoLoader {
     fn key_at_or_before(&self, at: usize) -> usize {
         (0..=at.min(self.samples.len() - 1)).rev().find(|&i| self.samples[i].key).unwrap_or(0)
     }
+
+    /// a time to seek to for the key frame at place `key` alone: inside its group, past when it is shown. at its own
+    /// time ffmpeg's mov reader goes back to the key frame before one that is shown after its place (an open group),
+    /// for the pictures shown before it, and the whole group before would be decoded.
+    fn inside(&self, key: usize) -> i64 {
+        self.samples[(key + 1..self.samples.len()).take_while(|&at| !self.samples[at].key).take(NEAR).last().unwrap_or(key)].time
+    }
 }
 
 impl Loader for VideoLoader {
@@ -153,13 +186,18 @@ impl Loader for VideoLoader {
         // a key frame's place in decode order is never later than its place in display order, so the last key frame
         // at or before this frame's place is where decoding can start
         let mut key = self.key_at_or_before(frame + self.hidden);
+        // a key frame asked for at its place by a reader of key frames alone (`VideoLane::keys_only`)
+        let key_alone = {
+            let keys = self.keys.lock().unwrap();
+            keys.only && keys.frames.contains(&frame)
+        };
         // decode on from where the decoder is when the frame is ahead and either near, or with no key frame in
         // between to start from instead. otherwise start at the key frame. with frames decoded several at once, the
         // ones in between are other workers'
         let near = if self.reopen.is_some() { 0 } else { NEAR };
         let walk = self.next.is_some_and(|next| next <= frame && (frame - next <= near || key <= next + self.hidden));
         if !walk {
-            self.decoder.seek(&self.input, self.samples[key].time)?;
+            self.decoder.seek(&self.input, if key_alone { self.inside(key) } else { self.samples[key].time })?;
             self.next = None;
         }
         let mut passed_earlier = walk;
@@ -185,6 +223,14 @@ impl Loader for VideoLoader {
             if passed_earlier || key == 0 {
                 return Err("this frame is missing from the file".into());
             }
+            // the key frame is shown after its place (an open group): a reader of key frames alone takes it as it is,
+            // and learns which frame it is
+            if key_alone {
+                if let Some(place) = self.keys.lock().unwrap().frames.iter_mut().find(|k| **k == frame) {
+                    *place = at;
+                }
+                return Ok(Some(picture));
+            }
             // the key frame we started at is shown after the frame wanted: the frame belongs to the group before
             key = self.key_at_or_before(key - 1);
             self.decoder.seek(&self.input, self.samples[key].time)?;
@@ -197,7 +243,7 @@ impl Loader for VideoLoader {
         let input = Input::open(&path).ok()?;
         let decoder = Decoder::open(&input, stream, None, true, 0).ok()?;
         let samples = self.samples.clone();
-        Some(VideoLoader { input, decoder, samples, first_time: self.first_time, times: self.times.clone(), next: None, recent: VecDeque::new(), kept: 0, hidden: self.hidden, reopen: Some((path, stream)) })
+        Some(VideoLoader { input, decoder, samples, first_time: self.first_time, times: self.times.clone(), next: None, recent: VecDeque::new(), kept: 0, hidden: self.hidden, reopen: Some((path, stream)), keys: self.keys.clone() })
     }
 }
 

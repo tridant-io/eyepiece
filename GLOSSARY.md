@@ -24,6 +24,10 @@ _Avoid_: thumbnail
 the 24 small frames per file that let a browser card scrub under the pointer. made the first time a card is hovered, then kept in the cache.
 _Avoid_: strip, sprite, thumbnails, storyboard
 
+**timebar strip**:
+the small frames of the clip on screen made ready for the timebar's picture, once its first frame is up: one every two seconds, at most 100, and only key frames in a clip with long groups. the nearest shows at once while the frame under the pointer is read. the design's "denser strip" (section 06).
+_Avoid_: strip alone (that is the row of tabs), hover previews (those are a card's), thumbnails, filmstrip
+
 **played folder**:
 the clips of one folder that a tab plays one after another, in name order. the loop mode all goes round it.
 _Avoid_: playlist, queue, bin
@@ -59,3 +63,4 @@ _Avoid_: title bar, tab bar, header
 ## Flagged ambiguities
 
 - **read-only** means the app never writes to media. **look-only** means the app does not even open files on a network folder. a local folder is read-only but not look-only.
+- **strip** alone is the row of tabs at the top of the window. the design's section 06 also calls the frames made ready for the timebar a strip: that is always the **timebar strip**.

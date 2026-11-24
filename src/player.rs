@@ -1419,7 +1419,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // the network folder play was last asked about, and until when asking for it again plays it
     let mut asked_folder: Option<(std::path::PathBuf, Instant)> = None;
     // a second reader of the clip on screen, for loop analysis
-    let spare = pictures::start_spare(wake.clone());
+    let spare = pictures::start_spare(wake.clone(), playing_now.clone());
     // the clip the spare reader has in hand for the timebar, and the frame last asked of it
     let (mut time_of, mut time_asked): (Option<String>, Option<(String, usize)>) = (None, None);
     let mut ui_painter = match UiPainter::new(&gpu) {
@@ -1823,11 +1823,15 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         // loop analysis asks, once for a clip, how much changes across its seam; the answer comes when it is read
         if let Some(spare) = &spare {
             // a clip that is another one now (a new tab up, a file opened or changed on disk) is let go first, and
-            // the timebar's picture with it: nothing is answered from the clip that was
-            let up = tabs.tab().path.clone().filter(|_| tabs.tab().view.is_some());
+            // the timebar's pictures with it: nothing is answered from the clip that was. a clip counts once its first
+            // frame is up, and then its timebar strip is made: behind everything else, and not of a clip of one frame
+            let up = tabs.tab().path.clone().filter(|_| tabs.tab().view.as_ref().is_some_and(|v| v.shown.is_some()));
             let asking = up.clone().zip(out.hovered);
             if up != time_of {
                 spare.ask(Ask::Forget);
+                if let Some(path) = up.as_ref().filter(|_| tabs.view().is_some_and(|v| v.clip.timeline.frames() > 1)) {
+                    spare.ask(Ask::Strip(path.into()));
+                }
                 ui.forget_timebar_picture();
                 (time_of, time_asked) = (up, None);
             }
@@ -1850,9 +1854,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                             v.seam_change = seam;
                         }
                     }
-                    Answer::Frame { path, frame, width, height, pixels } => {
+                    Answer::Frame { path, frame, width, height, pixels, strip } => {
                         if time_of.as_deref().map(Path::new) == Some(path.as_path()) {
-                            ui.timebar_picture(frame, (width, height), &pixels);
+                            ui.timebar_picture(frame, (width, height), pixels, strip);
                         }
                     }
                 }

@@ -20,11 +20,13 @@ const POSTER_TRIES: usize = 3;
 
 /// a clip opened for its pictures
 pub trait Reader {
-    /// how many frames it has, and its size in pixels
+    /// how many frames it has, its size in pixels, and frames a second
     fn frames(&self) -> usize;
     fn size(&self) -> (u32, u32);
-    /// every frame can be read without decoding the ones before it
-    fn stands_alone(&self) -> bool;
+    fn rate(&self) -> f64;
+    /// the frames decoding can start at, in order, as far as they are known. None when every frame can be read
+    /// without decoding the ones before it
+    fn keys(&self) -> Option<Vec<usize>>;
     /// the frame drawn `w` x `h`: four 16-bit numbers a pixel (red, green, blue, alpha), row by row. None when it
     /// cannot be had
     fn read(&mut self, frame: usize, w: u32, h: u32) -> Option<Vec<u16>>;
@@ -86,7 +88,7 @@ pub fn frames(clip_frames: usize) -> Vec<usize> {
 
 /// the order `count` previews are made in, as places in `frames`: the poster first, which is the middle one, then
 /// the first, the halves, the quarters and so on (the design's 0, 12, 6, 18 …), so a card scrubs coarsely at once.
-fn order(count: usize) -> Vec<usize> {
+pub(super) fn order(count: usize) -> Vec<usize> {
     let mut order = vec![count / 2];
     let mut step = count.max(1);
     loop {
@@ -112,7 +114,7 @@ fn size(w: u32, h: u32) -> (u32, u32) {
 
 /// a frame of a clip as a small picture: its size, and its pixels, red, green and blue, a byte each. the frame is
 /// drawn at up to `OVER` times that size each way and averaged down. None when the frame cannot be read.
-pub(super) fn small<R: Reader>(clip: &mut R, frame: usize) -> Option<((u32, u32), Vec<u8>)> {
+pub(crate) fn small<R: Reader>(clip: &mut R, frame: usize) -> Option<((u32, u32), Vec<u8>)> {
     let full = clip.size();
     let small = size(full.0, full.1);
     let by = (full.0 / small.0).min(full.1 / small.1).clamp(1, OVER);
@@ -297,8 +299,11 @@ mod tests {
         fn size(&self) -> (u32, u32) {
             (8, 4)
         }
-        fn stands_alone(&self) -> bool {
-            true
+        fn rate(&self) -> f64 {
+            60.0
+        }
+        fn keys(&self) -> Option<Vec<usize>> {
+            None
         }
         fn read(&mut self, frame: usize, w: u32, h: u32) -> Option<Vec<u16>> {
             self.0.fetch_add(1, Ordering::Relaxed);

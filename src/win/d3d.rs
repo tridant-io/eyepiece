@@ -320,7 +320,18 @@ impl Gpu {
             self.ctx.Unmap(&copy, 0);
             // back to the window, for whoever draws next
             self.ctx.OMSetRenderTargets(Some(std::slice::from_ref(&self.rtv)), None);
+            // the two pictures are let go now: a device with no window never presents, and without a flush their
+            // memory stayed taken (a hundred 4K timebar pictures held 760 MB of the gpu's)
+            drop((target, view, copy));
+            self.flush();
             Ok(out)
+        }
+    }
+
+    /// hands the device's work to the gpu now, and with it the memory of what was let go.
+    pub fn flush(&self) {
+        unsafe {
+            self.ctx.Flush();
         }
     }
 

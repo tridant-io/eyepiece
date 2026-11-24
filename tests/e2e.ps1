@@ -28,14 +28,15 @@ public static class EyepiecePicture {
   [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
   [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Rect r);
   [StructLayout(LayoutKind.Sequential)] struct Rect { public int L, T, R, B; }
-  // pixels of bright text (every channel over 200) in a part of the window's picture area
-  public static int Bright(IntPtr h, int x0, int y0, int x1, int y1) {
+  // pixels of bright text (every channel over 200) in a part of the window's picture area; with `any`, pixels that are
+  // not near black (a channel over 60)
+  public static int Bright(IntPtr h, int x0, int y0, int x1, int y1, bool any) {
     Rect c; GetClientRect(h, out c);
     using (var bmp = new Bitmap(c.R, c.B)) {
       using (var g = Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 3); g.ReleaseHdc(dc); }
       int n = 0;
       for (int y = Math.Max(0, y0); y < Math.Min(c.B, y1); y++)
-        for (int x = Math.Max(0, x0); x < Math.Min(c.R, x1); x++) { var p = bmp.GetPixel(x, y); if (Math.Min(p.R, Math.Min(p.G, p.B)) > 200) n++; }
+        for (int x = Math.Max(0, x0); x < Math.Min(c.R, x1); x++) { var p = bmp.GetPixel(x, y); if (any ? Math.Max(p.R, Math.Max(p.G, p.B)) > 60 : Math.Min(p.R, Math.Min(p.G, p.B)) > 200) n++; }
       return n;
     }
   }
@@ -92,10 +93,11 @@ function RightClick-At([double]$x, [double]$y) {
     [void][EyepieceE2e]::PostMessage($script:h, 0x204, [IntPtr]0x8002, $at); Start-Sleep -Milliseconds 60
     [void][EyepieceE2e]::PostMessage($script:h, 0x205, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 200
 }
-# bright text between two corners of the window, in the design's pixels as Get-Place takes them
-function Get-Bright([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
+# bright text between two corners of the window, in the design's pixels as Get-Place takes them; with -Any, what is not
+# near black
+function Get-Bright([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]$Any) {
     $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
-    [EyepiecePicture]::Bright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16))
+    [EyepiecePicture]::Bright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16), $Any.IsPresent)
 }
 function Get-Height { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.B / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 function Get-Width { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.R / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
@@ -303,6 +305,15 @@ Send-Key 0x47 2; Assert-Frame 'h.264: and forward again, across it' 17 24 'hardw
 Send-Key 0x24; Assert-Frame 'h.264: home goes to the first frame' 0 24 'hardware'
 Send-Key 0x20; Start-Sleep -Milliseconds 1500; Send-Key 0x20
 Assert-Title 'h.264 plays and pauses on a real frame, none unshowable' '^h264_320\.mp4 . \d+ / 24 . .*, hardware . 15360/512 fps( . \d+ late)?$'
+# the timebar's picture (fig. 04) while a clip with long groups plays, when no frame of it is read: the timebar strip's,
+# made while the clip stood still. the window is tall, so the picture's place, 82 to 172 up from the bottom, is over
+# black and not over the clip
+[void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 640, 900, 0x0006); Start-Sleep -Milliseconds 300
+$picture = 250, -165, 390, -90
+Move-Pointer 320 300; Start-Sleep -Milliseconds 300
+$before = Get-Bright @picture -Any
+Send-Key 0x20; Move-Pointer 320 -5; $during = Get-Bright @picture -Any; Send-Key 0x20
+Confirm-That 'while a clip with long groups plays, the timebar shows a picture of its timebar strip' ($before -eq 0 -and $during -gt 2000) "lit pixels: $before before, $during on the timebar"
 
 # ---- the controls themselves, with a pointer: the bar's buttons, the timebar, the strip's close button.
 # places are from the design: the row's buttons are 30 wide from 8, 32 up from the bottom; the timebar is the bottom edge

@@ -18,6 +18,10 @@ ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=24' -frames:v 4 -c:v prores_k
 # big enough for a gpu's decoder to take
 ffmpeg -v error -y -f lavfi -i 'testsrc2=s=320x180:r=30' -frames:v 24 -c:v libx264 -g 8 -bf 2 -pix_fmt yuv420p -an (Out-Clip 'h264_320.mp4')
 ffmpeg -v error -y -f lavfi -i 'testsrc2=s=320x180:r=30' -frames:v 24 -c:v libx265 -x265-params 'keyint=8:min-keyint=8:bframes=2:log-level=error' -pix_fmt yuv420p10le -tag:v hvc1 -an (Out-Clip 'hevc10_320.mp4')
+# x265's open groups, with key frames far enough apart that one is reached by a seek: after each key frame but the
+# first is stored a picture that is shown before it and needs the group before (key frames at places 23 and 47 are
+# frames 24 and 48)
+ffmpeg -v error -y -f lavfi -i 'testsrc2=s=320x180:r=30' -frames:v 72 -c:v libx265 -x265-params 'keyint=24:min-keyint=24:bframes=2:log-level=error' -pix_fmt yuv420p -tag:v hvc1 -an (Out-Clip 'hevc_open_320.mp4')
 # a stream gpus do not take (4:2:2, 10-bit), and a container that lists no frames up front
 ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30' -frames:v 6 -c:v libx264 -g 3 -pix_fmt yuv422p10le -an (Out-Clip 'h264_422_64.mp4')
 ffmpeg -v error -y -i (Out-Clip 'h264_64.mp4') -c copy (Out-Clip 'h264_64.mkv')

@@ -9,6 +9,7 @@ use crate::preview::make::{self, Pictures, Reader};
 use crate::preview::spare::{self, Spare};
 use crate::preview::Cache;
 use std::cell::OnceCell;
+use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -30,23 +31,33 @@ pub fn start(playing: Arc<AtomicBool>) -> Option<Pictures> {
     std::thread::Builder::new().name("pictures".into()).spawn(work).ok().map(|_| pictures)
 }
 
-/// starts the spare reader of the clip on screen, which wakes the window when it has an answer. its device too is
-/// made when first needed. None when its thread will not start.
-pub fn start_spare(wake: Sender<Event>) -> Option<Spare> {
+/// starts the spare reader of the clip on screen, which wakes the window when it has an answer, and makes no timebar
+/// strip while `playing` is set. its device too is made when first needed. None when its thread will not start.
+pub fn start_spare(wake: Sender<Event>, playing: Arc<AtomicBool>) -> Option<Spare> {
     let (spare, asks, answers) = Spare::new();
     let work = move || {
         let gpu: OnceCell<Option<Gpu>> = OnceCell::new();
         let told = || {
             let _ = wake.send(Event::Wake);
         };
-        spare::serve(asks, answers, told, |path| Open::new(gpu.get_or_init(|| Gpu::offscreen().ok()).as_ref()?, path));
+        spare::serve(asks, answers, &playing, told, |path| Open::new(gpu.get_or_init(|| Gpu::offscreen().ok()).as_ref()?, path).map(Open::keys_only));
     };
     std::thread::Builder::new().name("spare reader".into()).spawn(work).ok().map(|_| spare)
 }
 
 struct Open<'a> {
     gpu: &'a Gpu,
-    view: View,
+    view: ManuallyDrop<View>,
+}
+
+impl Drop for Open<'_> {
+    /// the clip goes first, then the device is flushed: it has no window and never presents, and without a flush
+    /// what the clip's decoder held on it stayed taken
+    fn drop(&mut self) {
+        // safe: the view is not touched again
+        unsafe { ManuallyDrop::drop(&mut self.view) };
+        self.gpu.flush();
+    }
 }
 
 impl<'a> Open<'a> {
@@ -62,7 +73,16 @@ impl<'a> Open<'a> {
             Lane::Stills(stills) => stills.source.keep_only_wanted(),
             Lane::Waiting(_) => {}
         }
-        Some(Open { gpu, view })
+        Some(Open { gpu, view: ManuallyDrop::new(view) })
+    }
+
+    /// for the timebar's reader, which asks a clip with long groups for its key frames alone
+    /// (`VideoLane::keys_only`).
+    fn keys_only(self) -> Self {
+        if let Lane::Video(video) = &self.view.clip.lane {
+            video.keys_only();
+        }
+        self
     }
 }
 
@@ -75,11 +95,15 @@ impl Reader for Open<'_> {
         (self.view.clip.width as u32, self.view.clip.height as u32)
     }
 
-    fn stands_alone(&self) -> bool {
+    fn rate(&self) -> f64 {
+        self.view.clip.timeline.fps()
+    }
+
+    fn keys(&self) -> Option<Vec<usize>> {
         match &self.view.clip.lane {
-            Lane::Video(video) => video.alone,
-            Lane::Hap(_) | Lane::Stills(_) => true,
-            Lane::Waiting(_) => false,
+            Lane::Video(video) if !video.alone => Some(video.keys()),
+            Lane::Video(_) | Lane::Hap(_) | Lane::Stills(_) => None,
+            Lane::Waiting(_) => Some(Vec::new()),
         }
     }
 
@@ -100,6 +124,107 @@ impl Reader for Open<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preview::spare::{Answer, Ask};
+    use std::path::PathBuf;
+
+    fn media(name: &str) -> PathBuf {
+        PathBuf::from(format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR")))
+    }
+
+    /// the timebar's reader of a clip, on a thread of its own as the window's is, and standing still
+    fn timebar_reader() -> Spare {
+        let (spare, asks, answers) = Spare::new();
+        std::thread::spawn(move || {
+            let gpu = Gpu::offscreen().expect("a graphics device");
+            spare::serve(asks, answers, &AtomicBool::new(false), || {}, |path| Open::new(&gpu, path).map(Open::keys_only));
+        });
+        spare
+    }
+
+    /// the next answer, to the millisecond or so, or None when there is none for so long: what the window has already
+    /// is not read again
+    fn answered(spare: &Spare, wait: Duration) -> Option<Answer> {
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
+            if let Some(answer) = spare.take() {
+                return Some(answer);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        None
+    }
+
+    /// the timebar's pictures of real clips, timed at the reader, standing still, as the window asks for them: ten
+    /// frames under the pointer spread over the clip, each asked for alone and timed to its picture (the frame, or
+    /// the key frame nearest it), before there is a strip; then the strip (how many pictures, the room they take,
+    /// and how long to the first and to the whole); then the ten again, of which those the strip has are not read.
+    /// the clips are the files in EYEPIECE_HOVER, separated by `;`:
+    /// `cargo test --release timebar_pictures_are_timed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn the_timebar_pictures_are_timed() {
+        let gpu = Gpu::offscreen().expect("a graphics device");
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        for path in std::env::var("EYEPIECE_HOVER").expect("EYEPIECE_HOVER names the clips").split(';').map(PathBuf::from) {
+            let frames = Open::new(&gpu, &path).expect("it opens").frames();
+            let spare = timebar_reader();
+            let hovers = |when: &str| {
+                let (mut times, mut had) = (Vec::new(), 0);
+                for i in 0..10 {
+                    let asked = Instant::now();
+                    spare.ask(Ask::Frame { path: path.clone(), frame: (2 * i + 1) * frames / 20, playing: false });
+                    match answered(&spare, Duration::from_secs(2)) {
+                        Some(Answer::Frame { frame, .. }) => times.push(format!("{:.0} ({frame})", ms(asked.elapsed()))),
+                        _ => had += 1,
+                    }
+                }
+                println!("  under the pointer, {when}: ms (frame) {}; {had} had already", times.join(" "));
+            };
+            println!("{}: {frames} frames", path.display());
+            hovers("with no strip");
+            let asked = Instant::now();
+            spare.ask(Ask::Strip(path.clone()));
+            let (mut made, mut bytes, mut first, mut whole) = (0, 0, None, Duration::ZERO);
+            while let Some(Answer::Frame { pixels, .. }) = answered(&spare, Duration::from_secs(5)) {
+                whole = asked.elapsed();
+                first.get_or_insert(whole);
+                (made, bytes) = (made + 1, bytes + pixels.len());
+            }
+            println!("  strip of {made} in {:.1} MB, the first in {:.0} ms, all in {:.0} ms", bytes as f64 / 1e6, ms(first.unwrap_or_default()), ms(whole));
+            hovers("with the strip");
+        }
+    }
+
+    /// clips with long groups: h.264 with a key frame every 8, shown where the file places them, and hevc from x265
+    /// with one every 24, whose open groups store after each key frame but the first a picture that is shown before
+    /// it and needs the group before (key frames at places 23 and 47 are frames 24 and 48). the strip (a frame every
+    /// two seconds: the key frames nearest 0 and 60) and the pictures for frames under the pointer are each the very
+    /// frame they say, and none costs a group: in h.264 the reader decodes on from frame 1 to 16 (fewer than 16 to go)
+    /// and seeks back to 8; in hevc it seeks to the key frame at place 47, whose first picture is frame 48, and takes
+    /// that rather than decode the group before for frame 47, and so on to 24. a picture had already is not read again
+    #[test]
+    fn the_timebar_gets_key_frames_alone_of_a_clip_with_long_groups() {
+        let gpu = Gpu::offscreen().expect("a graphics device");
+        let clips = [("h264_320.mp4", vec![15, 5, 7, 9], vec![(0, true), (16, false), (8, false)]), ("hevc_open_320.mp4", vec![20, 26, 60, 5], vec![(48, true), (0, true), (24, false)])];
+        for (name, hovers, wanted) in clips {
+            let spare = timebar_reader();
+            spare.ask(Ask::Strip(media(name)));
+            let mut got = Vec::new();
+            let mut take = |wait| {
+                while let Some(Answer::Frame { frame, pixels, strip, .. }) = answered(&spare, wait) {
+                    let exact = make::small(&mut Open::new(&gpu, &media(name)).expect("it opens"), frame).expect("the frame").1;
+                    assert!(pixels == exact, "{name}: the picture given as frame {frame} is another frame");
+                    got.push((frame, strip));
+                }
+            };
+            take(Duration::from_secs(3));
+            for frame in hovers {
+                spare.ask(Ask::Frame { path: media(name), frame, playing: false });
+                take(Duration::from_secs(1));
+            }
+            assert_eq!(got, wanted, "{name}");
+        }
+    }
 
     /// a real clip's seam: its last frame against its first differs, and a frame against itself does not.
     #[test]
