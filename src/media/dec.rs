@@ -203,7 +203,7 @@ impl Decoder {
             // 0 lets ffmpeg use every core
             (*ctx).thread_count = 0;
             if one_frame_at_a_time {
-                (*ctx).thread_type = ffi::FF_THREAD_SLICE as i32;
+                (*ctx).thread_type = ffi::FF_THREAD_SLICE;
             }
             let attached = match hardware {
                 Some(h) => attach(ctx, h),
@@ -259,7 +259,7 @@ impl Decoder {
     /// moves the file to the key frame at or before `time` (the stream's units, decode time) and empties the decoder.
     pub fn seek(&mut self, input: &Input, time: i64) -> Result<(), String> {
         unsafe {
-            let r = ffi::av_seek_frame(input.ctx, self.stream as i32, time, ffi::AVSEEK_FLAG_BACKWARD as i32);
+            let r = ffi::av_seek_frame(input.ctx, self.stream as i32, time, ffi::AVSEEK_FLAG_BACKWARD);
             if r < 0 {
                 return Err(format!("seek: {}", err(r)));
             }

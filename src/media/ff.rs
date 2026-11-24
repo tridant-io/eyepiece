@@ -171,7 +171,7 @@ impl Input {
             (0..n)
                 .filter_map(|i| {
                     let e = ffi::avformat_index_get_entry(st, i);
-                    (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp, key: (*e).flags() & ffi::AVINDEX_KEYFRAME as i32 != 0 })
+                    (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp, key: (*e).flags() & ffi::AVINDEX_KEYFRAME != 0 })
                 })
                 .collect()
         }
