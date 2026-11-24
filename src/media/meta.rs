@@ -331,21 +331,22 @@ fn rate_row(t: &Timeline) -> Row {
     }
 }
 
-/// shown frames × the frame duration.
+/// shown frames × the frame duration, or the rate derived.
 fn duration_row(t: &Timeline) -> Row {
     let n = t.frames();
-    let value = match t.step() {
-        Some(step) => {
+    let length = |ms: i128| format!("{}:{:02}:{:02}.{:03} · {} frames", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000, grouped(n as u64));
+    let (value, tone) = match (t.step(), t.derived()) {
+        (Some(step), _) => {
             let units = n as i128 * step as i128 * t.time_base.0 as i128;
             let den = t.time_base.1 as i128;
-            let ms = (units * 2000 + den) / (2 * den);
-            format!("{}:{:02}:{:02}.{:03} · {} frames", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000, grouped(n as u64))
+            (length((units * 2000 + den) / (2 * den)), Tone::Plain)
         }
-        None if n == 0 => "not listed up front in this kind of file".to_string(),
-        None if n == 1 => "1 frame".to_string(),
-        None => format!("{} frames · their lengths vary", grouped(n as u64)),
+        (None, Some(fps)) => (format!("{} · at the rate derived", length((n as f64 * 1000.0 / fps).round() as i128)), Tone::Assumed),
+        (None, None) if n == 0 => ("not listed up front in this kind of file".to_string(), Tone::Plain),
+        (None, None) if n == 1 => ("1 frame".to_string(), Tone::Plain),
+        (None, None) => (format!("{} frames · their lengths vary", grouped(n as u64)), Tone::Plain),
     };
-    row("duration", value, Tone::Plain)
+    row("duration", value, tone)
 }
 
 /// a person's name for the container: ffmpeg's name, with the extension to tell quicktime from mp4.
@@ -542,6 +543,7 @@ mod tests {
         assert_eq!(get(&m, "frames"), ("12 · numbered 0 to 11", Tone::Plain));
         // milliseconds cannot hold a 30th of a second: the rate is derived from the times, and says so
         assert_eq!(get(&m, "frame rate"), ("30 · derived: the file rounds its frames' times to its clock", Tone::Assumed));
+        assert_eq!(get(&m, "duration"), ("0:00:00.400 · 12 frames · at the rate derived", Tone::Assumed));
         assert_eq!(get(&m, "codec"), ("h.264", Tone::Plain));
         let m = read("vp9_64.webm");
         assert_eq!(get(&m, "container"), ("webm · .webm", Tone::Plain));

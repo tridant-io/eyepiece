@@ -175,6 +175,12 @@ pub(super) fn frames(video: &Video, mut samples: Vec<Sample>, shown: Option<Vec<
 impl Clip {
     /// reads the header. a hap clip or stills start reading at once; any other waits for `start`.
     pub fn open(path: &str) -> Result<Clip, String> {
+        Clip::open_counting(path, &AtomicUsize::new(0))
+    }
+
+    /// `open`, for a worker: while the packet pass reads a file that lists no frames up front, `counted` follows how
+    /// many it has counted so far.
+    pub fn open_counting(path: &str, counted: &AtomicUsize) -> Result<Clip, String> {
         if still::is_still(path) {
             return Clip::open_stills(path);
         }
@@ -183,8 +189,7 @@ impl Clip {
         let tag = ff::fourcc(video.tag);
         let name = file_name(path);
         let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, notchlc, prores, h.264, hevc and vp9.", video.codec_name))?;
-        // the packet pass runs here, on the drawing thread, for now
-        let (samples, shown) = stored(path, &input, &video, &AtomicUsize::new(0))?;
+        let (samples, shown) = stored(path, &input, &video, counted)?;
         let counted = shown.is_some();
         let (samples, timeline, step) = frames(&video, samples, shown);
         let lane = if hap_variant(&tag).is_some() {
@@ -332,6 +337,42 @@ mod tests {
             let c = Clip::open(&media(name)).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), (codec, 12, rate), "{name}");
         }
+    }
+
+    /// a counted sample's time is when it is shown, which mov's and mkv's seeking go by: a seek to a key frame lands
+    /// on it, not on the one before. here key frames are every fourth, with b-frames
+    #[test]
+    fn counted_key_frames_carry_the_time_they_are_shown() {
+        for (name, keys) in [("h264_64.mkv", [0, 133, 267]), ("h264_frag_64.mp4", [1024, 3072, 5120])] {
+            let input = Input::open(&media(name)).unwrap();
+            let video = input.first_video().unwrap();
+            let (samples, _) = stored(&media(name), &input, &video, &AtomicUsize::new(0)).unwrap();
+            let times: Vec<i64> = samples.iter().filter(|s| s.key).map(|s| s.time).collect();
+            assert_eq!(times, keys, "{name}");
+        }
+    }
+
+    /// a mov or mp4 that lists its samples in the moov is read from that table alone: the packet pass, a read of the
+    /// whole file, never runs for it
+    #[test]
+    fn a_table_in_the_moov_is_not_counted() {
+        let tables = ["hap_64.mov", "hapq_64.mov", "hapalpha_64.mov", "prores_64.mov", "prores4444_64.mov", "av_tc_64.mov", "tone48_stereo.mov", "tone44_mono.mov"];
+        let mp4s = ["h264_64.mp4", "h264_320.mp4", "h264_cut_320.mp4", "h264_422_64.mp4", "h264_709_64.mp4", "h264_720.mp4", "h264_vui709_64.mp4", "hevc10_64.mp4", "hevc10_320.mp4"];
+        for name in tables.iter().chain(&mp4s) {
+            let input = Input::open(&media(name)).unwrap();
+            let video = input.first_video().unwrap();
+            let (_, shown) = stored(&media(name), &input, &video, &AtomicUsize::new(0)).unwrap();
+            assert!(shown.is_none(), "{name} was counted");
+        }
+    }
+
+    /// opening can run on a worker, which says how far the count has got
+    #[test]
+    fn a_clip_opens_on_a_worker_and_says_how_far_it_has_counted() {
+        let counted = Arc::new(AtomicUsize::new(0));
+        let theirs = counted.clone();
+        let clip = std::thread::spawn(move || Clip::open_counting(&media("h264_64.mkv"), &theirs)).join().unwrap().expect("open");
+        assert_eq!((clip.timeline.frames(), counted.load(std::sync::atomic::Ordering::Relaxed)), (12, 12));
     }
 
     /// six frames a 30th of a second apart, then six a 15th, with b-frames: the clip opens with every frame

@@ -106,9 +106,9 @@ pub struct Video {
     pub time_base: (i64, i64),
 }
 
-/// one stored sample of a stream: where it lies in the file, its decode time in the stream's units (or, from a
-/// container that gives none, such as mkv, when it is shown: what its seeking goes by), and whether decoding can start
-/// at it.
+/// one stored sample of a stream: where it lies in the file, its time in the stream's units (from a sample table its
+/// decode time; counted by `Input::count`, when it is shown, which is what mov's and mkv's seeking go by), and whether
+/// decoding can start at it.
 #[derive(Clone, Copy)]
 pub struct Sample {
     pub pos: u64,
@@ -213,10 +213,10 @@ impl Input {
                 let p = &*packet;
                 if p.stream_index as usize == stream {
                     let hidden = p.flags & ffi::AV_PKT_FLAG_DISCARD != 0;
-                    let time = if p.dts != ffi::AV_NOPTS_VALUE { p.dts } else { p.pts };
+                    let time = if p.pts != ffi::AV_NOPTS_VALUE { p.pts } else { p.dts };
                     samples.push(Sample { pos: p.pos.max(0) as u64, size: p.size.max(0) as usize, time, key: p.flags & ffi::AV_PKT_FLAG_KEY != 0, hidden });
                     if !hidden {
-                        shown.push(if p.pts != ffi::AV_NOPTS_VALUE { p.pts } else { p.dts });
+                        shown.push(time);
                     }
                     counted.store(samples.len(), Ordering::Relaxed);
                 }
