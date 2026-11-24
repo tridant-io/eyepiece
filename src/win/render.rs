@@ -141,8 +141,9 @@ pub(super) struct View {
     probe: Option<(usize, (usize, usize), [u32; 3])>,
     /// the clip's sound: None until it has been looked for, then what was found (a clip without is Some(None))
     sound: Option<Option<Audio>>,
-    /// what the sound was last told: the transport's run and the speed while it plays, None while it is silent
-    sounding: Option<(u32, f64)>,
+    /// what the sound was last told: the transport's run, the speed and whether it goes round with the clip, while
+    /// it plays; None while it is silent
+    sounding: Option<(u32, f64, bool)>,
     /// times the picture was moved to where the sound is
     resynced: u64,
     /// the spare reader has been asked how the clip's last frame and its first compare, and what it said
@@ -246,10 +247,12 @@ impl View {
             1 => Some(1.0),
             _ => None,
         };
-        let wanted = speed.filter(|_| heard && t.playing() && t.seam().is_none()).map(|speed| (t.run(), speed));
+        // a clip that loops takes its sound round with it, with no new start at the seam
+        let round = t.loop_mode() == crate::play::Loop::One;
+        let wanted = speed.filter(|_| heard && t.playing() && t.seam().is_none()).map(|speed| (t.run(), speed, round));
         if wanted != self.sounding {
             match wanted {
-                Some((_, speed)) => audio.play(speaker, t.seconds(), speed),
+                Some((_, speed, round)) => audio.play(speaker, t.seconds(), speed, round.then(|| t.length())),
                 None => audio.pause(),
             }
             self.sounding = wanted;

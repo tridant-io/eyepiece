@@ -82,6 +82,7 @@ struct Playing {
     line: Line,
     start: f64,
     speed: f64,
+    round: Option<f64>,
     asked: Instant,
 }
 
@@ -92,6 +93,9 @@ struct Play {
     speed: f64,
     rate: u32,
     channels: u16,
+    /// for a clip that loops: how long the clip is, in seconds. its sound then goes round with it: cut at that
+    /// length, or made up to it with silence, and begun again, for as long as the play lasts
+    round: Option<f64>,
 }
 
 impl Audio {
@@ -108,14 +112,15 @@ impl Audio {
     }
 
     /// starts, or restarts, playing from `seconds` into the clip at `speed` (1.0 is normal), out of `speaker`, where
-    /// it takes the place of whatever was sounding. pitch is kept from 0.5 to 2; outside that the sound is silent,
+    /// it takes the place of whatever was sounding. `round` is the clip's length when the clip loops: the sound then
+    /// goes round with it, without a new start at the seam. pitch is kept from 0.5 to 2; outside that the sound is silent,
     /// as the design says.
-    pub fn play(&mut self, speaker: &mut Speaker, seconds: f64, speed: f64) {
+    pub fn play(&mut self, speaker: &mut Speaker, seconds: f64, speed: f64, round: Option<f64>) {
         let Some(line) = speaker.line().filter(|_| speed::WITH_SOUND.contains(&speed)) else { return self.pause() };
         let feed = Arc::new(Feed::new(line.rate, line.channels));
-        self.send(Some(Play { feed: feed.clone(), seconds, speed, rate: line.rate, channels: line.channels }));
+        self.send(Some(Play { feed: feed.clone(), seconds, speed, rate: line.rate, channels: line.channels, round }));
         line.shared.set_feed(Some(feed.clone()));
-        self.playing = Some(Playing { feed, line, start: seconds, speed, asked: Instant::now() });
+        self.playing = Some(Playing { feed, line, start: seconds, speed, round, asked: Instant::now() });
     }
 
     pub fn pause(&mut self) {
@@ -130,7 +135,7 @@ impl Audio {
     /// this is the clock when a clip has sound. None while paused or silent.
     pub fn position(&self) -> Option<f64> {
         let now = self.playing.as_ref().filter(|p| !p.line.lost())?;
-        Some(clip_seconds(now.start, now.feed.heard(Instant::now(), now.line.rate), now.line.rate, now.speed))
+        Some(place(now.start, now.feed.heard(Instant::now(), now.line.rate), now.line.rate, now.speed, now.round))
     }
 
     /// a play was asked for and none of it has reached the speaker yet. the picture waits for it, so the two start
@@ -156,6 +161,12 @@ impl Drop for Audio {
             let _ = worker.join();
         }
     }
+}
+
+/// where the sound is in the clip after `heard` frames, in seconds: within its round, for a play that goes round.
+fn place(start: f64, heard: u64, rate: u32, speed: f64, round: Option<f64>) -> f64 {
+    let at = clip_seconds(start, heard, rate, speed);
+    round.filter(|round| *round > 0.0).map_or(at, |round| at % round)
 }
 
 /// seconds into the clip after `heard` frames at the device's `rate`, played from `start` at `speed`.
@@ -184,6 +195,13 @@ fn work(mut decoder: Decoder, commands: Receiver<Option<Play>>) {
     }
 }
 
+impl Play {
+    /// how many frames of sound `seconds` of the clip come to, at the play's speed and the device's rate.
+    fn frames(&self, seconds: f64) -> u64 {
+        (seconds / self.speed * self.rate as f64).round() as u64
+    }
+}
+
 /// one play, on the decode thread.
 struct Job {
     feed: Arc<Feed>,
@@ -191,13 +209,20 @@ struct Job {
     /// decoded, and not yet all in the ring
     chunk: Vec<f32>,
     sent: usize,
+    /// the play, for starting its sound again; and, for one that goes round, how many frames of the round it is
+    /// in are still to be made
+    play: Play,
+    left: u64,
 }
 
 impl Job {
     /// None when the sound cannot start: the feed is then over, and the clock runs on in silence.
     fn start(decoder: &mut Decoder, play: Play) -> Option<Job> {
         match guarded(|| Speed::start(decoder, play.seconds, play.speed, play.rate, play.channels)) {
-            Ok(speed) => Some(Job { feed: play.feed, speed, chunk: Vec::new(), sent: 0 }),
+            Ok(speed) => {
+                let left = play.round.map_or(0, |round| play.frames((round - play.seconds).max(0.0)));
+                Some(Job { feed: play.feed.clone(), speed, chunk: Vec::new(), sent: 0, play, left })
+            }
             Err(_) => {
                 play.feed.end();
                 None
@@ -216,9 +241,31 @@ impl Job {
             self.chunk.clear();
             self.sent = 0;
             // the end of the sound and a fault in it end it the same way: the clock runs on in silence
-            if !guarded(|| self.speed.next(decoder, &mut self.chunk)).unwrap_or(false) {
-                self.feed.end();
-                return false;
+            let more = guarded(|| self.speed.next(decoder, &mut self.chunk)).unwrap_or(false);
+            let Some(round) = self.play.round else {
+                if !more {
+                    self.feed.end();
+                    return false;
+                }
+                self.sent += self.feed.ring.push(&self.chunk[self.sent..]);
+                return true;
+            };
+            // a play that goes round: each round is exactly as long as the clip, so the sound's clock and the
+            // picture's stay together round after round. sound that ends before the round does is made up with
+            // silence, and sound past the round's end is left out
+            let channels = self.play.channels as usize;
+            if !more && self.chunk.is_empty() {
+                self.chunk.resize((self.left.min(4_096) as usize) * channels, 0.0);
+            }
+            let made = (self.chunk.len() / channels) as u64;
+            self.chunk.truncate((made.min(self.left) as usize) * channels);
+            self.left -= made.min(self.left);
+            if self.left == 0 {
+                match guarded(|| Speed::start(decoder, 0.0, self.play.speed, self.play.rate, self.play.channels)) {
+                    Ok(speed) => (self.speed, self.left) = (speed, self.play.frames(round)),
+                    // the sound will not start again: it ends here, and the clock runs on in silence
+                    Err(_) => self.play.round = None,
+                }
             }
         }
         self.sent += self.feed.ring.push(&self.chunk[self.sent..]);
@@ -343,7 +390,7 @@ mod tests {
         let worker = std::thread::spawn(move || work(decoder, theirs));
         let play = |seconds| {
             let feed = Arc::new(Feed::new(48_000, 2));
-            commands.send(Some(Play { feed: feed.clone(), seconds, speed: 1.0, rate: 48_000, channels: 2 })).unwrap();
+            commands.send(Some(Play { feed: feed.clone(), seconds, speed: 1.0, rate: 48_000, channels: 2, round: None })).unwrap();
             feed
         };
         // what a feed gives until its end is marked, in frames, read as the device reads it
@@ -380,6 +427,43 @@ mod tests {
         commands.send(None).unwrap();
         drop(commands);
         worker.join().unwrap();
+    }
+
+    /// a second and a half of round for a clip with one second of tone: a second of tone, half a second of silence,
+    /// and the tone again, for as long as it is read. the sound never ends.
+    #[test]
+    fn the_sound_of_a_clip_that_loops_goes_round_at_the_clips_length() {
+        let (decoder, _) = Decoder::open(&media("tone48_stereo.mov")).unwrap().expect("a sound stream");
+        let (commands, theirs) = mpsc::channel();
+        let worker = std::thread::spawn(move || work(decoder, theirs));
+        let feed = Arc::new(Feed::new(48_000, 2));
+        commands.send(Some(Play { feed: feed.clone(), seconds: 0.0, speed: 1.0, rate: 48_000, channels: 2, round: Some(1.5) })).unwrap();
+        // two rounds and a half, left channel
+        let (mut left, mut out, deadline) = (Vec::new(), [0.0f32; 960], Instant::now() + Duration::from_secs(10));
+        while left.len() < 180_000 {
+            assert!(!feed.ended.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < deadline, "the sound ended after {} frames", left.len());
+            let n = feed.ring.pop(&mut out);
+            left.extend(out[..n].iter().step_by(2));
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let loud = |frames: std::ops::Range<usize>| loudness(&left[frames]);
+        // the tone, the silence that makes the round up, the tone again from the round's start, and silence again
+        assert!(loud(4_800..43_200) > 0.2, "the first round's tone: {}", loud(4_800..43_200));
+        assert!(loud(52_800..67_200) < 0.001, "the silence to the round's end: {}", loud(52_800..67_200));
+        assert!(loud(76_800..115_200) > 0.2, "the second round's tone: {}", loud(76_800..115_200));
+        assert!(loud(124_800..139_200) < 0.001, "the second round's silence: {}", loud(124_800..139_200));
+        commands.send(None).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_clock_goes_round_with_the_clip() {
+        // three quarters of a second in, a second later, in a clip of a second and a half: a quarter in again
+        assert_eq!(place(0.75, 48_000, 48_000, 1.0, Some(1.5)), 0.25);
+        assert_eq!(place(0.75, 48_000, 48_000, 1.0, None), 1.75);
     }
 
     #[test]

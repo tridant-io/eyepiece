@@ -96,8 +96,8 @@ pub struct Transport {
     /// where play started from (a frame, or a place in loop analysis), and the refreshes counted since
     from: usize,
     refreshes: u64,
-    /// counts the runs of play: a new one wherever play starts, stops or is sent somewhere, and each time round the
-    /// clip's end. a clip's sound starts again with each
+    /// counts the runs of play: a new one wherever play starts, stops or is sent somewhere. a clip's sound starts
+    /// again with each
     run: u32,
     /// a clip whose frames do not all last the same: when each starts, in seconds from the first, then when the last
     /// ends. play then shows each frame for its own time, and the cadence is not used
@@ -131,6 +131,14 @@ impl Transport {
     pub fn with_starts(mut self, starts: Option<Vec<f64>>) -> Transport {
         self.starts = starts.map(Into::into);
         self
+    }
+
+    /// how long the clip is, in seconds.
+    pub fn length(&self) -> f64 {
+        match &self.starts {
+            Some(starts) => starts[self.frames],
+            None => self.frames as f64 / self.fps,
+        }
     }
 
     /// where the frame on screen starts, in seconds into the clip: where its sound plays from.
@@ -210,17 +218,23 @@ impl Transport {
     /// true when the picture was moved. standing still, in reverse, shuttling faster and in loop analysis, which
     /// are all silent, the sound has no say.
     pub fn follow(&mut self, at: f64) -> bool {
-        let at = at.min(self.frames as f64 - 0.5);
+        // a clip that loops takes its sound round with it: the two are compared round the seam, and a frame held
+        // or passed over there is the one across it
+        let (frames, round) = (self.frames as f64, self.looping == Loop::One);
+        let at = if round { at.rem_euclid(frames) } else { at.min(frames - 0.5) };
         let rate = if self.shuttle != 0 { 1.0 } else { self.speed };
         let leeway = (self.fps * rate / self.hz + 0.5).max(1.5);
-        let off = self.frame as f64 + 0.5 - at;
+        let apart = self.frame as f64 + 0.5 - at;
+        let off = if round { apart - frames * (apart / frames).round() } else { apart };
         if !self.playing || !matches!(self.shuttle, 0 | 1) || self.seam.is_some() || off.abs() <= leeway {
             return false;
         }
+        let (frame, count) = (self.frame as i64, self.frames as i64);
+        let step = |by: i64| if round { (frame + by).rem_euclid(count) as usize } else { (frame + by).clamp(0, count - 1) as usize };
         self.frame = match off {
             far if far.abs() > leeway + 1.0 => at.max(0.0) as usize,
-            ahead if ahead > 0.0 => self.frame.saturating_sub(1),
-            _ => self.frame + 1,
+            ahead if ahead > 0.0 => step(-1),
+            _ => step(1),
         };
         (self.from, self.refreshes) = (self.frame, 0);
         true
@@ -321,12 +335,8 @@ impl Transport {
             }
             Some(k) => self.put(to.rem_euclid(2 * k as i64) as usize, k),
             None if self.looping == Loop::One => {
-                let round = to.rem_euclid(self.frames as i64) as usize;
-                // forward round the end is a new run (backward has no sound to start again)
-                if self.shuttle >= 0 && round < self.frame {
-                    self.run = self.run.wrapping_add(1);
-                }
-                self.frame = round;
+                // (round the end is no new run: a looping clip's sound goes round by itself)
+                self.frame = to.rem_euclid(self.frames as i64) as usize;
             }
             None if to < 0 || to > last => {
                 self.frame = to.clamp(0, last) as usize;
@@ -850,9 +860,11 @@ mod tests {
         assert_eq!(t.frame(), 4);
         t.tick();
         assert_eq!((t.frame(), t.run()), (5, run));
-        // far off, play goes on from where the sound is. sound that runs past the clip's end moves nothing
+        // far off, play goes on from where the sound is. with looping off, sound that runs past the clip's end
+        // moves nothing (a clip that loops cuts its sound at its own length)
         assert!(t.follow(50.2));
         assert_eq!(t.frame(), 50);
+        t.set_loop(Loop::Off);
         t.go(98);
         t.shuttle(1);
         t.tick();
@@ -862,6 +874,31 @@ mod tests {
         t.set_playing(false);
         assert!(!t.follow(50.0));
         assert_eq!(t.frame(), 99);
+    }
+
+    /// a clip that loops takes its sound round with it: across the seam the two are as near as anywhere else
+    #[test]
+    fn across_the_seam_of_a_loop_the_sound_is_as_near_as_anywhere() {
+        let mut t = Transport::new(100, 60.0, 60.0);
+        t.go(99);
+        t.set_playing(true);
+        // (starting from the last frame starts from the first)
+        (0..99).for_each(|_| t.tick());
+        assert_eq!(t.frame(), 99);
+        let run = t.run();
+        // the picture on its last frame, the sound just round the seam; and the other way about
+        assert!(!t.follow(0.3));
+        t.tick();
+        assert_eq!((t.frame(), t.run()), (0, run), "round the end is no new run: the sound goes round by itself");
+        assert!(!t.follow(99.6));
+        // a frame and a half apart across the seam is still a frame held or passed over, not a jump round the clip
+        assert!(t.follow(98.2));
+        assert_eq!(t.frame(), 99);
+        // with looping off the end is the end
+        t.set_loop(Loop::Off);
+        t.go(99);
+        assert!(!t.follow(0.3) || t.frame() == 99);
+        assert_eq!(t.length(), 100.0 / 60.0);
     }
 
     #[test]
@@ -889,11 +926,9 @@ mod tests {
         (0..9).for_each(|_| t.tick());
         assert_eq!(t.frame(), 9);
         assert!(!new(&t));
-        // round the end
+        // round the end is no new run: a looping clip's sound goes round by itself
         t.tick();
         assert_eq!(t.frame(), 0);
-        assert!(new(&t));
-        t.tick();
         assert!(!new(&t));
         t.set_speed(2.0);
         assert!(new(&t));
