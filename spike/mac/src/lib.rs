@@ -1,10 +1,14 @@
-//! metal helpers for the mac gate programs. throwaway.
+//! metal, window and videotoolbox helpers for the mac gate programs. throwaway.
 #![cfg(target_os = "macos")]
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_foundation::NSString;
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSScreen, NSWindow, NSWindowStyleMask};
+use objc2_core_foundation::CGSize;
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 use objc2_metal::*;
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -22,6 +26,17 @@ vertex V vs(uint vid [[vertex_id]]) {
     o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
     o.uv = float2(p.x, 1.0 - p.y);
     return o;
+}
+"#;
+
+/// 10-bit biplanar yuv to rgb, bt.709, video range. integer addressing: no filter anywhere. chroma is the nearest sample.
+pub const YUV10_TO_RGB: &str = r#"
+fragment float4 fs(V in [[stage_in]], texture2d<float> ty [[texture(0)]], texture2d<float> tc [[texture(1)]]) {
+    uint2 p = uint2(in.pos.xy);
+    float y = ty.read(p).r * (65535.0 / 64.0);
+    float2 c = tc.read(p / 2).rg * (65535.0 / 64.0);
+    float Y = (y - 64.0) / 876.0, Cb = (c.x - 512.0) / 896.0, Cr = (c.y - 512.0) / 896.0;
+    return float4(saturate(float3(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb)), 1.0);
 }
 "#;
 
@@ -62,8 +77,8 @@ impl Gpu {
         self.device.newTextureWithDescriptor(&desc)
     }
 
-    /// draws `pipeline` over `target` with `inputs` bound in order, and waits until the gpu is done.
-    pub fn draw(&self, pipeline: &Pipeline, target: &ProtocolObject<dyn MTLTexture>, inputs: &[&ProtocolObject<dyn MTLTexture>]) {
+    /// one draw of `pipeline` over `target` with `inputs` bound in order, encoded and not yet sent.
+    fn encode(&self, pipeline: &Pipeline, target: &ProtocolObject<dyn MTLTexture>, inputs: &[&ProtocolObject<dyn MTLTexture>]) -> Retained<ProtocolObject<dyn MTLCommandBuffer>> {
         let pass = MTLRenderPassDescriptor::renderPassDescriptor();
         let att = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
         att.setTexture(Some(target));
@@ -77,8 +92,73 @@ impl Gpu {
         }
         unsafe { enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3) };
         enc.endEncoding();
+        cb
+    }
+
+    /// draws into a texture and waits until the gpu is done.
+    pub fn draw(&self, pipeline: &Pipeline, target: &ProtocolObject<dyn MTLTexture>, inputs: &[&ProtocolObject<dyn MTLTexture>]) {
+        let cb = self.encode(pipeline, target, inputs);
         cb.commit();
         cb.waitUntilCompleted();
+    }
+
+    /// draws into a window's drawable and presents it. `on_glass` is called later, on another thread, with the host
+    /// time in seconds at which the frame reached the display (0 if it never did).
+    pub fn present(&self, pipeline: &Pipeline, drawable: &ProtocolObject<dyn CAMetalDrawable>, inputs: &[&ProtocolObject<dyn MTLTexture>], on_glass: impl Fn(f64) + 'static) {
+        let cb = self.encode(pipeline, &drawable.texture(), inputs);
+        let block = block2::RcBlock::new(move |d: NonNull<ProtocolObject<dyn MTLDrawable>>| on_glass(unsafe { d.as_ref() }.presentedTime()));
+        let d: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(drawable);
+        unsafe { d.addPresentedHandler(block2::RcBlock::as_ptr(&block)) };
+        cb.presentDrawable(d);
+        cb.commit();
+    }
+}
+
+/// a plain window holding one metal layer: 10-bit, synced to the display.
+pub struct Window {
+    app: Retained<NSApplication>,
+    window: Retained<NSWindow>,
+    pub layer: Retained<CAMetalLayer>,
+    /// the display's nominal refresh rate
+    pub refresh: f64,
+}
+
+impl Window {
+    /// `w` x `h` are pixels, not points. the window is on screen when this returns.
+    pub fn open(gpu: &Gpu, w: usize, h: usize) -> Window {
+        let mtm = MainThreadMarker::new().expect("the main thread");
+        let app = NSApplication::sharedApplication(mtm);
+        // no dock icon: this is a test window
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        app.finishLaunching();
+        let screen = NSScreen::mainScreen(mtm).expect("a screen");
+        let scale = screen.backingScaleFactor();
+        let rect = NSRect::new(NSPoint::new(80.0, 80.0), NSSize::new(w as f64 / scale, h as f64 / scale));
+        let window = unsafe { NSWindow::initWithContentRect_styleMask_backing_defer(mtm.alloc(), rect, NSWindowStyleMask::Titled, NSBackingStoreType::Buffered, false) };
+        unsafe { window.setReleasedWhenClosed(false) };
+        let layer = CAMetalLayer::new();
+        layer.setDevice(Some(&gpu.device));
+        layer.setPixelFormat(MTLPixelFormat::BGR10A2Unorm);
+        layer.setDrawableSize(CGSize { width: w as f64, height: h as f64 });
+        let view = window.contentView().expect("a content view");
+        view.setLayer(Some(&layer));
+        view.setWantsLayer(true);
+        window.orderFrontRegardless();
+        let win = Window { app, window, layer, refresh: screen.maximumFramesPerSecond() as f64 };
+        win.pump();
+        win
+    }
+
+    /// lets the window system deliver whatever is waiting. call it between frames.
+    pub fn pump(&self) {
+        while let Some(e) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&NSDate::distantPast()), unsafe { NSDefaultRunLoopMode }, true) {
+            self.app.sendEvent(&e);
+        }
+    }
+
+    pub fn close(&self) {
+        self.window.close();
+        self.pump();
     }
 }
 
@@ -126,4 +206,15 @@ pub fn read(tex: &ProtocolObject<dyn MTLTexture>, bytes_per_pixel: usize) -> Vec
     let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
     unsafe { tex.getBytes_bytesPerRow_fromRegion_mipmapLevel(NonNull::new(out.as_mut_ptr() as *mut c_void).unwrap(), w * bytes_per_pixel, region, 0) };
     out
+}
+
+extern "C" {
+    fn getloadavg(avg: *mut f64, n: i32) -> i32;
+}
+
+/// the machine's one-minute load average: how busy it was while a timing ran. about 0 to 1 per core is idle to full.
+pub fn load() -> f64 {
+    let mut avg = [0f64; 3];
+    unsafe { getloadavg(avg.as_mut_ptr(), 3) };
+    avg[0]
 }

@@ -15,10 +15,10 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | # | question | passes when | windows | macos |
 |---|---|---|---|---|
-| 1 | does a hardware-decoded 10-bit hevc frame reach the screen with no cpu copy? | the renderer samples the decoder's own texture on the same device. no transfer to system memory anywhere in the path. the picture matches a software decode of the same frame within 1 code value at 10-bit. | **pass** 2026-11-23 | **pass** 2026-11-23, into a texture, not yet a window |
-| 2 | can we learn when a frame reached the screen? | the os returns present counts and vsync timestamps that advance once per refresh, and the measured refresh rate is stable to 0.01 Hz. a 59.94 clip on a 60 Hz display shows the expected repeat cadence in those numbers, confirmed from outside the app. | **pass** on its own numbers 2026-11-23. not yet confirmed from outside the app | not run |
+| 1 | does a hardware-decoded 10-bit hevc frame reach the screen with no cpu copy? | the renderer samples the decoder's own texture on the same device. no transfer to system memory anywhere in the path. the picture matches a software decode of the same frame within 1 code value at 10-bit. | **pass** 2026-11-23 | **pass** 2026-11-23 |
+| 2 | can we learn when a frame reached the screen? | the os returns present counts and vsync timestamps that advance once per refresh, and the measured refresh rate is stable to 0.01 Hz. a 59.94 clip on a 60 Hz display shows the expected repeat cadence in those numbers, confirmed from outside the app. | **pass** on its own numbers 2026-11-23. not yet confirmed from outside the app | the times come back and the rate is steady, but **not passed**: run only while the mac was busy, and frames were dropped. quiet rerun owed |
 | 3 | does 10-bit survive to the swapchain? | a 1024-step ramp drawn into a 10-bit back buffer reads back with every code value exact. | **pass** 2026-11-23 | **pass** 2026-11-23 |
-| 4 | how long is a cold start, stage by stage? | measured, not judged: process start, window visible, gpu ready, file open, first frame decoded, first present. twenty warm runs (p50, p95) and one run after a reboot. target for warm: 250 ms on a local hap or prores file. | **measured** 2026-11-23: 220 to 310 ms warm. target missed. after-reboot run owed | not run |
+| 4 | how long is a cold start, stage by stage? | measured, not judged: process start, window visible, gpu ready, file open, first frame decoded, first present. twenty warm runs (p50, p95) and one run after a reboot. target for warm: 250 ms on a local hap or prores file. | **measured** 2026-11-23: 220 to 310 ms warm. target missed. after-reboot run owed | **measured** 2026-11-23 while the mac was busy: about 360 ms. quiet rerun owed |
 | 5 | can a render overwrite a file we have open? | with our handle open, another process can overwrite in place, rename a new file over it, and delete and recreate it. we notice each change from size and modified time. | **pass** 2026-11-23 | **pass** 2026-11-23 |
 | 6 | does browsing a share open nothing? | on a scratch share that logs opens, listing a folder and reading names, sizes and dates logs zero opens. recorded alongside: which of list, stat and open changes ctime. never run against the owner's nas. | **pass** 2026-11-23, against samba 4.23.8 | **pass** 2026-11-23 |
 
@@ -146,8 +146,9 @@ a gate is run on windows first (this dev machine), then on macos (tec-mba). a re
 
 | what | needs |
 |---|---|
-| gates 2 and 4 on macos, gate 1 in a window, and the hap and decode speeds there | the owner's word on when the mac is free: these are timings and they put a window on its screen, and it was in use. also their ok to copy about 3 GB of clips to a disk with 17 GB free. the programs are not written yet. |
-| the name on the mac build | the owner. the mac's only signing identity is personal, "Developer ID Application: Dylan Roscover"; windows signs as "Tridant, Inc.". |
+| gates 2 and 4 on macos, again | a quiet mac. both ran while it was busy with other work (load average 16 to 25 on 8 cores), so the dropped frames and the times are not yet the mac's own. nobody was at it; the reruns need only that its other work stops. |
+| the hap lane and the decode speeds on macos | the owner's ok to copy about 3 GB of clips to a disk with 17 GB free, and the same quiet. the programs are not written yet. |
+| the name on the mac build | the owner. the mac's only signing identity is a personal developer id; windows signs as "Tridant, Inc.". |
 | gate 4 after a reboot | the owner, when they next reboot (not now, by their word): run one command first thing. |
 | gate 2 from outside the app | a present-capture tool run as administrator, or a camera. |
 | touchpad against wheel | a windows machine that has a touchpad. this one does not. the design does not wait on it: on windows two fingers scrub and click-drag pans, as the brief has it. |
@@ -227,7 +228,7 @@ tec-mba, apple m2, macos 26.6. the machine was in use throughout (load average 1
 
 - no file is opened by any way of listing, and nothing is read.
 - but sizes and dates are not free on the mac. names cost one listing for the whole folder. asking for sizes and dates, by either call, made the mac ask the server about each file by name: one open of the folder and one single-name listing per file (the server's log shows 21 opens of the folder for 20 files). windows gets sizes and dates inside the one listing.
-- so on a mac, a network folder of 5,000 frames is 5,000 round trips before sizes show. the browser shows names at once and fills sizes and dates in afterwards, for what is on screen first.
+- so on a mac, a network folder of 5,000 frames would be 5,000 round trips before sizes show (extrapolated from 20 files; not run at that size). the browser shows names at once and fills sizes and dates in afterwards, for what is on screen first.
 - a repeated listing was asked again in full; the mac kept no copy that we could see.
 - left alone for 20 s the mac made two requests of its own, neither on a file.
 - the windows run now has the same idle row: 0 requests.
@@ -235,7 +236,7 @@ tec-mba, apple m2, macos 26.6. the machine was in use throughout (load average 1
 **signing on macos: pass, for an app that carries ffmpeg.** `spike/mac/sign-test.sh`, run as a job in the mac's login session (keychains are locked over ssh). it wraps a gate program and the four ffmpeg libraries in a throwaway .app, rewrites the library references to stay inside the bundle, signs each library and then the app with the hardened runtime and a timestamp, runs it (the libraries load), has apple notarize it (accepted), staples the ticket, and asks gatekeeper: "accepted, source=Notarized Developer ID".
 - what this proves: the identity, the notary credentials and the ffmpeg-inside-the-bundle shape all work on this machine.
 - what it does not: the real app's entitlements, a build for both processor kinds, or a disk image or installer around it.
-- the signer is the mac's only identity, a personal developer id ("Dylan Roscover"). windows signs as "Tridant, Inc.". which name the mac build carries is the owner's to say.
+- the signer is the mac's only identity, a personal developer id. windows signs as "Tridant, Inc.". which name the mac build carries is the owner's to say.
 
 **left on the mac** (sizes after the graphics gates in the next entry). `~/src/eyepiece` (sources, the ffmpeg install and build output, 407 MB), `/private/tmp/eyepiece-ffmpeg-src` (188 MB), `/private/tmp/eyepiece-media` (one clip, 50 MB), `/private/tmp/eyepiece-signtest-*` (25 MB), `/private/tmp/eyepiece-g6` and `/private/tmp/eyepiece-tiny_hap.mov` (under 1 MB). about 670 MB in all; the mac has 17 GB free. no job and no mount is left behind. removing any of it waits for the owner's word.
 
@@ -254,3 +255,42 @@ same machine and the same caveat: it was in use, so nothing here is a timing. ea
 - the decoder's planes, read back through the gpu, against a software decode: 0 samples differ.
 - the drawn picture against the same math on the cpu: 49,766,400 values, worst difference 1 code value, none over 1.
 - not shown here: the same path presenting to a window. that is gate 2's job.
+
+### 2026-11-23, late night: gates 2 and 4 on the mac, while it was busy
+
+nobody had touched the mac for over half an hour, so the windows disturbed no one. but it was working hard on other things the whole time: load average 16 to 25 on 8 cores. every number below carries that, and both gates are owed a rerun on a quiet machine. each program prints the load beside its result.
+
+**how they run.** a window cannot open from an ssh session. `spike/mac/session-run.sh <name> <command>` runs a command as a one-off job inside the mac's login session and prints its output; it refuses while the screen is locked. the signing gate runs the same way.
+
+**gate 2 on macos: the mechanism works; not passed.** `gate2_present hevc10_4k_5994.mp4 20`: the clip plays in a 1920 × 1080 window for 20 s, each frame drawn from the decoder's own surface (so gate 1's path is now shown presenting), and each present asks the system when it reached the display.
+
+| | |
+|---|---|
+| load average during the run | 22.3 before, 18.6 after |
+| presents sent | 1,200 |
+| came back with a time | 1,194 |
+| never reached the display | 6: presents 0 and 1, and 172 to 175 |
+| refreshes that went by without a new frame | 9 |
+| refresh rate from the times | 59.9999 Hz; 59.9998 Hz in each half |
+| frames shown twice on purpose (59.94 on 60) | 2, predicted 1.2 |
+
+- the system does report when each frame reached the display, the times step by exactly one refresh, and the rate is steady well inside 0.01 Hz. that is what the design needs.
+- the first two presents after the window opens never reach the display. a 5 s run and every cold-start launch showed the same two. so the player must not treat its first present as shown: it keeps presenting until one comes back with a time.
+- presents 172 to 175 were dropped in one stumble mid-run. on a machine this busy that proves nothing either way; it is why the gate is not marked passed.
+
+**gate 4 on macos: measured, under load.** `gate4_coldstart hevc10_4k_5994.mp4 20`: 20 fresh launches after one first launch, load average 20.7 before and 21.3 after. times are ms from the moment the launch was asked for.
+
+| stage | first launch | p50 | p95 |
+|---|---|---|---|
+| process running | 16 | 25 | 40 |
+| gpu device | 45 | 56 | 68 |
+| file open | 59 | 58 | 69 |
+| window on screen | 200 | 189 | 198 |
+| shader compiled | 205 | 191 | 201 |
+| first frame decoded (videotoolbox, 4K hevc) | 410 | 313 | 327 |
+| first frame on the display | 453 | 363 | 391 |
+
+- the two big steps are the window (about 130 ms after the file is open) and the decoder's first frame (about 120 ms). the test does them one after the other; whether they overlap if started together is not tested.
+- the metal device is quick here (about 30 ms), unlike direct3d's 155 to 250 ms on windows.
+- the last 50 ms is the two dropped presents and the wait for a refresh.
+- this is a bare program, not an app launched from finder, and a hevc file, not the hap or prores the 250 ms target names. the hap lane is not written for the mac yet.

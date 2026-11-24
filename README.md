@@ -42,7 +42,13 @@ sh spike/mac/setup.sh
 sh spike/mac/gate.sh gate5_share some-small-clip.mov
 ```
 
-so far: `gate1_zerocopy` and `gate3_ramp` (both draw off screen), `metal_caps`, `gate5_share`, `gate6_browse` (driven from windows by `spike\gate6.ps1 -Mac user@host`) and `sign-test.sh`, the signing and notarization gate. gates 2 and 4 are not written for macos yet.
+the programs: `gate1_zerocopy`, `gate3_ramp`, `metal_caps` and `gate5_share` run from any shell. `gate2_present` and `gate4_coldstart` open a window, and `sign-test.sh` (the signing and notarization gate) needs the keychain, so those three run inside the login session:
+
+```sh
+sh spike/mac/session-run.sh gate2 spike/mac/target/release/gate2_present some-10-bit-hevc.mp4 20
+```
+
+`gate6_browse` is driven from windows by `spike\gate6.ps1 -Mac user@host`. the hap lane and the decode speed measurements are not written for macos yet.
 
 ## deploy
 

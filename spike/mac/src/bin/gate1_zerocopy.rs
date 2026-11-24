@@ -9,24 +9,13 @@ use objc2::rc::Retained;
 use objc2_metal::{MTLPixelFormat, MTLTexture, MTLTextureUsage};
 use spike::dec::Decoder;
 use spike::ff::{self, AVPixelFormat, Input, Packet};
-use spike_mac::{read, Gpu, PixelBuffer};
+use spike_mac::{read, Gpu, PixelBuffer, YUV10_TO_RGB};
 use std::ffi::c_void;
 
 /// one plane, as stored: integer addressing, no filter.
 const COPY: &str = r#"
 fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]]) {
     return t.read(uint2(in.pos.xy));
-}
-"#;
-
-/// 10-bit biplanar yuv to rgb, bt.709, video range. integer addressing: no filter anywhere. chroma is the nearest sample.
-const DRAW: &str = r#"
-fragment float4 fs(V in [[stage_in]], texture2d<float> ty [[texture(0)]], texture2d<float> tc [[texture(1)]]) {
-    uint2 p = uint2(in.pos.xy);
-    float y = ty.read(p).r * (65535.0 / 64.0);
-    float2 c = tc.read(p / 2).rg * (65535.0 / 64.0);
-    float Y = (y - 64.0) / 876.0, Cb = (c.x - 512.0) / 896.0, Cr = (c.y - 512.0) / 896.0;
-    return float4(saturate(float3(Y + 1.5748 * Cr, Y - 0.1873 * Cb - 0.4681 * Cr, Y + 1.8556 * Cb)), 1.0);
 }
 "#;
 
@@ -55,7 +44,7 @@ fn main() {
     let drawn_tex = gpu.texture(MTLPixelFormat::BGR10A2Unorm, w, h, target_usage).expect("target");
     let luma_out = gpu.texture(MTLPixelFormat::R16Unorm, vw, vh, target_usage).expect("target");
     let chroma_out = gpu.texture(MTLPixelFormat::RG16Unorm, vw / 2, vh / 2, target_usage).expect("target");
-    let draw = gpu.pipeline(DRAW, MTLPixelFormat::BGR10A2Unorm);
+    let draw = gpu.pipeline(YUV10_TO_RGB, MTLPixelFormat::BGR10A2Unorm);
     let copy_luma = gpu.pipeline(COPY, MTLPixelFormat::R16Unorm);
     let copy_chroma = gpu.pipeline(COPY, MTLPixelFormat::RG16Unorm);
 

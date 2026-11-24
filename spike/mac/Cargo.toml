@@ -8,11 +8,13 @@ description = "throwaway phase 0 gate programs for macos. not the player."
 [dependencies]
 spike = { path = ".." }
 ffmpeg-sys-next = { version = "9.1", default-features = false, features = ["avcodec", "avformat"] }
+block2 = "0.6"
 objc2 = "0.6"
-objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
 objc2-core-foundation = "0.3"
+objc2-foundation = "0.3"
 objc2-io-surface = "0.3"
-objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
+objc2-metal = { version = "0.3", features = ["objc2-io-surface", "block2"] }
 objc2-quartz-core = "0.3"
 
 [profile.release]
