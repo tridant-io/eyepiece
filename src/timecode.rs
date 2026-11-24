@@ -23,7 +23,8 @@ impl Timecode {
     /// a clip's own, as a file writes it: "01:00:00:00", or with a semicolon before the frames for drop-frame.
     /// none when it is not one, or its frames are not under `base`.
     pub fn parse(text: &str, base: u32, rate: u32) -> Option<Timecode> {
-        let drop = text.contains(';');
+        // only a clock of 30 or 60 frame numbers a second can drop any: on another the mark is the file's mistake
+        let drop = text.contains(';') && base % 30 == 0;
         let mut parts = text.split([':', ';']).map(|part| part.parse::<u64>().ok());
         let (hours, minutes, seconds, frames) = (parts.next()??, parts.next()??, parts.next()??, parts.next()??);
         if parts.next().is_some() || minutes > 59 || seconds > 59 || frames >= base as u64 || rate == 0 {
@@ -97,6 +98,15 @@ mod tests {
     fn a_clock_slower_than_the_pictures_names_two_frames_alike() {
         let clock = Timecode::parse("01:00:00:00", 30, 60).unwrap();
         assert_eq!((clock.at(0), clock.at(1), clock.at(2), clock.at(60)), ("01:00:00:00".to_string(), "01:00:00:00".to_string(), "01:00:00:01".to_string(), "01:00:01:00".to_string()));
+    }
+
+    /// only a clock of 30 or 60 frame numbers a second can drop: on any other the mark is the file's mistake, and
+    /// its frames are counted plainly from where it says.
+    #[test]
+    fn a_drop_frame_mark_on_a_clock_that_cannot_drop_counts_plainly() {
+        let clock = Timecode::parse("00:01:00;02", 24, 24).unwrap();
+        assert_eq!((clock.drop, clock.start), (false, 1442));
+        assert_eq!((clock.at(0), clock.at(22), clock.at(1438)), ("00:01:00:02".to_string(), "00:01:01:00".to_string(), "00:02:00:00".to_string()));
     }
 
     #[test]

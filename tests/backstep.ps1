@@ -34,8 +34,10 @@ $p = Start-Process $Exe -ArgumentList "`"$Clip`"" -PassThru
 $script:h = [IntPtr]::Zero
 foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $script:h = $p.MainWindowHandle; break } }
 Start-Sleep -Milliseconds 1500
+# the last group that is whole: a clip's last group is often cut short, and from its end twenty steps back never
+# leave the frames the player kept
+[int]$key = [math]::Max(0, [math]::Floor($Frames / $KeyEvery) - 1) * $KeyEvery
 $last = $Frames - 1
-[int]$key = [math]::Floor(($last - 1) / $KeyEvery) * $KeyEvery
 [int]$start = [math]::Min($last, $key + [math]::Floor($KeyEvery / 2))
 [void][EyepieceBack]::PostMessage($script:h, 0x100, [IntPtr]0x23, [IntPtr]0); [void](Wait-Frame $last)
 Send-Wheel ($last - $start)

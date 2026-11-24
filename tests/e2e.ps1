@@ -417,7 +417,17 @@ Confirm-That 'shift + S saves the view as shown, at the window''s size' ((Wait-F
 Send-Key 0x53
 Confirm-That 'a second S never writes over the first: it gets a name of its own' (Wait-File (Join-Path $shots 'hapq_64.f000000 (2).png')) 'no second file'
 Stop-Player
-foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $shots) {
+# first_frame = 1 in the settings file numbers frames from 1: the title's, and the name of a saved frame
+@((Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^first_frame' }) + 'first_frame = 1' | Set-Content -LiteralPath $settings
+Start-Player (Join-Path $media 'hapq_64.mov')
+Assert-Frame 'with first_frame = 1 the first frame is frame 1' 1 3
+$first = Join-Path $shots 'hapq_64.f000001.png'
+Send-Key 0x53
+Confirm-That 'and S names the saved frame for it' (Wait-File $first) "no $first"
+Send-Key 0x23; Assert-Frame 'and the last frame has the number of the count' 3 3
+Stop-Player
+(Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^first_frame' } | Set-Content -LiteralPath $settings
+foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $first, $shots) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
