@@ -1,10 +1,11 @@
-//! the lane for clips ffmpeg decodes (h.264, hevc, prores): hardware where the system's decoder takes the stream,
-//! software otherwise. a frame between key frames cannot be reached directly: the loader goes back to the key frame
-//! before it and decodes forward, keeping what it passes.
+//! the lane for clips ffmpeg decodes (h.264, hevc, prores, notchlc): hardware where the system's decoder takes the
+//! stream, software otherwise. a frame between key frames cannot be reached directly: the loader goes back to the key
+//! frame before it and decodes forward, keeping what it passes.
 
 use super::dec::{Decoder, Hardware, Layout, Picture};
 use super::ff::{Input, Sample};
-use super::source::{Loader, Source};
+use super::source::{self, Loader, Source};
+use ffmpeg_sys_next as ffi;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -51,6 +52,16 @@ struct VideoLoader {
     kept: usize,
     /// samples that are decoded and not shown (an edit list hides them): frame n is at about place n + hidden
     hidden: usize,
+    /// the file and the stream, when frames are decoded several at once and each worker opens its own decoder
+    reopen: Option<(String, usize)>,
+}
+
+/// true when ffmpeg's decoder for the stream shares one frame out across cores.
+fn splits_frames(input: &Input, stream: usize) -> bool {
+    unsafe {
+        let codec = ffi::avcodec_find_decoder((*(**(*input.ctx).streams.add(stream)).codecpar).codec_id);
+        !codec.is_null() && (*codec).capabilities & ffi::AV_CODEC_CAP_SLICE_THREADS as i32 != 0
+    }
 }
 
 impl VideoLane {
@@ -73,14 +84,29 @@ impl VideoLane {
         }
         let layout = first.layout()?;
         let hidden = samples.iter().filter(|s| s.hidden).count();
-        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), step: step.max(1), next: Some(1), recent: VecDeque::new(), kept, hidden };
-        loader.remember(0, Arc::new(first));
-        Ok(VideoLane { source: Source::start(loader)?, layout })
+        // frames that stand alone, in software, from a decoder that keeps each frame to one core (notchlc): several at
+        // once, each worker with a decoder of its own. prores shares a frame out across cores itself
+        let shared = alone && !layout.hardware && !splits_frames(&input, stream);
+        // counted as four planes the size of luma: the most a software picture holds (4:4:4 with alpha, as notchlc's)
+        let frame_bytes = first.plane(0, layout.chroma_shift).0.len() * 4;
+        let reopen = shared.then(|| (path.to_string(), stream));
+        let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), step: step.max(1), next: Some(1), recent: VecDeque::new(), kept: if shared { 0 } else { kept }, hidden, reopen };
+        let first = Arc::new(first);
+        let source = if shared {
+            Source::start_shared(loader, source::budget(), frame_bytes, (0, first))?
+        } else {
+            loader.remember(0, first);
+            Source::start(loader)?
+        };
+        Ok(VideoLane { source, layout })
     }
 }
 
 impl VideoLoader {
     fn remember(&mut self, frame: usize, picture: Arc<Picture>) {
+        if self.kept == 0 {
+            return;
+        }
         if self.recent.len() == self.kept {
             self.recent.pop_front();
         }
@@ -109,8 +135,10 @@ impl Loader for VideoLoader {
         // at or before this frame's place is where decoding can start
         let mut key = self.key_at_or_before(frame + self.hidden);
         // decode on from where the decoder is when the frame is ahead and either near, or with no key frame in
-        // between to start from instead. otherwise start at the key frame
-        let walk = self.next.is_some_and(|next| next <= frame && (frame - next <= NEAR || key <= next + self.hidden));
+        // between to start from instead. otherwise start at the key frame. with frames decoded several at once, the
+        // ones in between are other workers'
+        let near = if self.reopen.is_some() { 0 } else { NEAR };
+        let walk = self.next.is_some_and(|next| next <= frame && (frame - next <= near || key <= next + self.hidden));
         if !walk {
             self.decoder.seek(&self.input, self.samples[key].time)?;
             self.next = None;
@@ -143,6 +171,14 @@ impl Loader for VideoLoader {
             self.decoder.seek(&self.input, self.samples[key].time)?;
             self.next = None;
         }
+    }
+
+    fn split(&self) -> Option<Self> {
+        let (path, stream) = self.reopen.clone()?;
+        let input = Input::open(&path).ok()?;
+        let decoder = Decoder::open(&input, stream, None, true, 0).ok()?;
+        let samples = self.samples.clone();
+        Some(VideoLoader { input, decoder, samples, first_time: self.first_time, step: self.step, next: None, recent: VecDeque::new(), kept: 0, hidden: self.hidden, reopen: Some((path, stream)) })
     }
 }
 
