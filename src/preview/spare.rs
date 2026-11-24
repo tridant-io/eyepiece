@@ -449,7 +449,9 @@ mod tests {
 
     /// on a network volume nothing more is read than before the strip: asked for a strip there, the reader opens
     /// nothing; a picture asked for by hovering is read as it always was, one open and one read. the path stands for
-    /// a scratch folder on this pc's own share and is never touched.
+    /// a scratch folder on this pc's own share and is never touched. (a share's path as windows writes it: on macos
+    /// the same rule is `browse::volume_of`'s, from the table of mounts.)
+    #[cfg(windows)]
     #[test]
     fn nothing_more_is_read_on_a_network_volume() {
         let (spare, counts, worker) = spare();

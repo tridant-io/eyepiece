@@ -50,15 +50,20 @@ const MAX_HEIGHT: u32 = 360;
 static WRITES: AtomicU32 = AtomicU32::new(0);
 
 impl Cache {
-    /// the cache in the os cache folder: `<LOCALAPPDATA>\eyepiece\cache\previews` on windows. None when that
-    /// place cannot be named safely. `EYEPIECE_CACHE` names another folder to stand for the os cache folder: the
-    /// tests set it, so what they make stays out of the owner's cache.
+    /// the cache in the os cache folder: `<LOCALAPPDATA>\eyepiece\cache\previews` on windows,
+    /// `~/Library/Caches/eyepiece/cache/previews` on macos. None when that place cannot be named safely.
+    /// `EYEPIECE_CACHE` names another folder to stand for the os cache folder: the tests set it, so what they make
+    /// stays out of the owner's cache.
     pub fn open() -> Option<Cache> {
-        // macos will keep it in ~/Library/Caches/eyepiece; there is no mac build yet
-        if !cfg!(windows) {
-            return None;
-        }
-        let root = PathBuf::from(std::env::var_os("EYEPIECE_CACHE").or_else(|| std::env::var_os("LOCALAPPDATA"))?).join(PLACE.iter().collect::<PathBuf>());
+        // linux comes in phase 5
+        let system = if cfg!(windows) {
+            std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+        } else if cfg!(target_os = "macos") {
+            home().map(|home| home.join("Library/Caches"))
+        } else {
+            None
+        };
+        let root = std::env::var_os("EYEPIECE_CACHE").map(PathBuf::from).or(system)?.join(PLACE.iter().collect::<PathBuf>());
         safe_root(&root, home().as_deref(), &PLACE).then_some(Cache { root, budget: BUDGET })
     }
 

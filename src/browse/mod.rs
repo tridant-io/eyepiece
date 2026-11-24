@@ -68,8 +68,65 @@ pub fn volume_of(path: &Path) -> Volume {
     }
 }
 
-/// macos comes later: until then every path counts as network.
-#[cfg(not(windows))]
+/// on macos: the volume whose mount point holds the path, by the system's own table of what is mounted, which it
+/// keeps and asks no server for. a path no mount point holds counts as network.
+#[cfg(target_os = "macos")]
+pub fn volume_of(path: &Path) -> Volume {
+    mounts().into_iter().filter(|(at, _)| path.starts_with(at)).max_by_key(|(at, _)| at.as_os_str().len()).map_or(Volume::Network, |(_, kind)| kind)
+}
+
+/// every mounted volume: where it is mounted and its kind. asked with no wait, so no volume is itself asked.
+#[cfg(target_os = "macos")]
+fn mounts() -> Vec<(PathBuf, Volume)> {
+    use std::os::unix::ffi::OsStrExt;
+    // the system's `struct statfs`, 2168 bytes
+    #[repr(C)]
+    struct Mount {
+        sizes: [u64; 6],
+        fsid: [i32; 2],
+        owner: u32,
+        kind: u32,
+        flags: u32,
+        subtype: u32,
+        type_name: [u8; 16],
+        on: [u8; 1024],
+        from: [u8; 1024],
+        more: [u32; 8],
+    }
+    extern "C" {
+        // on intel the plain name is the call for the old, shorter struct
+        #[cfg_attr(target_arch = "x86_64", link_name = "getfsstat$INODE64")]
+        fn getfsstat(mounts: *mut Mount, bytes: i32, flags: i32) -> i32;
+    }
+    const NO_WAIT: i32 = 2;
+    const LOCAL: u32 = 0x1000;
+    const REMOVABLE: u32 = 0x200;
+    let count = unsafe { getfsstat(std::ptr::null_mut(), 0, NO_WAIT) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    // room for a few more, should one be mounted between the two calls
+    let mut list: Vec<Mount> = Vec::with_capacity(count as usize + 8);
+    let filled = unsafe { getfsstat(list.as_mut_ptr(), (list.capacity() * std::mem::size_of::<Mount>()) as i32, NO_WAIT) };
+    if filled <= 0 {
+        return Vec::new();
+    }
+    unsafe { list.set_len((filled as usize).min(list.capacity())) };
+    list.iter()
+        .map(|m| {
+            let at = &m.on[..m.on.iter().position(|b| *b == 0).unwrap_or(m.on.len())];
+            let kind = match (m.flags & LOCAL != 0, m.flags & REMOVABLE != 0) {
+                (false, _) => Volume::Network,
+                (true, true) => Volume::Removable,
+                (true, false) => Volume::Local,
+            };
+            (PathBuf::from(std::ffi::OsStr::from_bytes(at)), kind)
+        })
+        .collect()
+}
+
+/// linux comes in phase 5: until then every path counts as network there.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn volume_of(_path: &Path) -> Volume {
     Volume::Network
 }
@@ -106,8 +163,19 @@ pub fn places() -> Vec<Place> {
     folders.chain(drives).collect()
 }
 
-/// macos comes later.
-#[cfg(not(windows))]
+/// on macos: the user's standard folders that are there, then what is mounted under /Volumes (finder's favorites
+/// have no supported way in). nothing is asked of a volume: its name is its mount point's.
+#[cfg(target_os = "macos")]
+pub fn places() -> Vec<Place> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let folders = [("downloads", "Downloads"), ("desktop", "Desktop"), ("documents", "Documents"), ("pictures", "Pictures"), ("movies", "Movies")];
+    let folders = home.into_iter().flat_map(|home| folders.map(|(name, folder)| Place { name: name.into(), path: home.join(folder) })).filter(|place| place.path.is_dir());
+    let volumes = mounts().into_iter().filter_map(|(at, _)| Some(Place { name: at.strip_prefix("/Volumes").ok()?.to_str().filter(|name| !name.is_empty())?.to_string(), path: at }));
+    folders.chain(std::iter::once(Place { name: "/".into(), path: "/".into() })).chain(volumes).collect()
+}
+
+/// linux comes in phase 5.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn places() -> Vec<Place> {
     Vec::new()
 }
@@ -478,6 +546,18 @@ mod tests {
     fn media_by_extension_without_case() {
         assert!(is_media("a.MOV") && is_media("b.Exr") && is_media("c.webm") && is_media("d.jpeg"));
         assert!(!is_media("e.pdf") && !is_media("mov") && !is_media(".mov"));
+    }
+
+    /// the startup volume and what is on it are local; what no mount point holds is taken for network.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn volume_of_the_startup_disk_and_of_what_is_nowhere() {
+        assert_eq!(volume_of(Path::new("/")), Volume::Local);
+        assert_eq!(volume_of(Path::new(env!("CARGO_MANIFEST_DIR"))), Volume::Local);
+        assert_eq!(volume_of(Path::new("/no/such/folder")), Volume::Local);
+        assert_eq!(volume_of(Path::new("relative")), Volume::Network);
+        assert!(mounts().iter().any(|(at, _)| at == Path::new("/")));
+        assert!(places().iter().any(|place| place.path == Path::new("/")));
     }
 
     #[cfg(windows)]
