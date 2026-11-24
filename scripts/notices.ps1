@@ -184,6 +184,8 @@ $config = $raw.Substring($from, $raw.IndexOf([char]0, $at) - $from)
 $download = [regex]::Match([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'setup.ps1')), 'https://github\.com/BtbN/FFmpeg-Builds/[^''"\s]+').Value
 if (-not $download) { throw 'scripts\setup.ps1 no longer says where ffmpeg comes from' }
 $revision = if ($ffVersion -match '-g([0-9a-f]+)') { "commit $($Matches[1])" } else { "tag $ffVersion" }
+if ($ffVersion -notmatch '^n?(\d+\.\d+)') { throw "cannot read ffmpeg's release from its version '$ffVersion'" }
+$release = $Matches[1]
 
 $rule = '=' * 100
 $doc = New-Object 'System.Collections.Generic.List[string]'
@@ -204,9 +206,9 @@ Add-Line $rule, '1. ffmpeg', '',
     "source: https://git.ffmpeg.org/ffmpeg.git at $revision. the scripts that made the build, and the source of",
     'each library it includes, are at https://github.com/BtbN/FFmpeg-Builds.', '',
     'ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll beside it, which eyepiece loads',
-    'from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build it',
-    'as shared libraries with the same major versions (the number in each file name) and put your files in place of',
-    'these. eyepiece needs nothing else to use them.', '',
+    'from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build',
+    "release $release, or a later one whose libraries keep the same major versions (the number in each file name), as shared",
+    'libraries and put your files in place of these. eyepiece needs nothing else to use them.', '',
     'how this build of ffmpeg was configured:'
 $line = ''
 foreach ($word in $config -split ' ') {
