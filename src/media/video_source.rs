@@ -35,6 +35,8 @@ pub struct VideoLane {
     pub source: Source<Picture>,
     /// how the pictures are stored, from the first one decoded
     pub layout: Layout,
+    /// every frame is a key frame: any one is decoded without the ones before it
+    pub alone: bool,
 }
 
 /// how a decoded picture's time tells which frame it is.
@@ -107,7 +109,7 @@ impl VideoLane {
             loader.remember(0, first);
             Source::start(loader)?
         };
-        Ok(VideoLane { source, layout })
+        Ok(VideoLane { source, layout, alone })
     }
 }
 

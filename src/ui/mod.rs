@@ -246,6 +246,8 @@ pub struct Output {
     pub again: Option<Duration>,
     /// the strip and the bar are up
     pub shown: bool,
+    /// the frame under the pointer on the timebar: its picture is wanted
+    pub hovered: Option<usize>,
 }
 
 /// the menus that open over the bar
@@ -290,6 +292,9 @@ pub struct Ui {
     facts_button: Rect,
     /// where the mute button and its slider were drawn: the slider is out while the pointer is on either
     volume_rect: Rect,
+    /// the frame under the pointer on the timebar, and the picture last had for the timebar with the frame it is of
+    time_hover: Option<usize>,
+    time_picture: Option<(usize, egui::TextureHandle)>,
     browser: browser::Browser,
 }
 
@@ -326,6 +331,8 @@ impl Ui {
             facts_rect: Rect::NOTHING,
             facts_button: Rect::NOTHING,
             volume_rect: Rect::NOTHING,
+            time_hover: None,
+            time_picture: None,
             browser: browser::Browser::new(folder, pictures),
         }
     }
@@ -435,6 +442,17 @@ impl Ui {
         self.view_changed = true;
     }
 
+    /// a picture of a frame of the clip on screen, for the timebar: red, green and blue, a byte each.
+    pub fn timebar_picture(&mut self, frame: usize, (width, height): (u32, u32), pixels: &[u8]) {
+        let image = egui::ColorImage::from_rgb([width as usize, height as usize], pixels);
+        self.time_picture = Some((frame, self.ctx.load_texture("timebar picture", image, egui::TextureOptions::LINEAR)));
+    }
+
+    /// the clip on screen is another one now: the timebar's picture is not of it.
+    pub fn forget_timebar_picture(&mut self) {
+        self.time_picture = None;
+    }
+
     /// pins the metadata panel open, or lets it go.
     pub fn toggle_facts(&mut self) {
         self.facts_pinned = !self.facts_pinned;
@@ -468,7 +486,7 @@ impl Ui {
         });
         let again = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < Duration::from_secs(3600));
         self.moved = false;
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown, hovered: self.time_hover }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -924,15 +942,28 @@ impl Ui {
                 actions.push(if model.seam.is_some() { Action::SeekPlace(to) } else { Action::Seek(to) });
             }
         }
-        // the frame under the pointer, by number. (its picture comes with the timebar preview.)
-        if let Some(p) = response.hover_pos().filter(|_| model.seam.is_none()) {
-            let galley = painter.layout_no_wrap(format!("{:06}", stop_at(p.x)), font(MONO_MEDIUM, 10.5), FG);
-            let size = galley.size() + Vec2::new(16.0, 10.0);
+        // the frame under the pointer: its number, and over it its picture once the spare reader has read one (the
+        // one it read last stays up meanwhile). the design's box: the picture 160 by 90 inside a margin of 2
+        self.time_hover = response.hover_pos().filter(|_| model.seam.is_none()).map(|p| stop_at(p.x));
+        if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
+            let galley = painter.layout_no_wrap(format!("{frame:06}"), font(MONO_MEDIUM, 10.5), FG);
+            let size = match &self.time_picture {
+                Some(_) => Vec2::new(164.0, 2.0 + 90.0 + galley.size().y + 10.0),
+                None => galley.size() + Vec2::new(16.0, 10.0),
+            };
             let left = (p.x - size.x / 2.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0);
             let rect = Rect::from_min_size(Pos2::new(left, over - 7.0 - size.y), size);
             painter.rect_filled(rect, 0.0, SOLID);
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-            painter.galley(Pos2::new(rect.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), rect.center().y)), galley, FG);
+            let mut number = rect;
+            if let Some((_, picture)) = &self.time_picture {
+                let place = Rect::from_min_size(rect.min + Vec2::splat(2.0), Vec2::new(160.0, 90.0));
+                painter.rect_filled(place, 0.0, Color32::BLACK);
+                let fitted = Rect::from_center_size(place.center(), picture.size_vec2() * (place.width() / picture.size_vec2().x).min(place.height() / picture.size_vec2().y));
+                painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                number = Rect::from_min_max(Pos2::new(rect.left(), place.bottom()), rect.max);
+            }
+            painter.galley(Pos2::new(number.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), number.center().y)), galley, FG);
         }
     }
 }

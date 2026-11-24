@@ -18,7 +18,7 @@ use crate::media::watch::{Change, Watch};
 use crate::media::source::Frame;
 use crate::media::still::Samples;
 use crate::play::{Show, Transport};
-use crate::preview::spare::Seam;
+use crate::preview::spare::{Answer, Ask, Seam};
 use crate::settings::{self, Settings};
 use crate::shot;
 use crate::ui::{Action, Facts, Model, Screen, Shot, Ui};
@@ -1184,6 +1184,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone());
+    // the clip the spare reader has in hand for the timebar, and the frame last asked of it
+    let (mut time_of, mut time_asked): (Option<String>, Option<(String, usize)>) = (None, None);
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
@@ -1508,12 +1510,34 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             if let (Some(path), Some(v)) = (&tab.path, &mut tab.view) {
                 if v.transport.seam().is_some() && !v.seam_asked {
                     v.seam_asked = true;
-                    spare.ask(Path::new(path));
+                    spare.ask(Ask::Seam(path.into()));
                 }
             }
-            while let Some((path, seam)) = spare.take() {
-                for v in tabs.all.iter_mut().filter(|tab| tab.path.as_deref().map(Path::new) == Some(path.as_path())).filter_map(|tab| tab.view.as_mut()) {
-                    v.seam_change = seam;
+            // the timebar asks for the frame under the pointer, each time that is another frame. a clip that is
+            // another one now (a new tab up, a file opened or changed on disk) is let go, and its picture with it
+            let up = tabs.tab().path.clone().filter(|_| tabs.tab().view.is_some());
+            let asking = up.clone().zip(out.hovered);
+            if up != time_of {
+                spare.ask(Ask::Forget);
+                ui.forget_timebar_picture();
+                (time_of, time_asked) = (up, None);
+            }
+            if let Some((path, frame)) = asking.clone().filter(|_| asking != time_asked) {
+                spare.ask(Ask::Frame { path: path.into(), frame, playing: tabs.view().is_some_and(|v| v.transport.playing()) });
+            }
+            time_asked = asking;
+            while let Some(answer) = spare.take() {
+                match answer {
+                    Answer::Seam(path, seam) => {
+                        for v in tabs.all.iter_mut().filter(|tab| tab.path.as_deref().map(Path::new) == Some(path.as_path())).filter_map(|tab| tab.view.as_mut()) {
+                            v.seam_change = seam;
+                        }
+                    }
+                    Answer::Frame { path, frame, width, height, pixels } => {
+                        if time_of.as_deref().map(Path::new) == Some(path.as_path()) {
+                            ui.timebar_picture(frame, (width, height), &pixels);
+                        }
+                    }
                 }
                 again = true;
             }
@@ -1524,6 +1548,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         match tabs.bring_in(&gpu, &wake, if paced { Duration::ZERO } else { Duration::from_millis(4) }) {
             Ok(Some(said)) => {
                 (redraw, again) = (true, true);
+                // another file is up, or the same one changed: what the spare reader holds is the old one
+                time_of = None;
                 if !said.is_empty() {
                     toast = say(said);
                 }

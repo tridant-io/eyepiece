@@ -74,6 +74,14 @@ impl Reader for Open<'_> {
         (self.view.clip.width as u32, self.view.clip.height as u32)
     }
 
+    fn stands_alone(&self) -> bool {
+        match &self.view.clip.lane {
+            Lane::Video(video) => video.alone,
+            Lane::Hap(_) | Lane::Stills(_) => true,
+            Lane::Waiting(_) => false,
+        }
+    }
+
     fn read(&mut self, frame: usize, w: u32, h: u32) -> Option<Vec<u16>> {
         self.view.transport.go(frame as i64);
         // this frame and no other: nothing is read ahead for a picture

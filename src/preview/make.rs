@@ -23,6 +23,8 @@ pub trait Reader {
     /// how many frames it has, and its size in pixels
     fn frames(&self) -> usize;
     fn size(&self) -> (u32, u32);
+    /// every frame can be read without decoding the ones before it
+    fn stands_alone(&self) -> bool;
     /// the frame drawn `w` x `h`: four 16-bit numbers a pixel (red, green, blue, alpha), row by row. None when it
     /// cannot be had
     fn read(&mut self, frame: usize, w: u32, h: u32) -> Option<Vec<u16>>;
@@ -106,6 +108,15 @@ pub fn poster(clip_frames: usize) -> usize {
 fn size(w: u32, h: u32) -> (u32, u32) {
     let scale = (BOX.0 as f64 / w.max(1) as f64).min(BOX.1 as f64 / h.max(1) as f64).min(1.0);
     (((w as f64 * scale).round() as u32).max(1), ((h as f64 * scale).round() as u32).max(1))
+}
+
+/// a frame of a clip as a small picture: its size, and its pixels, red, green and blue, a byte each. the frame is
+/// drawn at up to `OVER` times that size each way and averaged down. None when the frame cannot be read.
+pub(super) fn small<R: Reader>(clip: &mut R, frame: usize) -> Option<((u32, u32), Vec<u8>)> {
+    let full = clip.size();
+    let small = size(full.0, full.1);
+    let by = (full.0 / small.0).min(full.1 / small.1).clamp(1, OVER);
+    Some((small, shrink(&clip.read(frame, small.0 * by, small.1 * by)?, small.0, small.1, by)))
 }
 
 /// a picture drawn `by` times `w` x `h` each way, averaged down to it: each pixel the mean of a `by` x `by` block,
@@ -202,7 +213,6 @@ fn make<R: Reader>(want: &Want, cache: Option<&Cache>, got: &Sender<Got>, playin
     if kept.is_some_and(|shape| shape != (clip_frames, small)) {
         have.clear();
     }
-    let by = (clip.0 / small.0).min(clip.1 / small.1).clamp(1, OVER);
     let of = frames(clip_frames);
     let (mut made, mut left) = (false, false);
     // the poster is the first of these that can be read: a sequence may have a gap at its middle. it gives up
@@ -218,8 +228,7 @@ fn make<R: Reader>(want: &Want, cache: Option<&Cache>, got: &Sender<Got>, playin
             left = true;
             break;
         }
-        let Some(big) = reader.read(frame, small.0 * by, small.1 * by) else { continue };
-        let picture = shrink(&big, small.0, small.1, by);
+        let Some((_, picture)) = self::small(&mut reader, frame) else { continue };
         answer(clip_frames, small, vec![(frame, picture.clone())], false);
         have.insert(frame, picture);
         made = true;
@@ -287,6 +296,9 @@ mod tests {
         }
         fn size(&self) -> (u32, u32) {
             (8, 4)
+        }
+        fn stands_alone(&self) -> bool {
+            true
         }
         fn read(&mut self, frame: usize, w: u32, h: u32) -> Option<Vec<u16>> {
             self.0.fetch_add(1, Ordering::Relaxed);

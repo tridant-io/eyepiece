@@ -22,7 +22,11 @@ a file that changes on disk: the player holds no lock on what it has open, so a 
 
 loop analysis also says how the seam looks in numbers: a second reader of the clip compares its last frame with its first, at full size, and the chip gives the mean change of a pixel as a part of full scale (`the seam changes 2.4%`), or says in amber that the two frames are the same, which is the doubled frame that makes a loop stutter.
 
+the timebar's hover picture: with the pointer on the timebar, the frame under it is shown small over its number. a second reader of the clip reads it, so the picture on screen does not move; while frames are asked for faster than they can be read, only the newest is read, and the last picture stays up meanwhile.
+
 known gaps:
+
+- **the timebar's picture is not the design's hybrid yet.** there is no strip of frames kept ready (one every two seconds), so nothing shows at once: the picture comes when its frame has been read, which is not measured. for h.264, hevc and vp9 with key frames apart the exact frame is read, which decodes every frame from the key frame before it (the design shows the key frame there); while such a clip plays, the timebar shows no picture, so the second decoder does not take the first one's time.
 
 - **a sequence is watched by its first file only.** a render that writes over a sequence is picked up when that file changes; frames written after that are read as they are on disk when they are next wanted, and a frame already in memory stays the old one until the clip is opened again.
 
