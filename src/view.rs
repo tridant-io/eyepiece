@@ -105,14 +105,12 @@ pub struct Framing {
     zoom: Option<f32>,
     /// the video point at the middle of the window
     center: (f32, f32),
-    /// the zoom and place left by the last return to fit, for double click to go back to
-    last: Option<(f32, (f32, f32))>,
 }
 
 impl Framing {
     pub fn new(video: (usize, usize)) -> Framing {
         let video = (video.0.max(1) as f32, video.1.max(1) as f32);
-        Framing { video, zoom: None, center: (video.0 / 2.0, video.1 / 2.0), last: None }
+        Framing { video, zoom: None, center: (video.0 / 2.0, video.1 / 2.0) }
     }
 
     /// the scale that shows the whole picture, as large as the window allows.
@@ -172,11 +170,6 @@ impl Framing {
     /// sets the zoom (None for fit), keeping the video point under `at` where it is; with no point, the middle.
     pub fn set_zoom(&mut self, zoom: Option<f32>, at: Option<(f32, f32)>, window: (f32, f32)) {
         let (s0, fit) = (self.scale(window), self.fit_scale(window));
-        if zoom.is_none() {
-            if let Some(z) = self.zoom {
-                self.last = Some((z, self.center));
-            }
-        }
         // the point's distance from the middle of the window, and the video point there
         let (ax, ay) = at.map_or((0.0, 0.0), |p| (p.0 - window.0 / 2.0, p.1 - window.1 / 2.0));
         let under = (self.center.0 + ax / s0, self.center.1 + ay / s0);
@@ -196,18 +189,6 @@ impl Framing {
         let next = if direction > 0 { stops.iter().find(|x| **x > s * 1.001) } else { stops.iter().rev().find(|x| **x < s * 0.999) };
         if let Some(&next) = next {
             self.set_zoom(Some(next).filter(|n| (n - fit).abs() > NEAR), at, window);
-        }
-    }
-
-    /// the double click: from a zoom back to fit; from fit back to the last zoom and place; with none to go back
-    /// to, 1:1 about `at`.
-    pub fn toggle_fit(&mut self, at: Option<(f32, f32)>, window: (f32, f32)) {
-        if self.zoom.is_some() {
-            self.set_zoom(None, None, window);
-        } else if let Some((zoom, center)) = self.last {
-            (self.zoom, self.center) = (Some(zoom), center);
-        } else {
-            self.set_zoom(Some(1.0), at, window);
         }
     }
 
@@ -289,20 +270,6 @@ mod tests {
         assert_eq!(f.label(WINDOW), "fit 108%");
         f.step(1, None, WINDOW);
         assert_eq!(f.label(WINDOW), "200%");
-    }
-
-    #[test]
-    fn double_click_goes_between_fit_and_the_last_zoom() {
-        let mut f = Framing::new((3840, 2160));
-        // nothing to go back to: 1:1 about the pointer
-        f.toggle_fit(Some((100.0, 100.0)), WINDOW);
-        assert_eq!(f.label(WINDOW), "100%");
-        f.pan((-300.0, -200.0), WINDOW);
-        let placed = f.rect(WINDOW);
-        f.toggle_fit(None, WINDOW);
-        assert_eq!(f.label(WINDOW), "fit 50%");
-        f.toggle_fit(None, WINDOW);
-        assert_eq!(f.rect(WINDOW), placed);
     }
 
     #[test]

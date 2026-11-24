@@ -443,7 +443,6 @@ impl View {
             }
             Action::Speed(speed) => self.transport.set_speed(*speed),
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
-            Action::ToggleFit(at) => self.framing.toggle_fit(Some(*at), window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Browse(_) | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}

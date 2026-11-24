@@ -111,8 +111,6 @@ Move-Pointer $mid[0] $mid[1]
 Send-Key 0x31; Assert-Title '1 is 1:1, and the title names the pixel under the pointer with its values' ' . 100% . x 32 y 32 . \d+ \d+ \d+$'
 [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536 + 0x8004), [IntPtr]0); Assert-Title 'shift + wheel zooms in one stop, about the pointer' ' . 200% . x 32 y 32 . '
 Send-Key 0x30; Assert-Frame '0 fits the picture again' 0 3
-DoubleClick-At $mid[0] $mid[1]; Assert-Title 'a double click goes back to the last zoom and place' ' . 200% . x 32 y 32 . '
-DoubleClick-At $mid[0] $mid[1]; Assert-Frame 'and another fits it' 0 3
 # the bar, from the right: fullscreen and the view (30 wide each), then the zoom, the speed and the loop by name.
 # a menu stands over its own button, its right edge 4 past the button's. the zoom menu's choices are 181 up from the
 # bottom, 1:1 the second of five; its field is 143 up
@@ -162,6 +160,12 @@ Send-Key 0x47; Assert-Frame 'it still steps in fullscreen' 1 3
 Send-Key 0x1B; Start-Sleep -Milliseconds 500
 Confirm-That 'escape puts the window back as it was' ((Test-Framed) -and (Get-Width) -eq $before) "framed: $(Test-Framed), width $(Get-Width), was $before"
 Send-Key 0x24; Assert-Frame 'and it still steps' 0 3
+# a double click anywhere on the picture does the same
+DoubleClick-At $mid[0] $mid[1]; Start-Sleep -Milliseconds 500
+Confirm-That 'a double click on the picture fills the display' (-not (Test-Framed)) "framed: $(Test-Framed)"
+$fullMid = Get-Middle
+DoubleClick-At $fullMid[0] $fullMid[1]; Start-Sleep -Milliseconds 500
+Confirm-That 'and another puts the window back as it was' ((Test-Framed) -and (Get-Width) -eq $before) "framed: $(Test-Framed), width $(Get-Width), was $before"
 
 # the window changes size: the renderer has to follow and keep answering
 [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300

@@ -167,8 +167,6 @@ pub enum Action {
     Speed(f64),
     /// fit (None), or this many display pixels for one video pixel, about the middle of the window
     Zoom(Option<f32>),
-    /// the double click on the picture, at this place in physical pixels: between fit and the last zoom
-    ToggleFit((f32, f32)),
     /// the picture, dragged by this many physical pixels
     Pan((f32, f32)),
     Look(Look),
@@ -410,7 +408,8 @@ impl Ui {
         let full = ui.max_rect();
         // the picture, under everything else. a plain click on it shows or hides the controls. a drag moves the
         // window while the whole frame is in view, and the picture when it is larger than the window. a double click
-        // goes between fit and the last zoom
+        // fills the display with it, or puts the window back (the owner's word, in place of the design's fit and
+        // last zoom)
         let picture = ui.interact(full, ui.scope_id().with("picture"), Sense::click_and_drag());
         if model.overflows {
             if picture.dragged_by(egui::PointerButton::Primary) {
@@ -423,10 +422,7 @@ impl Ui {
             actions.push(Action::MoveWindow);
         }
         if picture.double_clicked() {
-            if let Some(p) = picture.interact_pointer_pos() {
-                actions.push(Action::ToggleFit((p.x * self.scale, p.y * self.scale)));
-                self.view_changed = true;
-            }
+            actions.push(Action::Fullscreen);
         }
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
