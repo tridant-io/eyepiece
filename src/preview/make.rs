@@ -39,6 +39,8 @@ pub struct Want {
     pub size: u64,
     pub modified: SystemTime,
     pub all: bool,
+    /// the user asked for the previews of the file's folder: on a network volume it may be read only then (adr 0004)
+    pub asked: bool,
 }
 
 /// pictures of a file, as they are found in the cache or made
@@ -136,7 +138,7 @@ fn shrink(big: &[u16], w: u32, h: u32, by: u32) -> Vec<u8> {
 /// the maker's work, for a thread of its own: the pictures of each file wanted, in the order wanted, from the cache
 /// when they are there and from the file when not. the newest list is the only one that counts, and a file no
 /// longer in it is left at the next frame. nothing is made while a clip plays, and nothing on a network volume is
-/// read at all, whoever asks (adr 0004). returns when the browser's end is gone.
+/// read unless the want says its folder's previews were asked for (adr 0004). returns when the browser's end is gone.
 pub fn serve<R: Reader>(wants: Receiver<Vec<Want>>, got: Sender<Got>, cache: Option<Cache>, playing: &AtomicBool, mut open: impl FnMut(&Path) -> Option<R>) {
     let (mut list, mut at): (Vec<Want>, usize) = (Vec::new(), 0);
     // what has been answered in full and is still on the list: the browser may not have seen the answer yet
@@ -177,7 +179,7 @@ fn make<R: Reader>(want: &Want, cache: Option<&Cache>, got: &Sender<Got>, playin
     let answer = |clip_frames: usize, (width, height): (u32, u32), pictures: Vec<(usize, Vec<u8>)>, done: bool| {
         let _ = got.send(Got { want: want.clone(), clip_frames, width, height, pictures, done });
     };
-    if browse::volume_of(&want.path) == Volume::Network {
+    if !want.asked && browse::volume_of(&want.path) == Volume::Network {
         answer(0, (0, 0), Vec::new(), true);
         return true;
     }
@@ -313,7 +315,7 @@ mod tests {
 
     /// asks for one file's pictures and gathers what comes back until the answer is done.
     fn ask(pictures: &Pictures, path: &Path, all: bool) -> Vec<(usize, u8)> {
-        pictures.want(vec![Want { path: path.to_path_buf(), size: 1, modified: SystemTime::UNIX_EPOCH, all }]);
+        pictures.want(vec![Want { path: path.to_path_buf(), size: 1, modified: SystemTime::UNIX_EPOCH, all, asked: false }]);
         let mut seen = Vec::new();
         loop {
             let got = pictures.got.recv_timeout(Duration::from_secs(20)).expect("an answer");
@@ -358,12 +360,32 @@ mod tests {
     }
 
     #[test]
-    fn nothing_on_a_network_volume_is_opened() {
+    fn a_file_on_a_share_is_opened_only_when_its_folders_previews_were_asked_for() {
+        let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (pictures, wants, got) = Pictures::new();
-        let worker = std::thread::spawn(move || serve(wants, got, None, &AtomicBool::new(false), |_| -> Option<Gray> { panic!("a file on a share was opened") }));
-        pictures.want(vec![Want { path: PathBuf::from(r"\\server\share\a.mov"), size: 1, modified: SystemTime::UNIX_EPOCH, all: true }]);
+        let theirs = opened.clone();
+        let worker = std::thread::spawn(move || {
+            serve(wants, got, None, &AtomicBool::new(false), |path| {
+                theirs.lock().unwrap().push(path.to_path_buf());
+                Some(Gray(Arc::new(AtomicUsize::new(0)), false))
+            })
+        });
+        // this pc's own share stands for a network volume; the reader here never touches the file
+        let temp = std::env::temp_dir().to_string_lossy().into_owned();
+        let path = PathBuf::from(format!(r"\\localhost\{}${}\eyepiece-no-such-clip.mov", &temp[..1], &temp[2..]));
+        let want = |asked| Want { path: path.clone(), size: 1, modified: SystemTime::UNIX_EPOCH, all: true, asked };
+        pictures.want(vec![want(false)]);
         let got = pictures.got.recv_timeout(Duration::from_secs(20)).expect("an answer");
-        assert!(got.done && got.pictures.is_empty());
+        assert!(got.done && got.pictures.is_empty() && opened.lock().unwrap().is_empty(), "a file on a share was opened unasked");
+        pictures.want(vec![want(true)]);
+        let mut made = 0;
+        while let Ok(got) = pictures.got.recv_timeout(Duration::from_secs(20)) {
+            made += got.pictures.len();
+            if got.done {
+                break;
+            }
+        }
+        assert_eq!((made, opened.lock().unwrap().clone()), (10, vec![path.clone()]));
         drop(pictures);
         worker.join().unwrap();
     }

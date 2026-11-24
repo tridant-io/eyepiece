@@ -8,6 +8,7 @@
 use super::Chosen;
 use crate::browse::{self, Entry, Kind, Volume};
 use crate::event::{Key, Mods};
+use crate::preview::make;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -59,12 +60,20 @@ pub fn reads_metadata(volume: Volume, entry: &Entry, asked: bool) -> bool {
     (volume != Volume::Network && !entry.away) || asked
 }
 
-/// a card gets a poster and hover previews only when its file is on a local volume and its data is on the disk.
-/// making them reads the file, so nothing on a network volume gets them, and no file that would have to be
-/// downloaded first. asking for a file's metadata does not change that: the design asks for previews separately
-/// (adr 0004), and that asking is not built.
-pub fn makes_pictures(volume: Volume, entry: &Entry) -> bool {
-    volume != Volume::Network && !entry.away && is_card(entry)
+/// a card gets a poster and hover previews when its file's data is on the disk, and on a network volume only once the
+/// previews of its folder were asked for (`asked`, adr 0004). making them reads the file, so no file that would have
+/// to be downloaded first gets them, asked or not. asking for a file's metadata does not ask for its pictures.
+pub fn makes_pictures(volume: Volume, entry: &Entry, asked: bool) -> bool {
+    (volume != Volume::Network || asked) && !entry.away && is_card(entry)
+}
+
+/// how many files making a card's pictures reads at most: a clip's are all in its one file, a sequence's 24 previews
+/// are a file each
+pub fn files_read(entry: &Entry) -> usize {
+    match &entry.kind {
+        Kind::Sequence { first, last, .. } => make::frames((last - first + 1) as usize).len(),
+        _ => 1,
+    }
 }
 
 /// where the columns start for `folder`: the deepest of `places` that holds it, else its drive or share
@@ -114,10 +123,12 @@ impl Nav {
         }
     }
 
-    /// starts again at a place of the sidebar, with nothing selected.
-    pub fn go(&mut self, place: &Path) {
-        (self.path, self.previewing, self.focus) = (columns(place, place), false, Focus::Columns);
-        self.volume = browse::volume_of(place);
+    /// starts again at a folder of the sidebar, with nothing selected in it: its columns start at the one of `places`
+    /// that holds it, which is the folder itself for a place.
+    pub fn go(&mut self, folder: &Path, places: &[PathBuf]) {
+        let root = root_of(folder, places);
+        (self.path, self.previewing, self.focus) = (columns(&root, folder), false, Focus::Columns);
+        self.volume = browse::volume_of(&root);
     }
 
     /// the columns drawn: the whole path but a folder only shown
@@ -366,11 +377,17 @@ mod tests {
         Entry { name: name.to_string(), path: dir.join(name), kind, size: Some(10), modified: None, away: false }
     }
 
+    /// a folder that need not exist, named from the top of a local drive: `C:\no\such` on windows, `/no/such` on
+    /// macos. "" is the top itself.
+    fn at(folder: &str) -> PathBuf {
+        folder.split('/').filter(|part| !part.is_empty()).fold(PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" }), |path, part| path.join(part))
+    }
+
     /// a folder `r` on a drive that need not exist, with a folder `shots` holding two clips, then three files.
     fn tree() -> (Nav, PathBuf) {
-        let r = PathBuf::from(r"C:\no\such\r");
+        let r = at("no/such/r");
         let shots = r.join("shots");
-        let mut nav = Nav::new(&r, &[PathBuf::from(r"C:\no\such")]);
+        let mut nav = Nav::new(&r, &[at("no/such")]);
         nav.listings.insert(r.clone(), Ok(vec![entry(&r, "shots", Kind::Folder), entry(&r, "a.mov", Kind::Clip), entry(&r, "b.mov", Kind::Clip), entry(&r, "notes.txt", Kind::Other)]));
         nav.listings.insert(shots.clone(), Ok(vec![entry(&shots, "c.mov", Kind::Clip), entry(&shots, "d.mov", Kind::Clip)]));
         (nav, r)
@@ -395,26 +412,30 @@ mod tests {
 
     #[test]
     fn the_columns_start_at_the_place_that_holds_the_folder() {
-        let places = [PathBuf::from(r"C:\"), PathBuf::from(r"C:\Users\u\Downloads")];
-        assert_eq!(root_of(Path::new(r"C:\Users\u\Downloads\a\b"), &places), Path::new(r"C:\Users\u\Downloads"));
-        assert_eq!(root_of(Path::new(r"C:\Users\u\a"), &places), Path::new(r"C:\"));
-        // a drive or share that is not a place starts at its own top
-        assert_eq!(root_of(Path::new(r"E:\a\b"), &places), Path::new(r"E:\"));
-        assert_eq!(root_of(Path::new(r"\\server\share\a"), &places), Path::new(r"\\server\share\"));
+        let places = [at(""), at("Users/u/Downloads")];
+        assert_eq!(root_of(&at("Users/u/Downloads/a/b"), &places), at("Users/u/Downloads"));
+        assert_eq!(root_of(&at("Users/u/a"), &places), at(""));
+        // a folder no place holds starts at the top of what it is on: its drive or share
+        assert_eq!(root_of(&at("a/b"), &places[1..]), at(""));
+        #[cfg(windows)]
+        {
+            assert_eq!(root_of(Path::new(r"E:\a\b"), &places), Path::new(r"E:\"));
+            assert_eq!(root_of(Path::new(r"\\server\share\a"), &places), Path::new(r"\\server\share\"));
+        }
 
-        let path = columns(Path::new(r"C:\d"), Path::new(r"C:\d\a\b"));
+        let path = columns(&at("d"), &at("d/a/b"));
         let folders: Vec<&Path> = path.iter().map(|c| c.folder.as_path()).collect();
-        assert_eq!(folders, [Path::new(r"C:\d"), Path::new(r"C:\d\a"), Path::new(r"C:\d\a\b")]);
-        let selected: Vec<Option<&Path>> = path.iter().map(|c| c.selected.as_deref()).collect();
-        assert_eq!(selected, [Some(Path::new(r"C:\d\a")), Some(Path::new(r"C:\d\a\b")), None]);
-        assert_eq!(columns(Path::new(r"C:\d"), Path::new(r"C:\d")).len(), 1);
+        assert_eq!(folders, [at("d"), at("d/a"), at("d/a/b")]);
+        let selected: Vec<Option<PathBuf>> = path.iter().map(|c| c.selected.clone()).collect();
+        assert_eq!(selected, [Some(at("d/a")), Some(at("d/a/b")), None]);
+        assert_eq!(columns(&at("d"), &at("d")).len(), 1);
     }
 
     #[test]
     fn a_folder_selected_is_shown_before_it_is_entered() {
         let (mut nav, r) = tree();
         let shots = r.join("shots");
-        assert_eq!(folders(&nav), [Path::new(r"C:\no\such"), r.as_path()]);
+        assert_eq!(folders(&nav), [at("no/such"), r.clone()]);
         assert!(nav.card().is_none());
         // down selects the first entry: a folder, shown in the main area with its first card selected, no column yet
         press(&mut nav, Key::Down);
@@ -423,7 +444,7 @@ mod tests {
         assert_eq!(folders(&nav).len(), 2);
         // right enters it: a column of its own, the card still selected; down moves in it
         press(&mut nav, Key::Right);
-        assert_eq!(folders(&nav), [Path::new(r"C:\no\such"), r.as_path(), shots.as_path()]);
+        assert_eq!(folders(&nav), [at("no/such"), r.clone(), shots.clone()]);
         press(&mut nav, Key::Down);
         assert_eq!(nav.card().map(|c| c.name.as_str()), Some("d.mov"));
         // left: its column goes and it is shown again, as it was
@@ -456,21 +477,21 @@ mod tests {
         assert_eq!(nav.card().map(|c| c.name.as_str()), Some("a.mov"));
         // backspace again: the place the columns start at; and again, the folder above it comes in
         press(&mut nav, Key::Backspace);
-        assert_eq!(folders(&nav), [Path::new(r"C:\no\such")]);
+        assert_eq!(folders(&nav), [at("no/such")]);
         press(&mut nav, Key::Backspace);
-        assert_eq!(folders(&nav), [Path::new(r"C:\no")]);
-        assert_eq!(nav.main().selected.as_deref(), Some(Path::new(r"C:\no\such")));
+        assert_eq!(folders(&nav), [at("no")]);
+        assert_eq!(nav.main().selected, Some(at("no/such")));
         press(&mut nav, Key::Backspace);
-        assert_eq!(folders(&nav), [Path::new(r"C:\")]);
+        assert_eq!(folders(&nav), [at("")]);
         // at the top of the drive it goes no further
         press(&mut nav, Key::Backspace);
         press(&mut nav, Key::Left);
-        assert_eq!(folders(&nav), [Path::new(r"C:\")]);
+        assert_eq!(folders(&nav), [at("")]);
     }
 
     #[test]
     fn the_arrows_move_about_the_grid_by_rows() {
-        let r = PathBuf::from(r"C:\no\such\r");
+        let r = at("no/such/r");
         let mut nav = Nav::new(&r, std::slice::from_ref(&r));
         let names = ["c1.mov", "c2.mov", "c3.mov", "c4.mov", "c5.mov"];
         nav.listings.insert(r.clone(), Ok(names.iter().map(|n| entry(&r, n, Kind::Clip)).collect()));
@@ -504,7 +525,7 @@ mod tests {
 
     #[test]
     fn typed_letters_select_by_name_and_start_over_after_a_pause() {
-        let r = PathBuf::from(r"C:\no\such\r");
+        let r = at("no/such/r");
         let mut nav = Nav::new(&r, std::slice::from_ref(&r));
         nav.listings.insert(r.clone(), Ok(["a.mov", "w.mov", "wall_v011.mov", "wall_v012.mov"].iter().map(|n| entry(&r, n, Kind::Clip)).collect()));
         let at = |nav: &Nav| nav.card().map(|c| c.name.clone()).unwrap_or_default();
@@ -533,7 +554,7 @@ mod tests {
         assert!(press(&mut nav, Key::Enter).is_none());
         // a folder only shown: enter opens its selected card, as the card is what is selected
         press(&mut nav, Key::Down);
-        assert_eq!(opened(press(&mut nav, Key::Enter)), Some(r.join(r"shots\c.mov")));
+        assert_eq!(opened(press(&mut nav, Key::Enter)), Some(r.join("shots").join("c.mov")));
         press(&mut nav, Key::Down);
         assert_eq!(opened(press(&mut nav, Key::Enter)), Some(r.join("a.mov")));
         let shift = Mods { shift: true, ..Mods::default() };
@@ -545,22 +566,42 @@ mod tests {
     fn a_card_clicked_in_a_folder_only_shown_enters_it() {
         let (mut nav, r) = tree();
         press(&mut nav, Key::Down);
-        nav.choose_card(r.join(r"shots\d.mov"));
+        nav.choose_card(r.join("shots").join("d.mov"));
         assert_eq!((nav.previewing, nav.focus, nav.shown().len()), (false, Focus::Grid, 3));
         assert_eq!(nav.card().map(|c| c.name.as_str()), Some("d.mov"));
     }
 
     #[test]
-    fn pictures_are_made_only_of_local_files_that_are_on_the_disk() {
+    fn pictures_are_made_of_files_on_the_disk_and_on_a_share_only_when_asked() {
         let dir = Path::new("shots");
         let here = entry(dir, "a.mov", Kind::Clip);
         let cloud = Entry { away: true, ..entry(dir, "b.mov", Kind::Clip) };
         let run = entry(dir, "s.[0001-0003].exr", Kind::Sequence { first: 1, last: 3, missing: vec![], pad: 4 });
-        assert!(makes_pictures(Volume::Local, &here) && makes_pictures(Volume::Local, &run));
-        assert!(!makes_pictures(Volume::Local, &cloud));
-        assert!(!makes_pictures(Volume::Network, &here) && !makes_pictures(Volume::Network, &run));
+        assert!(makes_pictures(Volume::Local, &here, false) && makes_pictures(Volume::Local, &run, false));
+        assert!(!makes_pictures(Volume::Local, &cloud, false));
+        assert!(!makes_pictures(Volume::Network, &here, false) && !makes_pictures(Volume::Network, &run, false));
+        // asked for: a share's files get them, and still no file that would have to be downloaded
+        assert!(makes_pictures(Volume::Network, &here, true) && makes_pictures(Volume::Network, &run, true));
+        assert!(!makes_pictures(Volume::Network, &cloud, true) && !makes_pictures(Volume::Local, &cloud, true));
         // nor of what gets no card
-        assert!(!makes_pictures(Volume::Local, &entry(dir, "notes.txt", Kind::Other)) && !makes_pictures(Volume::Local, &entry(dir, "sub", Kind::Folder)));
+        assert!(!makes_pictures(Volume::Local, &entry(dir, "notes.txt", Kind::Other), true) && !makes_pictures(Volume::Local, &entry(dir, "sub", Kind::Folder), true));
+        // what making them reads: one file for a clip, a file a preview for a sequence
+        let long = entry(dir, "l.[0001-0240].exr", Kind::Sequence { first: 1, last: 240, missing: vec![], pad: 4 });
+        assert_eq!((files_read(&here), files_read(&run), files_read(&long)), (1, 3, 24));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_of_the_sidebar_starts_its_columns_at_the_place_that_holds_it() {
+        let (mut nav, r) = tree();
+        let places = [PathBuf::from(r"C:\no\such"), PathBuf::from(r"\\server\share\pinned")];
+        // a recent folder under a place: the columns from the place down to it, nothing selected in it
+        nav.go(&r.join("shots"), &places);
+        assert_eq!(folders(&nav), [Path::new(r"C:\no\such"), r.as_path(), r.join("shots").as_path()]);
+        assert_eq!((nav.main().folder.clone(), nav.previewing, nav.main().selected.clone()), (r.join("shots"), false, None));
+        // a place is the first column itself
+        nav.go(&places[1], &places);
+        assert_eq!((folders(&nav), nav.volume), (vec![places[1].as_path()], Volume::Network));
     }
 
     #[test]
@@ -602,7 +643,7 @@ mod tests {
     fn the_folder_shown_is_listed_first() {
         let (mut nav, r) = tree();
         press(&mut nav, Key::Down);
-        assert_eq!(nav.needed(0), [r.join("shots"), r.clone(), PathBuf::from(r"C:\no\such")]);
+        assert_eq!(nav.needed(0), [r.join("shots"), r.clone(), at("no/such")]);
         // the columns scrolled off the left are not listed
         assert_eq!(nav.needed(1), [r.join("shots"), r]);
     }

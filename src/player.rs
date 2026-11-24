@@ -422,7 +422,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenTab(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
             Action::Extras(_) | Action::Mark(..) | Action::ClearMarks => {}
         }
     }
@@ -1412,6 +1412,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // the maker of the browser's pictures stands back while a clip plays
     let playing_now = Arc::new(AtomicBool::new(false));
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
+    ui.set_browser_recent(settings.browser_recent.clone());
     // the player's one way out to the speakers, as loud as it was left
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
@@ -1738,6 +1739,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if settings.browser_folder.as_deref() != Some(ui.browser_folder()) {
             settings.browser_folder = Some(ui.browser_folder().to_path_buf());
         }
+        if settings.browser_recent != ui.browser_recent() {
+            settings.browser_recent = ui.browser_recent().to_vec();
+        }
         for action in &out.actions {
             match action {
                 Action::NewTab => tabs.new_tab(),
@@ -1747,6 +1751,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::Open(path) => {
                     tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
                 }
+                Action::OpenTab(path) => {
+                    tabs.new_tab();
+                    tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
+                }
+                Action::Reveal(file) => window::reveal(file, wake.clone()),
                 Action::Shot(what) => {
                     if let Some((v, marks)) = tabs.marked() {
                         shoot(v, marks, &gpu, *what, settings, scale, &wake);

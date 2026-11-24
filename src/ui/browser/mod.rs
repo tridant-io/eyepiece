@@ -7,7 +7,7 @@ mod jobs;
 mod nav;
 
 use super::{cut_middle, font, text_top, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
-use crate::browse::{self, Entry, Kind, Place, Volume};
+use crate::browse::{self, Entry, Group, Kind, Place, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
 use crate::preview::make::{self, Pictures, Want};
@@ -69,11 +69,16 @@ const NOTCH: f32 = 3.0 * ROW;
 const REST: f64 = 0.15;
 /// while an answer is awaited, the browser looks again this often: nothing else wakes the window for it
 const POLL: Duration = Duration::from_millis(40);
+/// how many recent folders the sidebar keeps
+const RECENT: usize = 5;
 
 /// what was chosen in the browser
 pub enum Chosen {
-    /// open this file. a sequence is opened by its first file
+    /// open this file, in the tab the browser is in, or in a tab of its own. a sequence is opened by its first file
     Open(PathBuf),
+    NewTab(PathBuf),
+    /// show this file in the system's own file browser
+    Reveal(PathBuf),
     /// play this folder
     PlayFolder(PathBuf),
     /// back to the clip under the browser
@@ -81,9 +86,10 @@ pub enum Chosen {
 }
 
 pub struct Browser {
-    /// where it starts, and the maker of its cards' pictures: held until it is first shown, so a launch with a
-    /// file reads no folder
+    /// where it starts, the folders it last opened files from, and the maker of its cards' pictures: held until it
+    /// is first shown, so a launch with a file reads no folder
     start: Option<PathBuf>,
+    recent: Vec<PathBuf>,
     pictures: Option<Pictures>,
     state: Option<State>,
 }
@@ -92,7 +98,19 @@ impl Browser {
     /// starts in `folder`; with none, in the first of the system's places (downloads). without `pictures` the
     /// cards stay plain.
     pub fn new(folder: Option<PathBuf>, pictures: Option<Pictures>) -> Browser {
-        Browser { start: folder, pictures, state: None }
+        Browser { start: folder, recent: Vec::new(), pictures, state: None }
+    }
+
+    /// the folders it last opened files from, the newest first: kept between runs.
+    pub fn recent(&self) -> &[PathBuf] {
+        self.state.as_ref().map_or(&self.recent, |state| &state.recent)
+    }
+
+    pub fn set_recent(&mut self, recent: Vec<PathBuf>) {
+        match &mut self.state {
+            Some(state) => state.recent = recent,
+            None => self.recent = recent,
+        }
     }
 
     /// the browser is not on screen: no pictures are wanted.
@@ -111,8 +129,8 @@ impl Browser {
     }
 
     fn state(&mut self) -> &mut State {
-        let (start, pictures) = (&mut self.start, &mut self.pictures);
-        self.state.get_or_insert_with(|| State::new(start.take(), pictures.take()))
+        let (start, recent, pictures) = (&mut self.start, &mut self.recent, &mut self.pictures);
+        self.state.get_or_insert_with(|| State::new(start.take(), std::mem::take(recent), pictures.take()))
     }
 
     pub fn key(&mut self, key: Key, mods: Mods) {
@@ -143,8 +161,13 @@ impl Browser {
 
 struct State {
     nav: Nav,
-    /// the sidebar: the places, then the volumes, each with the kind of volume it is on
+    /// the sidebar: the places, the folders pinned in explorer and the volumes, each with the kind of volume it is on;
+    /// their paths, where the columns start; and the recent folders, which are no place to start at
     places: Vec<(Place, Volume)>,
+    roots: Vec<PathBuf>,
+    recent: Vec<PathBuf>,
+    /// the folders pinned in explorer, read off the drawing thread
+    pins: Jobs<Vec<Place>>,
     lists: Jobs<Listing>,
     metas: Jobs<Result<Meta, String>>,
     /// listings read before the browser was last away: shown while they are read again
@@ -153,6 +176,8 @@ struct State {
     read: HashMap<PathBuf, Result<Meta, String>>,
     /// the files whose metadata was asked for, or that were opened from here: on a network volume, read
     asked: HashSet<PathBuf>,
+    /// the folders whose previews were asked for: on a network volume, their cards get pictures
+    previews: HashSet<PathBuf>,
     /// the unread file the selection is on, and since when
     resting: Option<(PathBuf, f64)>,
     /// the maker of the cards' pictures, and what it was last asked for
@@ -194,8 +219,12 @@ enum Click {
     Enter,
     Card(PathBuf),
     Open(PathBuf),
+    NewTab(PathBuf),
+    Reveal(PathBuf),
     PlayFolder,
     Read(PathBuf),
+    /// the previews of this folder
+    Previews(PathBuf),
 }
 
 /// where the parts go: the sidebar, the columns that fit (the deepest ones), the main area, the metadata column
@@ -255,10 +284,12 @@ fn stamp(entry: &Entry) -> (u64, SystemTime) {
 }
 
 impl State {
-    fn new(start: Option<PathBuf>, pictures: Option<Pictures>) -> State {
+    fn new(start: Option<PathBuf>, recent: Vec<PathBuf>, pictures: Option<Pictures>) -> State {
         let places = browse::places();
         let folder = start.or_else(|| places.first().map(|p| p.path.clone())).unwrap_or_default();
         let roots: Vec<PathBuf> = places.iter().map(|p| p.path.clone()).collect();
+        let mut pins = Jobs::new();
+        pins.ask(PathBuf::new(), |_| browse::pinned());
         State {
             nav: Nav::new(&folder, &roots),
             places: places
@@ -268,11 +299,15 @@ impl State {
                     (place, volume)
                 })
                 .collect(),
+            roots,
+            recent,
+            pins,
             lists: Jobs::new(),
             metas: Jobs::new(),
             stale: HashSet::new(),
             read: HashMap::new(),
             asked: HashSet::new(),
+            previews: HashSet::new(),
             resting: None,
             pictures,
             wanted: Vec::new(),
@@ -293,12 +328,30 @@ impl State {
         }
     }
 
-    /// what the host is asked for. a file opened from here counts as asked about.
+    /// what the host is asked for. a file opened from here counts as asked about, and the folder a file is opened or
+    /// played from becomes the newest recent one.
     fn choose(&mut self, chosen: Chosen) {
-        if let Chosen::Open(file) = &chosen {
-            self.asked.insert(file.clone());
+        match &chosen {
+            Chosen::Open(file) | Chosen::NewTab(file) => {
+                self.asked.insert(file.clone());
+                if let Some(folder) = file.parent() {
+                    self.remember(folder.to_path_buf());
+                }
+            }
+            Chosen::PlayFolder(folder) => self.remember(folder.clone()),
+            Chosen::Reveal(_) | Chosen::Back => {}
         }
         self.chosen = Some(chosen);
+    }
+
+    /// a folder files were opened from, first among the recent ones. a place of the sidebar is there already
+    fn remember(&mut self, folder: PathBuf) {
+        if self.roots.contains(&folder) {
+            return;
+        }
+        self.recent.retain(|f| *f != folder);
+        self.recent.insert(0, folder);
+        self.recent.truncate(RECENT);
     }
 
     /// tells the maker what is wanted now, when that has changed.
@@ -331,7 +384,22 @@ impl State {
         }
     }
 
+    /// the folders pinned in explorer join the sidebar after the places, but for the places themselves, which explorer
+    /// pins on its own, and the drives.
+    fn pin(&mut self, pinned: Vec<Place>) {
+        let pinned: Vec<Place> = pinned.into_iter().filter(|p| !self.roots.contains(&p.path)).collect();
+        self.roots.extend(pinned.iter().map(|p| p.path.clone()));
+        self.places.extend(pinned.into_iter().map(|place| {
+            let volume = browse::volume_of(&place.path);
+            (place, volume)
+        }));
+        self.places.sort_by_key(|(place, _)| place.group);
+    }
+
     fn take_answers(&mut self) {
+        for (_, pinned) in self.pins.answers() {
+            self.pin(pinned);
+        }
         for (folder, listing) in self.lists.answers() {
             self.stale.remove(&folder);
             self.nav.listings.insert(folder, listing);
@@ -387,7 +455,7 @@ impl State {
         if let Some(wait) = self.ask(layout.first, ui.input(|i| i.time)) {
             ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
         }
-        if self.lists.busy() || self.metas.busy() {
+        if self.lists.busy() || self.metas.busy() || self.pins.busy() {
             ui.ctx().request_repaint_after(POLL);
         }
         self.chosen.take()
@@ -395,7 +463,7 @@ impl State {
 
     fn click(&mut self, click: Click) {
         match click {
-            Click::Place(place) => self.nav.go(&place),
+            Click::Place(place) => self.nav.go(&place, &self.roots),
             Click::Row(at, entry, folder) => {
                 self.nav.select(at, entry, folder);
                 self.nav.focus = nav::Focus::Columns;
@@ -403,9 +471,14 @@ impl State {
             Click::Enter => self.nav.enter(),
             Click::Card(card) => self.nav.choose_card(card),
             Click::Open(file) => self.choose(Chosen::Open(file)),
+            Click::NewTab(file) => self.choose(Chosen::NewTab(file)),
+            Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
             Click::PlayFolder => self.choose(Chosen::PlayFolder(self.nav.main().folder.clone())),
             Click::Read(file) => {
                 self.asked.insert(file);
+            }
+            Click::Previews(folder) => {
+                self.previews.insert(folder);
             }
         }
     }
@@ -457,7 +530,8 @@ impl State {
         }
     }
 
-    /// the sidebar: the places, then the volumes, a network one tagged.
+    /// the sidebar, as fig. 27 has it: the places, the folders pinned in explorer, the volumes and the recent folders,
+    /// each group under its heading, and anything on a network volume tagged.
     fn side(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, PANEL);
@@ -466,15 +540,20 @@ impl State {
         let width = rect.width() - 1.0;
         let mut y = rect.top() + 12.0 - self.side_scroll;
         let mut first = true;
-        for drives in [false, true] {
-            let places: Vec<&(Place, Volume)> = self.places.iter().filter(|(p, _)| p.path.parent().is_none() == drives).collect();
+        // a row's name has the row but for 14 each side, and a network one's tag with 8 before it
+        let tag = spaced(&painter, "net", font(MONO_MEDIUM, 9.0), 0.9, TAG);
+        let room = |volume: Volume| width - 28.0 - if volume == Volume::Network { tag.size().x + 8.0 + 8.0 } else { 0.0 };
+        let fits = |name: &str, volume| painter.layout_no_wrap(name.to_string(), font(SANS, 12.5), DIM).size().x <= room(volume);
+        let recent: Vec<(Place, Volume)> = self.recent.iter().map(|f| (browse::volume_of(f), f)).map(|(volume, f)| (Place { name: recent_name(f, |name| fits(name, volume)), path: f.clone(), group: Group::Recent }, volume)).collect();
+        for (group, heading) in [(Group::Known, "PLACES"), (Group::Pinned, "PINNED IN EXPLORER"), (Group::Volumes, "VOLUMES"), (Group::Recent, "RECENT")] {
+            let places: Vec<&(Place, Volume)> = self.places.iter().chain(&recent).filter(|(p, _)| p.group == group).collect();
             if places.is_empty() {
                 continue;
             }
             if !std::mem::take(&mut first) {
                 y += 1.0 + 12.0;
             }
-            let heading = spaced(&painter, if drives { "VOLUMES" } else { "PLACES" }, font(MONO_MEDIUM, 9.5), 1.52, GRAY);
+            let heading = spaced(&painter, heading, font(MONO_MEDIUM, 9.5), 1.52, GRAY);
             painter.galley(Pos2::new(rect.left() + 14.0, top_of(&painter, &heading, y + 4.75)), heading, GRAY);
             y += 9.5 + 5.0;
             for (i, (place, volume)) in places.into_iter().enumerate() {
@@ -484,17 +563,14 @@ impl State {
                 if on {
                     painter.rect_filled(row, 0.0, PLACE_ON);
                 }
-                let mut room = width - 28.0;
                 if *volume == Volume::Network {
-                    let tag = spaced(&painter, "net", font(MONO_MEDIUM, 9.0), 0.9, TAG);
                     let size = Vec2::new(tag.size().x + 8.0, 15.0);
                     let mark = Rect::from_min_size(Pos2::new(row.right() - 14.0 - size.x, row.center().y - size.y / 2.0), size);
                     painter.rect_stroke(mark, 0.0, (1.0, TAG_EDGE), StrokeKind::Inside);
-                    painter.galley(Pos2::new(mark.center().x - tag.size().x / 2.0, top_of(&painter, &tag, mark.center().y)), tag, TAG);
-                    room -= size.x + 8.0;
+                    painter.galley(Pos2::new(mark.center().x - tag.size().x / 2.0, top_of(&painter, &tag, mark.center().y)), tag.clone(), TAG);
                 }
-                text(&painter, row.left() + 14.0, row.center().y, &place.name, font(SANS, 12.5), if on { FG } else { DIM }, room);
-                if ui.interact(row.intersect(rect), ui.scope_id().with(("brw-place", drives, i)), Sense::click()).clicked() {
+                text(&painter, row.left() + 14.0, row.center().y, &place.name, font(SANS, 12.5), if on { FG } else { DIM }, room(*volume));
+                if ui.interact(row.intersect(rect), ui.scope_id().with(("brw-place", group as usize, i)), Sense::click()).clicked() {
                     clicks.push((Click::Place(place.path.clone()), None));
                 }
             }
@@ -587,22 +663,37 @@ impl State {
         };
         text(&painter, left + named + 10.0, middle, &holds, font(MONO, 11.5), DIM, room - named - 10.0);
 
-        // on a network volume, a note that nothing is opened without asking (fig. 29)
+        // on a network volume, a note that nothing is opened without asking, and at its right the button that asks
+        // for the folder's previews, saying how many files they read (fig. 29)
         let mut top = line.bottom();
         if self.nav.volume == Volume::Network {
-            let read_here = self.asked.iter().any(|f| f.parent() == Some(folder.as_path()));
-            let rest = if read_here { "only the files you asked for have been opened" } else { "nothing here has been opened" };
+            let asked = self.previews.contains(&folder);
+            let reads: usize = self.nav.entries(&folder).iter().filter(|e| nav::makes_pictures(Volume::Network, e, true)).map(nav::files_read).sum();
+            let ask = (!asked && reads > 0).then(|| painter.layout_no_wrap(previews_label(reads), font(MONO, 11.5), FG));
+            let (head, rest) = network_note(asked, self.asked.iter().any(|f| f.parent() == Some(folder.as_path())));
+            let button_size = ask.as_ref().map(|label| Vec2::new(label.size().x + 20.0, 11.5 * 1.5 + 14.0));
             let mut job = LayoutJob::default();
-            job.wrap.max_width = rect.width() - 28.0 - 3.0 - 24.0;
+            job.wrap.max_width = rect.width() - 28.0 - 3.0 - 24.0 - button_size.map_or(0.0, |s| s.x + 14.0);
             let format = |family: &str, color| TextFormat { font_id: font(family, 11.5), color, line_height: Some(11.5 * 1.5), ..Default::default() };
-            job.append("network folder: look-only.", 0.0, format(MONO_MEDIUM, FG));
-            job.append(&format!(" {rest}. names, sizes and dates come from the folder listing."), 0.0, format(MONO, DIM));
+            job.append(head, 0.0, format(MONO_MEDIUM, FG));
+            job.append(&rest, 0.0, format(MONO, DIM));
             let galley = painter.layout_job(job);
-            let note = Rect::from_min_size(Pos2::new(rect.left() + 14.0, top + 14.0), Vec2::new(rect.width() - 28.0, galley.size().y + 22.0));
+            // the text and the button are centered on each other
+            let inside = galley.size().y.max(button_size.map_or(0.0, |s| s.y));
+            let note = Rect::from_min_size(Pos2::new(rect.left() + 14.0, top + 14.0), Vec2::new(rect.width() - 28.0, inside + 22.0));
+            let middle = note.top() + 11.0 + inside / 2.0;
             painter.rect_stroke(note, 0.0, (1.0, LINE), StrokeKind::Inside);
             // fig. 29 draws this edge in amber. amber is kept for a fault in a file, and this is none
             painter.rect_filled(Rect::from_min_size(note.min, Vec2::new(2.0, note.height())), 0.0, GRAY);
-            painter.galley(note.min + Vec2::new(2.0 + 12.0, 1.0 + 10.0), galley, DIM);
+            painter.galley(Pos2::new(note.left() + 2.0 + 12.0, middle - galley.size().y / 2.0), galley, DIM);
+            if let (Some(label), Some(size)) = (ask, button_size) {
+                let at = Rect::from_min_size(Pos2::new(note.right() - 1.0 - 12.0 - size.x, middle - size.y / 2.0), size);
+                if button(ui, &painter, at, "brw-previews", label, false) {
+                    clicks.push((Click::Previews(folder.clone()), None));
+                }
+                // outlined in white, as fig. 29 has it
+                painter.rect_stroke(at, 0.0, (1.0, FG), StrokeKind::Inside);
+            }
             top = note.bottom();
         }
         self.grid(ui, Rect::from_min_max(Pos2::new(rect.left(), top), rect.max), &folder, clicks);
@@ -654,6 +745,7 @@ impl State {
         // the cards on screen ask for their posters, and the one the pointer rests on for all of its previews first
         let now = ui.input(|i| i.time);
         let (mut wants, mut hovered) = (Vec::new(), false);
+        let asked = self.previews.contains(folder);
         for (i, card) in cards.iter().enumerate() {
             let top = rect.top() + 14.0 + (i / per_row) as f32 * pitch - self.grid_scroll;
             if top + height < rect.top() || top > rect.bottom() {
@@ -668,10 +760,10 @@ impl State {
             if response.clicked() {
                 clicks.push((Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))));
             }
-            if !nav::makes_pictures(self.nav.volume, card) {
+            if !nav::makes_pictures(self.nav.volume, card, asked) {
                 continue;
             }
-            let want = |all| Want { path: card.path.clone(), size: stamp(card).0, modified: stamp(card).1, all };
+            let want = |all| Want { path: card.path.clone(), size: stamp(card).0, modified: stamp(card).1, all, asked };
             if scrub.is_some() && !pictures.is_some_and(|c| c.all) {
                 hovered = true;
                 // a pointer only crossing the card reads nothing more than its poster
@@ -710,7 +802,7 @@ impl State {
         painter.galley(Pos2::new(left, y), galley, DIM);
         y += height + 14.0;
         let mut x = left;
-        for (i, (place, _)) in self.places.iter().filter(|(p, _)| p.path.parent().is_some()).enumerate() {
+        for (i, (place, _)) in self.places.iter().filter(|(p, _)| p.group == Group::Known).enumerate() {
             let label = painter.layout_no_wrap(place.name.clone(), font(MONO_MEDIUM, 11.0), FG);
             let size = Vec2::new(label.size().x + 18.0, 25.0);
             if x > left && x + size.x > left + width {
@@ -732,11 +824,19 @@ impl State {
         let (left, width) = (rect.left() + 1.0 + 14.0, rect.width() - 1.0 - 28.0);
         let readable = nav::readable(card);
         let reads = readable && nav::reads_metadata(self.nav.volume, card, self.asked.contains(&card.path));
-        // at the foot: open, and on a network volume, until asked, read metadata
+        // at the foot: open, open in a tab of its own, and then on a network volume read metadata until it is read
+        // (fig. 29), or for a local file that is on the disk reveal (fig. 28). explorer would read a network folder
+        // to show it, so a file there is not revealed
         let foot = rect.bottom() - 12.0 - 25.0;
         let mut x = left;
-        let ask = (readable && !reads).then(|| ("read metadata", Click::Read(card.path.clone()), false));
-        for (i, (label, click, strong)) in std::iter::once(("open", Click::Open(card.path.clone()), true)).chain(ask).enumerate() {
+        let third = match (readable && !reads, self.nav.volume != Volume::Network && !card.away) {
+            (true, _) => Some(("read metadata", Click::Read(card.path.clone()))),
+            (false, true) => Some(("reveal", Click::Reveal(card.path.clone()))),
+            (false, false) => None,
+        };
+        let acts = [("open", Click::Open(card.path.clone())), ("new tab", Click::NewTab(card.path.clone()))].into_iter().chain(third);
+        for (i, (label, click)) in acts.enumerate() {
+            let strong = i == 0;
             let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), if strong { ON_STRONG } else { FG });
             let button_rect = Rect::from_min_size(Pos2::new(x, foot), Vec2::new(galley.size().x + 18.0, 25.0));
             if button(ui, &painter, button_rect, ("brw-act", i), galley, strong) {
@@ -923,6 +1023,32 @@ fn holds(entries: &[Entry]) -> String {
     counts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}{}", if *n == 1 { "" } else { "s" })).collect::<Vec<_>>().join(" · ")
 }
 
+/// what the note on a network folder says, in bold and then plain: whether its previews were asked for, and whether
+/// a file of it was opened or read
+fn network_note(previews: bool, opened: bool) -> (&'static str, String) {
+    let (head, rest) = match (previews, opened) {
+        (true, _) => ("network folder: previews asked for.", "posters are read from the files here, and a card's previews when the pointer rests on it"),
+        (false, true) => ("network folder: look-only.", "only the files you asked for have been opened"),
+        (false, false) => ("network folder: look-only.", "nothing here has been opened"),
+    };
+    (head, format!(" {rest}. names, sizes and dates come from the folder listing."))
+}
+
+/// the button that asks for a network folder's previews, with how many files they read
+fn previews_label(reads: usize) -> String {
+    format!("make previews · reads {reads} file{}", if reads == 1 { "" } else { "s" })
+}
+
+/// a recent folder as the sidebar names it: the folder above it, then its own name ("delivery_2026-11-20 / wall").
+/// where that does not `fit`, the folder above is cut short first, so the folder's own name stays.
+fn recent_name(folder: &Path, fits: impl Fn(&str) -> bool) -> String {
+    let own = browse::name_of(folder);
+    let Some(up) = folder.parent().map(browse::name_of) else { return own };
+    let up: Vec<char> = up.chars().collect();
+    let cut = |keep: usize| if keep == up.len() { format!("{} / {own}", String::from_iter(&up)) } else { format!("{}… / {own}", String::from_iter(&up[..keep])) };
+    (0..=up.len()).rev().map(cut).find(|name| fits(name)).unwrap_or_else(|| cut(0))
+}
+
 fn fact(label: &'static str, value: String, tone: Tone) -> Row {
     Row { label, value, tone }
 }
@@ -1053,5 +1179,168 @@ mod tests {
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_none()), (4, 1, true));
         // never more columns than the path has
         assert_eq!(Layout::new(area(2400.0), 1, false).columns.len(), 1);
+    }
+
+    /// a sign the fonts do not have is drawn as an empty box
+    #[test]
+    fn the_sidebar_the_note_and_the_actions_are_all_in_their_fonts() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let has = |family: &str, words: &str| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 11.5), words));
+            assert!(["PLACES", "PINNED IN EXPLORER", "VOLUMES", "RECENT", "net", "open", "new tab", "reveal", "read metadata"].iter().all(|w| has(MONO_MEDIUM, w)));
+            assert!(has(SANS, &recent_name(Path::new(r"D:\delivery_2026-11-20\wall"), |n| n.len() < 12)) && has(SANS, "system (C:)"));
+            for (previews, opened) in [(false, false), (false, true), (true, false)] {
+                let (head, rest) = network_note(previews, opened);
+                assert!(has(MONO_MEDIUM, head) && has(MONO, &rest), "{head}{rest}");
+            }
+            assert!(has(MONO, &previews_label(300)) && has(MONO, &previews_label(1)));
+        });
+        out.textures_delta.clear();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pinned_folders_join_after_the_places_and_recent_ones_come_newest_first() {
+        let mut state = State::new(Some(PathBuf::from(r"C:\no\such")), Vec::new(), None);
+        // fig. 27's sidebar, in place of this pc's own
+        let place = |name: &str, path: &str, group| (Place { name: name.into(), path: path.into(), group }, browse::volume_of(Path::new(path)));
+        state.places = vec![place("downloads", r"C:\u\Downloads", Group::Known), place("desktop", r"C:\u\Desktop", Group::Known), place("system (C:)", r"C:\", Group::Volumes)];
+        state.roots = state.places.iter().map(|(p, _)| p.path.clone()).collect();
+        // explorer pins downloads itself, which is a place already
+        let pin = |path: &str| Place { name: browse::name_of(Path::new(path)), path: path.into(), group: Group::Pinned };
+        state.pin(vec![pin(r"C:\u\Downloads"), pin(r"C:\show_content"), pin(r"\\nas\projects\renders_out")]);
+        let names: Vec<&str> = state.places.iter().map(|(p, _)| p.name.as_str()).collect();
+        assert_eq!(names, ["downloads", "desktop", "show_content", "renders_out", "system (C:)"]);
+        assert_eq!((state.places[2].1, state.places[3].1), (Volume::Local, Volume::Network));
+        assert!(state.roots.contains(&PathBuf::from(r"C:\show_content")));
+
+        // the folder a file is opened or played from comes first; a place is none, and one already there moves up
+        let wall = PathBuf::from(r"C:\delivery_2026-11-20\wall");
+        for file in [wall.join("a.mov"), PathBuf::from(r"C:\u\Downloads\b.mov"), PathBuf::from(r"C:\show_content\totems\c.mov")] {
+            state.choose(Chosen::Open(file));
+        }
+        state.choose(Chosen::NewTab(wall.join("d.mov")));
+        assert_eq!(state.recent, [wall.clone(), PathBuf::from(r"C:\show_content\totems")]);
+        // named by the folder above and its own; where that does not fit, the folder above is cut short first
+        assert_eq!(recent_name(&state.recent[0], |_| true), "delivery_2026-11-20 / wall");
+        let fits = |most: usize| move |name: &str| name.chars().count() <= most;
+        assert_eq!((recent_name(&wall, fits(16)), recent_name(&wall, fits(4)), recent_name(Path::new(r"C:\x"), fits(9))), ("delivery… / wall".to_string(), "… / wall".to_string(), "C: / x".to_string()));
+        for n in 0..RECENT {
+            state.choose(Chosen::PlayFolder(PathBuf::from(format!(r"C:\played\{n}"))));
+        }
+        assert_eq!((state.recent.len(), state.recent[0].clone()), (RECENT, PathBuf::from(format!(r"C:\played\{}", RECENT - 1))));
+    }
+
+    /// a folder tree under the temp folder that removes what it made one item at a time, the files first, never
+    /// recursively
+    #[cfg(windows)]
+    struct Scratch(Vec<(PathBuf, bool)>);
+
+    #[cfg(windows)]
+    impl Scratch {
+        fn folder(&mut self, path: PathBuf) -> PathBuf {
+            std::fs::create_dir(&path).unwrap();
+            self.0.push((path.clone(), true));
+            path
+        }
+
+        fn file(&mut self, path: PathBuf) {
+            std::fs::write(&path, b"no clip: nothing may read it").unwrap();
+            self.0.push((path, false));
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            for (path, folder) in self.0.iter().rev() {
+                let removed = if *folder { std::fs::remove_dir(path) } else { std::fs::remove_file(path) };
+                if let Err(why) = removed {
+                    eprintln!("left behind {}: {why}", path.display());
+                }
+            }
+        }
+    }
+
+    /// the same folder through this pc's own share, which stands for a network volume
+    #[cfg(windows)]
+    fn shared(local: &Path) -> PathBuf {
+        let local = local.to_string_lossy();
+        PathBuf::from(format!(r"\\localhost\{}${}", &local[..1], &local[2..]))
+    }
+
+    /// one pass of the browser over fig. 28's window, at `time`, with the pointer at `at` or out of the window
+    #[cfg(windows)]
+    fn pass(ctx: &egui::Context, state: &mut State, time: f64, at: Option<Pos2>) {
+        let mut raw = egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), ..Default::default() };
+        raw.events.push(at.map_or(egui::Event::PointerGone, egui::Event::PointerMoved));
+        let mut out = ctx.run_ui(raw, |ui| {
+            state.draw(ui, ui.max_rect());
+        });
+        out.textures_delta.clear();
+    }
+
+    /// draws until the folder is listed
+    #[cfg(windows)]
+    fn listed(ctx: &egui::Context, state: &mut State, folder: &Path, time: &mut f64) {
+        for _ in 0..200 {
+            if state.nav.listings.contains_key(folder) {
+                return;
+            }
+            pass(ctx, state, *time, None);
+            *time += 0.05;
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the folder was not listed");
+    }
+
+    /// adr 0004 through the browser itself, on a folder of this pc's own share: with a card selected and the pointer
+    /// resting all over the cards, no picture and no metadata is asked of a file. asked for, the folder's previews are
+    /// wanted of its cards and of no other folder's.
+    #[cfg(windows)]
+    #[test]
+    fn a_network_folder_asks_nothing_of_its_files_until_its_previews_are_asked_for() {
+        let mut made = Scratch(Vec::new());
+        // as deep as the columns that fit, so they list only what the test made
+        let top = made.folder(std::env::temp_dir().join(format!("eyepiece-share-{}", std::process::id())));
+        let a = made.folder(top.join("a"));
+        let b = made.folder(a.join("b"));
+        let shots = made.folder(b.join("shots"));
+        let other = made.folder(b.join("other"));
+        let deeper = made.folder(shots.join("deeper"));
+        for file in [shots.join("a.mov"), shots.join("b.mov"), deeper.join("c.mov"), other.join("d.mov")] {
+            made.file(file);
+        }
+        let (pictures, wants, _got) = Pictures::new();
+        let mut state = State::new(Some(shared(&shots)), Vec::new(), Some(pictures));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut time = 0.0;
+        listed(&ctx, &mut state, &shared(&shots), &mut time);
+        assert_eq!(state.nav.volume, Volume::Network);
+        state.nav.choose_card(shared(&shots).join("a.mov"));
+        // the pointer rests at every height of the main area's first cards, a second at each
+        for y in (40..700).step_by(10) {
+            for _ in 0..2 {
+                pass(&ctx, &mut state, time, Some(Pos2::new(560.0, y as f32)));
+                time += 1.0;
+            }
+        }
+        assert_eq!(wants.try_iter().flatten().count(), 0, "a picture was wanted of a file on a share");
+        assert!(!state.metas.busy() && state.read.is_empty(), "a file on a share was read for its metadata");
+
+        state.click(Click::Previews(shared(&shots)));
+        pass(&ctx, &mut state, time, None);
+        let wanted = wants.try_iter().last().expect("pictures are wanted");
+        let mut of: Vec<PathBuf> = wanted.iter().map(|w| w.path.clone()).collect();
+        of.sort();
+        assert_eq!(of, [shared(&shots).join("a.mov"), shared(&shots).join("b.mov")]);
+        assert!(wanted.iter().all(|w| w.asked && !w.all));
+        // another folder of the share, not asked for, gets none
+        state.click(Click::Place(shared(&other)));
+        listed(&ctx, &mut state, &shared(&other), &mut time);
+        pass(&ctx, &mut state, time, None);
+        assert_eq!(wants.try_iter().last().map(|w| w.len()), Some(0));
     }
 }

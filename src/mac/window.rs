@@ -10,7 +10,7 @@ use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOn
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationPresentationOptions, NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent,
     NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSWindowOcclusionState, NSWindowStyleMask,
+    NSWindowOcclusionState, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSData, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL};
@@ -698,6 +698,16 @@ pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
     let board = NSPasteboard::generalPasteboard();
     board.clearContents();
     board.setData_forType(Some(&NSData::with_bytes(&file)), unsafe { NSPasteboardTypePNG })
+}
+
+/// shows a file in finder, selected in its folder's window; a line in the window says so when finder could not.
+pub fn reveal(file: &std::path::Path, wake: Sender<Event>) {
+    let file = file.to_string_lossy().into_owned();
+    on_main(move |_, _, _| {
+        if !NSWorkspace::sharedWorkspace().selectFile_inFileViewerRootedAtPath(Some(&NSString::from_str(&file)), &NSString::new()) {
+            let _ = wake.send(Event::Toast("finder could not show the file".into()));
+        }
+    });
 }
 
 /// the time of day on the user's clock, as hours and minutes: 14:32.

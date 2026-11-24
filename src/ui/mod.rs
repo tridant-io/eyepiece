@@ -285,8 +285,11 @@ pub enum Action {
     CloseTab(usize),
     /// go to this clip of the played folder
     GoClip(usize),
-    /// open this file in the tab that is up
+    /// open this file in the tab that is up, or in a tab of its own
     Open(PathBuf),
+    OpenTab(PathBuf),
+    /// show this file in the system's own file browser
+    Reveal(PathBuf),
     /// play this folder: asked for in the browser
     PlayFolder(PathBuf),
     /// lay the browser over the clip, or take it away
@@ -470,9 +473,17 @@ impl Ui {
         self.browser.wheel(notches);
     }
 
-    /// the folder the browser is in: kept between runs.
+    /// the folder the browser is in, and the ones it last opened files from: kept between runs.
     pub fn browser_folder(&self) -> &Path {
         self.browser.folder()
+    }
+
+    pub fn browser_recent(&self) -> &[PathBuf] {
+        self.browser.recent()
+    }
+
+    pub fn set_browser_recent(&mut self, recent: Vec<PathBuf>) {
+        self.browser.set_recent(recent);
     }
 
     fn point(&self, x: f32, y: f32) -> Pos2 {
@@ -680,6 +691,8 @@ impl Ui {
                     }
                     (None, None) => match self.browser.draw(ui, body) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
+                        Some(browser::Chosen::NewTab(path)) => actions.push(Action::OpenTab(path)),
+                        Some(browser::Chosen::Reveal(path)) => actions.push(Action::Reveal(path)),
                         Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),
                         Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
                         None => {}

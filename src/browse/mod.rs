@@ -15,10 +15,23 @@ pub enum Volume {
     Network,
 }
 
+/// the sidebar's groups, in its order
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    /// the system's own folders: downloads, desktop and the like
+    Known,
+    /// the folders pinned to quick access in explorer
+    Pinned,
+    Volumes,
+    /// the folders the browser last opened files from
+    Recent,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Place {
     pub name: String,
     pub path: PathBuf,
+    pub group: Group,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -131,47 +144,126 @@ pub fn volume_of(_path: &Path) -> Volume {
     Volume::Network
 }
 
-/// the sidebar's shortcuts: downloads first (the browser opens there), then desktop, documents, pictures,
-/// videos, then every drive. from the system's known folders, not guessed paths.
+/// the sidebar's shortcuts, as the design's fig. 27 has them: downloads first (the browser opens there), then
+/// desktop, documents, videos and pictures, from the system's known folders, not guessed paths; then every drive.
+/// the folders pinned in explorer are read apart from these (`pinned`).
 #[cfg(windows)]
 pub fn places() -> Vec<Place> {
+    use windows::core::GUID;
     use windows::Win32::Storage::FileSystem::GetLogicalDrives;
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{
-        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Videos, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Videos, FOLDERID_Windows, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+    };
+    let known_path = |id: GUID| {
+        // without KF_FLAG_DONT_VERIFY the call fails when the folder is not there, so no probe of our own
+        let at = unsafe { SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None) }.ok()?;
+        let path = PathBuf::from(unsafe { at.to_hstring() }.to_os_string());
+        unsafe { CoTaskMemFree(Some(at.0 as _)) };
+        Some(path)
     };
     let known = [
         ("downloads", FOLDERID_Downloads),
         ("desktop", FOLDERID_Desktop),
         ("documents", FOLDERID_Documents),
-        ("pictures", FOLDERID_Pictures),
         ("videos", FOLDERID_Videos),
+        ("pictures", FOLDERID_Pictures),
     ];
-    let folders = known.into_iter().filter_map(|(name, id)| {
-        // without KF_FLAG_DONT_VERIFY the call fails when the folder is not there, so no probe of our own
-        let at = unsafe { SHGetKnownFolderPath(&id, KF_FLAG_DEFAULT, None) }.ok()?;
-        let path = PathBuf::from(unsafe { at.to_hstring() }.to_os_string());
-        unsafe { CoTaskMemFree(Some(at.0 as _)) };
-        Some(Place { name: name.into(), path })
-    });
-    // a label would mean asking each volume, shares included, so drives go by letter
+    let mut places: Vec<Place> = known.into_iter().filter_map(|(name, id)| Some(Place { name: name.into(), path: known_path(id)?, group: Group::Known })).collect();
+    let system = known_path(FOLDERID_Windows).and_then(|p| p.to_str()?.chars().next());
     let used = unsafe { GetLogicalDrives() };
-    let drives = (0..26u8).filter(|i| used & (1 << i) != 0).map(|i| {
-        let root = format!("{}:\\", (b'A' + i) as char);
-        Place { name: root[..2].into(), path: root.into() }
-    });
-    folders.chain(drives).collect()
+    places.extend((0..26u8).filter(|i| used & (1 << i) != 0).map(|i| {
+        let letter = (b'A' + i) as char;
+        let root = format!("{letter}:\\");
+        // a share's label would be asked of the share itself (adr 0004), and a removable drive with nothing in it may
+        // be slow to answer or ask for a disk, so only a local disk's label is read
+        let label = if volume_of(Path::new(&root)) == Volume::Local { label(&root) } else { None };
+        Place { name: drive_name(letter, label.as_deref(), system == Some(letter)), path: root.into(), group: Group::Volumes }
+    }));
+    places
 }
 
-/// on macos: the user's standard folders that are there, then what is mounted under /Volumes (finder's favorites
-/// have no supported way in). nothing is asked of a volume: its name is its mount point's.
+/// the folders pinned to quick access in explorer, in its order, under their own names. read through the shell,
+/// which lists them with explorer's frequent folders: only each item's parsing name and its pinned mark are asked
+/// for, nothing of the folder itself, which may be on a share (adr 0004). it is too slow for the drawing thread, and
+/// sets up com for itself: call it on a thread of its own.
+#[cfg(windows)]
+pub fn pinned() -> Vec<Place> {
+    use std::path::Component;
+    use windows::core::{w, Interface, Result};
+    use windows::Win32::Storage::EnhancedStorage::PKEY_Home_IsPinned;
+    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{BHID_EnumItems, IEnumShellItems, IShellItem, IShellItem2, SHCreateItemFromParsingName, SIGDN_DESKTOPABSOLUTEPARSING};
+    let read = || -> Result<Vec<Place>> {
+        let frequent: IShellItem = unsafe { SHCreateItemFromParsingName(w!("shell:::{3936E9E4-D92C-4EEE-A85A-BC16D5EA0819}"), None)? };
+        let items: IEnumShellItems = unsafe { frequent.BindToHandler(None, &BHID_EnumItems)? };
+        let mut found = Vec::new();
+        let mut item = [None];
+        while unsafe { items.Next(&mut item, None) }.is_ok() {
+            let Some(item) = item[0].take() else { break };
+            if !unsafe { item.cast::<IShellItem2>()?.GetBool(&PKEY_Home_IsPinned) }.is_ok_and(|pinned| pinned.as_bool()) {
+                continue;
+            }
+            let name = unsafe { item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)? };
+            let path = PathBuf::from(unsafe { name.to_hstring() }.to_os_string());
+            unsafe { CoTaskMemFree(Some(name.0 as _)) };
+            // a drive or a share: the shell's own places (a library, this pc) are no folder to list
+            if matches!(path.components().next(), Some(Component::Prefix(_))) {
+                found.push(Place { name: name_of(&path), path, group: Group::Pinned });
+            }
+        }
+        Ok(found)
+    };
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let found = read().unwrap_or_default();
+    if com {
+        unsafe { CoUninitialize() };
+    }
+    found
+}
+
+/// explorer's alone: finder's favorites have no supported way in.
+#[cfg(not(windows))]
+pub fn pinned() -> Vec<Place> {
+    Vec::new()
+}
+
+/// a local disk's label, as its file system keeps it
+#[cfg(windows)]
+fn label(root: &str) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+    let mut name = [0u16; 261];
+    unsafe { GetVolumeInformationW(&HSTRING::from(root), Some(&mut name), None, None, None, None) }.ok()?;
+    let len = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+    Some(String::from_utf16_lossy(&name[..len]))
+}
+
+/// a drive as the sidebar names it: "system (C:)" for the one windows is on, else its label and its letter
+/// ("media (D:)"), or its letter alone when there is no label to give
+#[cfg(windows)]
+pub fn drive_name(letter: char, label: Option<&str>, system: bool) -> String {
+    match label.filter(|l| !l.is_empty()) {
+        _ if system => format!("system ({letter}:)"),
+        Some(label) => format!("{label} ({letter}:)"),
+        None => format!("{letter}:"),
+    }
+}
+
+/// a folder's own name, or the whole path for the top of a drive or share
+pub fn name_of(folder: &Path) -> String {
+    folder.file_name().map_or_else(|| folder.to_string_lossy().trim_end_matches('\\').to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// on macos: the user's standard folders that are there, in fig. 27's order, then the startup disk and what is
+/// mounted under /Volumes. nothing is asked of a volume: its name is its mount point's.
 #[cfg(target_os = "macos")]
 pub fn places() -> Vec<Place> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let folders = [("downloads", "Downloads"), ("desktop", "Desktop"), ("documents", "Documents"), ("pictures", "Pictures"), ("movies", "Movies")];
-    let folders = home.into_iter().flat_map(|home| folders.map(|(name, folder)| Place { name: name.into(), path: home.join(folder) })).filter(|place| place.path.is_dir());
-    let volumes = mounts().into_iter().filter_map(|(at, _)| Some(Place { name: at.strip_prefix("/Volumes").ok()?.to_str().filter(|name| !name.is_empty())?.to_string(), path: at }));
-    folders.chain(std::iter::once(Place { name: "/".into(), path: "/".into() })).chain(volumes).collect()
+    let folders = [("downloads", "Downloads"), ("desktop", "Desktop"), ("documents", "Documents"), ("movies", "Movies"), ("pictures", "Pictures")];
+    let folders = home.into_iter().flat_map(|home| folders.map(|(name, folder)| Place { name: name.into(), path: home.join(folder), group: Group::Known })).filter(|place| place.path.is_dir());
+    let volumes = mounts().into_iter().filter_map(|(at, _)| Some(Place { name: at.strip_prefix("/Volumes").ok()?.to_str().filter(|name| !name.is_empty())?.to_string(), path: at, group: Group::Volumes }));
+    folders.chain(std::iter::once(Place { name: "/".into(), path: "/".into(), group: Group::Volumes })).chain(volumes).collect()
 }
 
 /// linux comes in phase 5.
@@ -583,7 +675,7 @@ mod tests {
         assert_eq!(volume_of(Path::new("/no/such/folder")), Volume::Local);
         assert_eq!(volume_of(Path::new("relative")), Volume::Network);
         assert!(mounts().iter().any(|(at, _)| at == Path::new("/")));
-        assert!(places().iter().any(|place| place.path == Path::new("/")));
+        assert!(places().iter().any(|place| place.path == Path::new("/") && place.group == Group::Volumes));
     }
 
     #[cfg(windows)]
@@ -602,17 +694,43 @@ mod tests {
         assert_eq!(volume_of(&PathBuf::from(format!("{}:\\x", (b'A' + free) as char))), Volume::Network);
     }
 
+    /// this pc's own: what fails names no folder or label of it, only counts and places in the list
     #[cfg(windows)]
     #[test]
-    fn places_start_at_downloads_and_end_with_the_drives() {
+    fn places_are_the_known_folders_then_the_drives() {
         let places = places();
-        assert_eq!(places[0].name, "downloads");
-        let order = ["downloads", "desktop", "documents", "pictures", "videos"];
-        let named: Vec<&str> = places.iter().map(|p| p.name.as_str()).filter(|n| order.contains(n)).collect();
-        let expected: Vec<&str> = order.into_iter().filter(|n| named.contains(n)).collect();
-        assert_eq!(named, expected);
-        let drives = &places[named.len()..];
-        assert!(drives.iter().all(|p| p.name.len() == 2 && p.path == Path::new(&format!("{}\\", p.name))), "{drives:?}");
-        assert!(drives.iter().any(|p| p.path == Path::new(r"C:\")));
+        let at = |group| places.iter().enumerate().filter(move |(_, p)| p.group == group);
+        assert_eq!(at(Group::Known).count() + at(Group::Volumes).count(), places.len());
+        assert!(places.windows(2).all(|p| p[0].group <= p[1].group), "the groups are out of order");
+        let known: Vec<&str> = at(Group::Known).map(|(_, p)| p.name.as_str()).collect();
+        assert_eq!(known.first(), Some(&"downloads"));
+        let order = ["downloads", "desktop", "documents", "videos", "pictures"];
+        assert_eq!(known, order.into_iter().filter(|n| known.contains(n)).collect::<Vec<_>>());
+        for (i, drive) in at(Group::Volumes) {
+            let root = drive.path.to_string_lossy();
+            assert!(root.len() == 3 && root.ends_with(":\\"), "volume {i} is not a drive's root");
+            assert!(drive.name == root[..2] || drive.name.ends_with(&format!(" ({}:)", &root[..1])), "volume {i}: its name does not end with its letter");
+        }
+        assert!(at(Group::Volumes).any(|(_, p)| p.path == Path::new(r"C:\") && p.name == "system (C:)"));
+    }
+
+    /// this pc's own pins, if it has any: a folder on a drive or a share, under its own name
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_pinned_in_explorer_is_a_path_under_its_own_name() {
+        for (i, pin) in pinned().iter().enumerate() {
+            assert!(matches!(pin.path.components().next(), Some(std::path::Component::Prefix(_))), "pinned folder {i} is no path");
+            assert!(pin.group == Group::Pinned && pin.name == name_of(&pin.path), "pinned folder {i}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_is_named_by_its_label_and_letter() {
+        assert_eq!(drive_name('C', Some("OS"), true), "system (C:)");
+        assert_eq!(drive_name('D', Some("media"), false), "media (D:)");
+        // no label, or one not read (a share's)
+        assert_eq!((drive_name('E', Some(""), false), drive_name('Z', None, false)), ("E:".to_string(), "Z:".to_string()));
+        assert_eq!((name_of(Path::new(r"D:\renders_out")), name_of(Path::new(r"D:\")), name_of(Path::new(r"\\nas\projects\"))), ("renders_out".to_string(), "D:".to_string(), r"\\nas\projects".to_string()));
     }
 }

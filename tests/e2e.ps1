@@ -40,6 +40,16 @@ public static class EyepiecePicture {
       return n;
     }
   }
+  // the first row from the top with a pixel of bright text between x0 and x1, or -1
+  public static int FirstBright(IntPtr h, int x0, int y0, int x1, int y1) {
+    Rect c; GetClientRect(h, out c);
+    using (var bmp = new Bitmap(c.R, c.B)) {
+      using (var g = Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 3); g.ReleaseHdc(dc); }
+      for (int y = Math.Max(0, y0); y < Math.Min(c.B, y1); y++)
+        for (int x = Math.Max(0, x0); x < Math.Min(c.R, x1); x++) { var p = bmp.GetPixel(x, y); if (Math.Min(p.R, Math.Min(p.G, p.B)) > 200) return y; }
+      return -1;
+    }
+  }
 }
 '@
 # the controls are driven by posted input, not the real pointer and keyboard: the player is told, so it listens only
@@ -98,6 +108,12 @@ function RightClick-At([double]$x, [double]$y) {
 function Get-Bright([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]$Any) {
     $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
     [EyepiecePicture]::Bright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16), $Any.IsPresent)
+}
+# the first line of bright text from the top between two corners, in the design's pixels, or -1
+function Get-FirstBright([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
+    $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
+    $y = [EyepiecePicture]::FirstBright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16))
+    if ($y -lt 0) { -1 } else { $y / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 }
 function Get-Height { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.B / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
 function Get-Width { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.R / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
@@ -569,7 +585,19 @@ Click-At (150 + 168 * $columns - 84) (32 + 8 + 26.25 * 3.5); Start-Sleep -Millis
 DoubleClick-At (150 + 168 * $columns + 100) ((Get-Height) - 80); Start-Sleep -Milliseconds 1000
 Assert-Title 'a double click on nothing opens nothing' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
+# the selected card's actions at the foot of the metadata column (fig. 28): open, new tab and reveal, 25 high and 12
+# from the bottom, from 15 in, 44.4, 64.2 and 57.6 wide with 6 between. new tab opens the card in a tab of its own
+# and leaves the browser where it was
+Send-Key 0x4F; Start-Sleep -Milliseconds 500
+Click-At -218.5 -24.5
+Assert-Frame 'new tab opens the selected card in a tab of its own' 0 4
+Send-Key 0xDB; Assert-Title 'and the tab it was chosen in still shows the browser' '^prores_64\.mov . .* . browser$'
+Send-Key 0x1B
 Stop-Player
+# the folders files were opened from, newest first: the tree's last, the folder of shots before
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+Confirm-That 'the folders files were opened from are kept as the recent ones, the newest first' ($kept -contains "browser_recent = $tree | $shots") "the settings say: $($kept -match 'browser_recent')"
+# reveal (fig. 28) is not pressed here: it would put an explorer window in front of whoever is at the pc
 
 # ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order.
 # here hap_64.mov (3 frames), prores_64.mov (4), x_roll.mov (3) and y_broken.mov, which is no clip at all; the one
@@ -612,6 +640,32 @@ Wait-Title 'and R again is all: nothing about the loop in the title' { param($t)
 Stop-Player
 # what the section made, file by file, then its folders, each named before it goes. nothing recursive
 foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), (Join-Path $tree 'y_broken.mov'), $shots, $tree, $above, $wrap) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
+# ---- a network folder (fig. 29), through this pc's own share: the browser lists it and reads none of its files, so no
+# poster is made, until the note's button asks for its previews; then its two clips get theirs. the folders are as deep
+# as the columns that fit, so these list only what the test made
+$share = Join-Path $env:APPDATA 'share'; $deep = Join-Path $share 'in'; $net = Join-Path $deep 'net'
+$netCopies = [ordered]@{ (Join-Path $net 'hap_64.mov') = 'hap_64.mov'; (Join-Path $net 'prores_64.mov') = 'prores_64.mov' }
+New-Item -ItemType Directory $share, $deep, $net | Out-Null
+foreach ($to in $netCopies.Keys) { Copy-Item -LiteralPath (Join-Path $media $netCopies[$to]) -Destination $to }
+$unc = '\\localhost\' + $net.Substring(0, 1) + '$' + $net.Substring(2)
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $unc", 'mute = on'
+$had = (Get-Kept).Count
+Start-Player
+Start-Sleep -Milliseconds 3000
+Confirm-That 'a network folder is listed and none of its files is read: no poster is made' ((Get-Kept).Count -eq $had) "$((Get-Kept).Count - $had) files of pictures made"
+# the button stands at the note's right, 220 wide ("make previews · reads 2 files", 29 letters 6.9 wide, and its room)
+# and centered on the note's height: found by its white edge, the first bright line under the path line
+$top = Get-FirstBright -140 82 -134 400
+Confirm-That 'the network folder''s note offers its previews' ($top -gt 0) 'no button found at the right of the note'
+if ($top -gt 0) { Click-At -137 ($top + 15) }
+foreach ($i in 1..100) { if ((Get-Kept).Count -ge $had + 2) { break }; Start-Sleep -Milliseconds 100 }
+Start-Sleep -Milliseconds 500
+Confirm-That 'asked for, the network folder''s two clips get their posters' ((Get-Kept).Count -eq $had + 2) "$((Get-Kept).Count - $had) files of pictures made, for 2 clips"
+Stop-Player
+foreach ($made in @($netCopies.Keys) + $net, $deep, $share) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 

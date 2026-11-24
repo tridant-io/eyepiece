@@ -302,6 +302,27 @@ pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
     to_clipboard(DIB, &dib)
 }
 
+/// shows a file in explorer, selected in its folder's window. explorer may take a moment, so it is asked on a thread
+/// of its own; a line in the window says so when it could not show the file.
+pub fn reveal(file: &std::path::Path, wake: Sender<Event>) {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let file = HSTRING::from(file.as_os_str());
+    std::thread::spawn(move || unsafe {
+        // the shell wants com on the thread that asks it
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let item = ILCreateFromPathW(&file);
+        let shown = !item.is_null() && SHOpenFolderAndSelectItems(item, None, 0).is_ok();
+        ILFree(Some(item));
+        if com {
+            CoUninitialize();
+        }
+        if !shown {
+            let _ = wake.send(Event::Toast("explorer could not show the file".into()));
+        }
+    });
+}
+
 /// the time of day on the user's clock, as hours and minutes: 14:32.
 pub fn clock() -> String {
     let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
