@@ -28,18 +28,21 @@ the owner took F, asked for it a little more straight on, and for a render of it
 well lit, readable very small and very large.
 
 - `3d/eyepiece.py` builds and renders it: `blender --background --factory-startup --python 3d/eyepiece.py -- --out
-  x.png --size 2048 --samples 512 --tilt 40` (blender 5.0; 19 s for 2048 px on this pc's gpu). every part is a lathe
-  profile in the script. `eyepiece-render.png` is its picture at 40 degrees, on nothing. `sheet-render.png` sets it
-  in the app icon's body at every size, with two other angles, an all-black finish and the two engines side by side.
+  x.png --size 2048 --samples 512` (blender 5.0; about 20 s for 2048 px on this pc's gpu). every part is a lathe
+  profile in the script. `eyepiece-render.png` is its picture, on nothing. `sheet-render.png` sets it in the app
+  icon's body at every size, with another angle, an all-black finish and the two engines side by side.
 - the engine: cycles. blender has two, and in the same scene eevee, the real-time one, shows the dark glass gray and
   the orange washed out (the sheet's last row). no other engine is installed, and none was added.
-- the angle: 40 degrees off the axis. the drawn F was at 53; 33 and 47 are on the sheet.
+- the angle: 33 degrees off the axis, the owner's pick of 33, 40 and 47 on the first sheet. the drawn F was at 53.
+- the length: about a third shorter than the first render, as the owner asked on seeing it: 4.8 cm from the
+  barrel's end to the bezel's lip, where it was 6.9. the four lengths are named at the top of the script's parts.
 - the finish: a bright turned bezel, a black ribbed grip, a chrome barrel. all black, as most eyepieces are, it is
   lost on the app icon's dark body but for its edges (on the sheet).
 - the glass shows two things and no more, as the drawing did: a light along its upper left edge and the one orange
   low on the right, which came out as #eb5231 where the player's is #ff5a36. each is a light placed where that part
   of the glass looks, and lights nothing else.
-- what is not exact: only the barrel's 31.75 mm is a standard's, the rest is a plossl's proportions by eye; the glass
+- what is not exact: only the barrel's 31.75 mm is a standard's, the rest is a plossl's proportions by eye, and
+  shorter than a real one of this width; the glass
   is its upper surface alone, since a whole lens showed every light three times over; the grip's ribs are shading,
   not shape; nothing is engraved.
 - small: from 48 px down the render made small is a ring and a blur, as the sheet shows. it stands for 64 px and up;

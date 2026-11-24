@@ -1,7 +1,7 @@
 """the eyepiece mark as a thing: a 1.25 inch telescope eyepiece, turned from lathe profiles and lit as a product shot.
 
     blender --background --factory-startup --python eyepiece.py -- --out render.png
-        [--size 1024] [--samples 256] [--tilt 35] [--engine CYCLES|BLENDER_EEVEE] [--clay] [--finish steel|black]
+        [--size 1024] [--samples 256] [--tilt 33] [--engine CYCLES|BLENDER_EEVEE] [--clay] [--finish steel|black]
         [--fill 0.66] [--save scene.blend]
 
 one unit is one centimeter. the eyepiece stands on its axis, z up, the chrome barrel's end at z = 0. the one size that
@@ -22,7 +22,7 @@ args = argparse.ArgumentParser()
 args.add_argument("--out", required=True)
 args.add_argument("--size", type=int, default=1024)
 args.add_argument("--samples", type=int, default=256)
-args.add_argument("--tilt", type=float, default=35.0)
+args.add_argument("--tilt", type=float, default=33.0)
 args.add_argument("--engine", default="CYCLES")
 args.add_argument("--clay", action="store_true")
 args.add_argument("--finish", default="steel")
@@ -83,16 +83,23 @@ def lathe(name, profile, closed=True, facing=None):
 # ---- the parts, bottom to top. radii and heights in cm
 BARREL = 3.175 / 2
 BODY = 2.1
+# lengths along the axis: the chrome barrel, the lower body, the grip's waist, the upper body. short, as the owner
+# asked: a real one of this width is about a half longer
+SLEEVE, LOWER, WAIST, UPPER = 2.0, 0.5, 1.2, 0.4
+Z1 = SLEEVE              # the shoulder, where the body starts
+Z2 = Z1 + LOWER          # the waist's lower end
+Z3 = Z2 + WAIST          # its upper end
+TOP = Z3 + UPPER         # the body's top, where the bezel sits
 # the chrome barrel: a tube with the groove a set screw bites into, its ends eased
-barrel = lathe("barrel", [(1.42, 0.0), (BARREL - 0.06, 0.0), (BARREL, 0.06), (BARREL, 1.15), (BARREL - 0.07, 1.25), (BARREL - 0.07, 2.05), (BARREL, 2.15), (BARREL, 3.05), (1.42, 3.05)])
+barrel = lathe("barrel", [(1.42, 0.0), (BARREL - 0.06, 0.0), (BARREL, 0.06), (BARREL, 0.5), (BARREL - 0.07, 0.6), (BARREL - 0.07, 1.1), (BARREL, 1.2), (BARREL, Z1 + 0.05), (1.42, Z1 + 0.05)])
 # the body: a shoulder out from the barrel, the lower body, a waist the grip sits in, the upper body
-body = lathe("body", [(1.45, 3.0), (BODY - 0.1, 3.0), (BODY, 3.1), (BODY, 3.85), (BODY - 0.08, 3.9), (BODY - 0.08, 5.5), (BODY, 5.55), (BODY, 6.2), (1.45, 6.2)])
+body = lathe("body", [(1.45, Z1), (BODY - 0.1, Z1), (BODY, Z1 + 0.1), (BODY, Z2 - 0.05), (BODY - 0.08, Z2), (BODY - 0.08, Z3), (BODY, Z3 + 0.05), (BODY, TOP), (1.45, TOP)])
 # the rubber grip in the waist, standing a little proud, its ends rounded
-grip = lathe("grip", [(BODY - 0.08, 3.92)] + arc(BODY + 0.0, 4.0, 0.08, -90, 0, 6) + arc(BODY + 0.0, 5.4, 0.08, 0, 90, 6) + [(BODY - 0.08, 5.48)])
+grip = lathe("grip", [(BODY - 0.08, Z2 + 0.02)] + arc(BODY, Z2 + 0.1, 0.08, -90, 0, 6) + arc(BODY, Z3 - 0.1, 0.08, 0, 90, 6) + [(BODY - 0.08, Z3 - 0.02)])
 # the bezel and eyecup: up from the body, a rounded lip, then a bowl down to the glass
-bezel = lathe("bezel", [(1.3, 6.2), (BODY, 6.2), (BODY, 6.72)] + arc(BODY - 0.22, 6.72, 0.22, 0, 90, 10) + arc(1.83, 6.86, 0.08, 90, 200, 6) + [(1.36, 6.52), (1.3, 6.52)])
+bezel = lathe("bezel", [(1.3, TOP), (BODY, TOP), (BODY, TOP + 0.52)] + arc(BODY - 0.22, TOP + 0.52, 0.22, 0, 90, 10) + arc(1.83, TOP + 0.66, 0.08, 90, 200, 6) + [(1.36, TOP + 0.32), (1.3, TOP + 0.32)])
 # the ring that holds the glass down
-retainer = lathe("retainer", [(1.14, 6.4), (1.36, 6.4), (1.36, 6.5), (1.2, 6.5), (1.14, 6.44)])
+retainer = lathe("retainer", [(1.14, TOP + 0.2), (1.36, TOP + 0.2), (1.36, TOP + 0.3), (1.2, TOP + 0.3), (1.14, TOP + 0.24)])
 
 
 def glass_face(name, radius, top, curve):
@@ -105,9 +112,9 @@ def glass_face(name, radius, top, curve):
 
 # the glass seen is what the retaining ring leaves open
 GLASS_RADIUS, GLASS_CURVE = 1.14, 4.2
-eye_lens = glass_face("eye lens", 1.3, 6.42, GLASS_CURVE)
+eye_lens = glass_face("eye lens", 1.3, TOP + 0.22, GLASS_CURVE)
 # the inside: a black tube, the field stop, and the far end closed, so the glass looks into the dark
-inside = lathe("inside", [(1.44, 6.2), (1.32, 6.2), (1.32, 2.5), (0.95, 2.5), (0.95, 2.4), (1.32, 2.4), (1.32, 0.3), (0.0, 0.3), (0.0, 0.2), (1.44, 0.2)])
+inside = lathe("inside", [(1.44, TOP), (1.32, TOP), (1.32, Z1 + 0.1), (0.95, Z1 + 0.1), (0.95, Z1), (1.32, Z1), (1.32, 0.3), (0.0, 0.3), (0.0, 0.2), (1.44, 0.2)])
 
 
 # ---- materials
@@ -161,7 +168,7 @@ for thing in (barrel, body, grip, bezel, retainer, eye_lens, inside):
     thing.data.materials.append(looks[thing.name])
 
 # ---- the camera: `tilt` off the axis, far off with a long lens, rolled so the barrel runs down to the right at 40
-target = Vector((0.0, 0.0, 3.5))
+target = Vector((0.0, 0.0, (TOP + 0.74) / 2))
 tilt = math.radians(opt.tilt)
 distance = 46.0
 eye = target + distance * Vector((0.0, -math.sin(tilt), math.cos(tilt)))
@@ -221,7 +228,7 @@ else:
     # the eyepiece's axis in the camera's frame, and where the middle of the glass reflects the camera's view from
     axis_seen = frame.transposed() @ AXIS
     mirror = 2 * axis_seen.z * axis_seen - Vector((0.0, 0.0, 1.0))
-    glass_at = Vector((0.0, 0.0, 6.4))
+    glass_at = Vector((0.0, 0.0, TOP + 0.2))
     # the edges of the body, seen from the camera: up to the right of the axis and down to the left
     edge = Vector((math.sin(math.radians(40)), math.cos(math.radians(40)), 0.0))
     solid = [barrel, body, grip, bezel, retainer, inside]
