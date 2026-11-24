@@ -1605,7 +1605,7 @@ mod tests {
     fn a_step_with_the_controls_away_says_its_frame() {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         let screen = |frame| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(Model { frame, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
-        let mut pass = |ui: &mut Ui, frame| ui.run(&screen(frame)).textures.clear();
+        let pass = |ui: &mut Ui, frame| ui.run(&screen(frame)).textures.clear();
         pass(&mut ui, 0);
         assert!(ui.flash.is_none(), "nothing is said of a clip that only came up");
         pass(&mut ui, 1);
