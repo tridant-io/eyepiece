@@ -23,7 +23,10 @@ const START_WITHIN: Duration = Duration::from_millis(250);
 pub struct Info {
     /// ffmpeg's name for the codec
     pub codec: String,
+    // what the stream says of itself, which the tests check the right stream was read by
+    #[cfg(test)]
     pub channels: u16,
+    #[cfg(test)]
     pub sample_rate: u32,
 }
 

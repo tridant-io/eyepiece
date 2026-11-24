@@ -63,6 +63,7 @@ impl Cache {
     }
 
     /// a cache in a folder of the caller's choosing, with a size budget in bytes (the tests' way in).
+    #[cfg(test)]
     pub fn at(root: PathBuf, budget: u64) -> Option<Cache> {
         safe_root(&root, home().as_deref(), &[]).then_some(Cache { root, budget })
     }

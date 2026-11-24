@@ -216,7 +216,9 @@ pub(super) fn frames(video: &Video, mut samples: Vec<Sample>, shown: Option<Vec<
 }
 
 impl Clip {
-    /// reads the header. a hap clip or stills start reading at once; any other waits for `start`.
+    /// reads the header. a hap clip or stills start reading at once; any other waits for `start`. (the tests' way
+    /// in: the player opens with `open_counting` or `open_known`.)
+    #[cfg(test)]
     pub fn open(path: &str) -> Result<Clip, String> {
         Clip::open_counting(path, &AtomicUsize::new(0), &AtomicBool::new(false))
     }

@@ -55,7 +55,13 @@ impl Decoder {
             let st = *streams.add(stream);
             let par = (*st).codecpar;
             let codec = CStr::from_ptr(ffi::avcodec_get_name((*par).codec_id)).to_string_lossy().into_owned();
-            let info = Info { codec, channels: (*par).ch_layout.nb_channels.max(0) as u16, sample_rate: (*par).sample_rate.max(0) as u32 };
+            let info = Info {
+                codec,
+                #[cfg(test)]
+                channels: (*par).ch_layout.nb_channels.max(0) as u16,
+                #[cfg(test)]
+                sample_rate: (*par).sample_rate.max(0) as u32,
+            };
             let codec = ffi::avcodec_find_decoder((*par).codec_id);
             if codec.is_null() {
                 return Err(format!("{path}: ffmpeg has no decoder for its sound ({})", info.codec));
