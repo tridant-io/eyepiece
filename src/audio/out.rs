@@ -14,7 +14,7 @@ const OPEN_WITHIN: Duration = Duration::from_millis(500);
 pub struct Feed {
     pub ring: Ring,
     /// the sound has no more to give: its end, or a fault in it
-    ended: AtomicBool,
+    pub ended: AtomicBool,
     /// frames handed to the device that count as played
     counted: AtomicU64,
     stamp: Mutex<Stamp>,

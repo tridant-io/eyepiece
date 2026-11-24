@@ -287,6 +287,52 @@ mod tests {
     }
 
     #[test]
+    fn the_decode_thread_fills_the_newest_play_and_marks_the_end_of_its_sound() {
+        let (decoder, _) = Decoder::open(&media("tone48_stereo.mov")).unwrap().expect("a sound stream");
+        let (commands, theirs) = mpsc::channel();
+        let worker = std::thread::spawn(move || work(decoder, theirs));
+        let play = |seconds| {
+            let feed = Arc::new(Feed::new(48_000, 2));
+            commands.send(Some(Play { feed: feed.clone(), seconds, speed: 1.0, rate: 48_000, channels: 2 })).unwrap();
+            feed
+        };
+        // what a feed gives until its end is marked, in frames, read as the device reads it
+        let drain = |feed: &Feed| {
+            let (mut frames, mut out, deadline) = (0, [0.0; 960], Instant::now() + Duration::from_secs(10));
+            loop {
+                let ended = feed.ended.load(std::sync::atomic::Ordering::Acquire);
+                let n = feed.ring.pop(&mut out);
+                frames += n / 2;
+                if ended && n < out.len() {
+                    return frames;
+                }
+                assert!(Instant::now() < deadline, "the sound never ended");
+                if n == 0 {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        };
+        assert_eq!(drain(&play(0.0)), 48_000);
+
+        // a second play takes over from a first that is part way through
+        let first = play(0.0);
+        let (mut from_first, mut rest) = (0, vec![0.0; 96_000]);
+        while from_first < 4_800 {
+            from_first += first.ring.pop(&mut rest[..960]) / 2;
+        }
+        assert_eq!(drain(&play(0.5)), 24_000);
+        std::thread::sleep(Duration::from_millis(20));
+        from_first += first.ring.pop(&mut rest) / 2;
+        assert!(from_first < 48_000, "{from_first}");
+        assert_eq!(first.ring.pop(&mut rest), 0);
+        assert!(!first.ended.load(std::sync::atomic::Ordering::Acquire));
+
+        commands.send(None).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn the_clock_runs_at_the_speed() {
         assert_eq!(clip_seconds(1.0, 48_000, 48_000, 1.0), 2.0);
         assert_eq!(clip_seconds(1.0, 48_000, 48_000, 0.5), 1.5);

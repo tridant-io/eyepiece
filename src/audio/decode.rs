@@ -46,7 +46,7 @@ impl Decoder {
         let Some(stream) = input.first_audio() else { return Ok(None) };
         unsafe {
             let streams = (*input.ctx).streams;
-            // this reader is the sound's own: the pictures stay in the file, unread
+            // this reader is the sound's own: ffmpeg is told to discard the other streams' packets
             for i in 0..(*input.ctx).nb_streams as usize {
                 if i != stream {
                     (**streams.add(i)).discard = ffi::AVDiscard::AVDISCARD_ALL;
