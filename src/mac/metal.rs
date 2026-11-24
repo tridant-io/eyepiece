@@ -250,6 +250,9 @@ impl Gpu {
         Ok(out)
     }
 
+    /// metal lets go of a texture's memory when the last use of it is done: there is nothing to hand over here.
+    pub fn flush(&self) {}
+
     /// starts a frame: the whole window black. waits here until the display has a back buffer free, which is what
     /// paces play to the refresh. with none in a second (a window that cannot be seen), nothing is drawn.
     pub fn clear(&self) {
