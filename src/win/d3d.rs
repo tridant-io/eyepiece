@@ -47,7 +47,8 @@ pub struct Gpu {
     pub ctx: ID3D11DeviceContext,
     /// the device's own lock, recursive, which ffmpeg's decoder takes too
     multithread: ID3D11Multithread,
-    swap: IDXGISwapChain1,
+    /// None for a device with no window
+    swap: Option<IDXGISwapChain1>,
     rtv: Option<ID3D11RenderTargetView>,
     vs: ID3D11VertexShader,
     constants: ID3D11Buffer,
@@ -117,6 +118,15 @@ pub(super) fn compile(src: &str, target: &str) -> Result<Vec<u8>> {
 impl Gpu {
     /// a hardware device and a swapchain on `hwnd`, `w` x `h` pixels.
     pub fn new(hwnd: HWND, w: u32, h: u32) -> Result<Gpu> {
+        Gpu::make(Some(hwnd), w, h)
+    }
+
+    /// a hardware device with no window: it draws only into pictures of its own (`read_pixels`).
+    pub fn offscreen() -> Result<Gpu> {
+        Gpu::make(None, 0, 0)
+    }
+
+    fn make(hwnd: Option<HWND>, w: u32, h: u32) -> Result<Gpu> {
         let (mut device, mut ctx) = (None, None);
         let levels: [D3D_FEATURE_LEVEL; 2] = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
         unsafe {
@@ -142,8 +152,14 @@ impl Gpu {
                 AlphaMode: DXGI_ALPHA_MODE_IGNORE,
                 ..Default::default()
             };
-            let swap = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
-            let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+            let swap = match hwnd {
+                Some(hwnd) => {
+                    let swap = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
+                    let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+                    Some(swap)
+                }
+                None => None,
+            };
             let mut vs = None;
             device.CreateVertexShader(&compile(VS, "vs_5_0")?, None, Some(&mut vs))?;
             let buffer = D3D11_BUFFER_DESC { ByteWidth: std::mem::size_of::<Constants>() as u32, Usage: D3D11_USAGE_DEFAULT, BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32, ..Default::default() };
@@ -168,8 +184,9 @@ impl Gpu {
     }
 
     fn target(&mut self) -> Result<()> {
+        let Some(swap) = &self.swap else { return Ok(()) };
         unsafe {
-            let back: ID3D11Texture2D = self.swap.GetBuffer(0)?;
+            let back: ID3D11Texture2D = swap.GetBuffer(0)?;
             self.device.CreateRenderTargetView(&back, None, Some(&mut self.rtv))
         }
     }
@@ -183,7 +200,9 @@ impl Gpu {
         self.rtv = None;
         unsafe {
             self.ctx.OMSetRenderTargets(None, None);
-            self.swap.ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+            if let Some(swap) = &self.swap {
+                swap.ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+            }
         }
         (self.w, self.h) = (w, h);
         self.target()
@@ -342,7 +361,8 @@ impl Gpu {
     /// a window that cannot be seen (minimized, or fully covered) has no refresh to wait for: the wait is then
     /// `refresh` of ordinary sleep, so a clip that is playing keeps its pace and the loop does not spin.
     pub fn present(&mut self, counting: bool, refresh: std::time::Duration) -> u32 {
-        if unsafe { self.swap.Present(1, DXGI_PRESENT(0)) } == DXGI_STATUS_OCCLUDED {
+        let Some(swap) = &self.swap else { return 0 };
+        if unsafe { swap.Present(1, DXGI_PRESENT(0)) } == DXGI_STATUS_OCCLUDED {
             std::thread::sleep(refresh);
             (self.counting_from, self.counted) = (None, None);
             return 0;
@@ -351,12 +371,12 @@ impl Gpu {
             (self.counting_from, self.counted) = (None, None);
             return 0;
         }
-        let Ok(made) = (unsafe { self.swap.GetLastPresentCount() }) else { return 0 };
+        let Ok(made) = (unsafe { swap.GetLastPresentCount() }) else { return 0 };
         let from = *self.counting_from.get_or_insert(made);
         let mut s = DXGI_FRAME_STATISTICS::default();
         // the statistics describe a present a few refreshes back. one from before the count began would charge
         // the whole time spent standing still as missed
-        if unsafe { self.swap.GetFrameStatistics(&mut s) }.is_err() || s.PresentCount < from {
+        if unsafe { swap.GetFrameStatistics(&mut s) }.is_err() || s.PresentCount < from {
             return 0;
         }
         let now = (s.PresentCount, s.PresentRefreshCount);

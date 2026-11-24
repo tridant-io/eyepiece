@@ -2,6 +2,7 @@
 
 mod d3d;
 mod instance;
+mod pictures;
 mod render;
 mod ui_paint;
 mod window;

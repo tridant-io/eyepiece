@@ -28,9 +28,14 @@ $env:EYEPIECE_POSTED_POINTER = '1'
 # the player keeps its settings under APPDATA. the tests give it a folder of their own, so every run starts from the
 # defaults and the owner's own settings are left alone
 $env:APPDATA = Join-Path $env:TEMP "eyepiece-e2e-$PID"
-# and muted, so nothing the tests play is heard
+# and muted, so nothing the tests play is heard. the browser starts in that folder too: a new tab then shows nothing
+# of the owner's, and makes no pictures of it
 New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on', "browser_folder = $env:APPDATA"
+# the browser's pictures are kept in the os cache folder. the tests name a folder of their own to stand for it, so
+# nothing they make lands in the owner's cache
+$env:EYEPIECE_CACHE = Join-Path $env:APPDATA 'os-cache'
+$previews = Join-Path $env:EYEPIECE_CACHE 'eyepiece\cache\previews'
 # one player per user: a launch hands its file to a player already running. players started with the same
 # EYEPIECE_INSTANCE find each other and no other, so these never hand a file to one of the owner's
 $env:EYEPIECE_INSTANCE = "e2e-$PID"
@@ -332,22 +337,29 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
-# ---- the browser, in a tree of the test's own: a folder of two clips, three clips and a file that is no video. the
-# two folders above it hold nothing else, so the columns that fit show only what the test made
+# ---- the browser, in a tree of the test's own: a folder of two clips, three clips, a clip marked as not on the disk
+# (as a cloud folder marks what it has not downloaded) and a file that is no video. the two folders above it hold
+# nothing else, so the columns that fit show only what the test made
 $wrap = Join-Path $env:APPDATA 'wrap'; $above = Join-Path $wrap 'in'; $tree = Join-Path $above 'browse'; $shots = Join-Path $tree 'shots'
-$copies = [ordered]@{ (Join-Path $shots 'h264_320.mp4') = 'h264_320.mp4'; (Join-Path $shots 'wall_v012.mov') = 'hapq_64.mov'; (Join-Path $tree 'hap_64.mov') = 'hap_64.mov'; (Join-Path $tree 'prores_64.mov') = 'prores_64.mov'; (Join-Path $tree 'x_roll.mov') = 'hap_64.mov' }
+$copies = [ordered]@{ (Join-Path $shots 'h264_320.mp4') = 'h264_320.mp4'; (Join-Path $shots 'wall_v012.mov') = 'hapq_64.mov'; (Join-Path $tree 'hap_64.mov') = 'hap_64.mov'; (Join-Path $tree 'prores_64.mov') = 'prores_64.mov'; (Join-Path $tree 'x_roll.mov') = 'hap_64.mov'; (Join-Path $tree 'z_away.mov') = 'hap_64.mov' }
 New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
 New-Item -ItemType Directory $wrap, $above, $tree, $shots | Out-Null
 foreach ($to in $copies.Keys) { Copy-Item -LiteralPath (Join-Path $media $copies[$to]) -Destination $to }
 Set-Content -LiteralPath (Join-Path $tree 'notes.txt') -Value 'not a clip'
+(Get-Item -LiteralPath (Join-Path $tree 'z_away.mov')).Attributes = 'Offline'
 # the browser starts in the folder it was last in, which the settings name
 Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
 Start-Player
 Assert-Title 'started with no file, the browser is up' '^eyepiece$'
 # folders are listed off the drawing thread: each gets a moment to arrive before the keys move in it
 Start-Sleep -Milliseconds 1000
+# the cards on screen get their posters, kept in the cache: one file for each clip that is on the disk
+function Get-Kept { @(Get-ChildItem -LiteralPath $previews -Filter *.previews -ErrorAction SilentlyContinue) }
+foreach ($i in 1..100) { if ((Get-Kept).Count -ge 3) { break }; Start-Sleep -Milliseconds 100 }
+Start-Sleep -Milliseconds 1000
+Confirm-That 'each card whose file is on the disk gets a poster, and the one marked as not on the disk is not read' ((Get-Kept).Count -eq 3) "$((Get-Kept).Count) files of pictures in the cache, for 3 clips on the disk and 1 not"
 $before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
-Confirm-That 'the browser at rest, its folders listed, uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
+Confirm-That 'the browser at rest, its folders listed and its posters made, uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 # a double click opens the card its first click hit, though that click brings in the metadata column and moves the
 # cards along. here the first card, beside as many columns as fit and no metadata column
 $columns = [math]::Floor(((Get-Width) - 150 - 360) / 168); $main = 150 + 168 * $columns; $inner = (Get-Width) - $main - 28
@@ -440,6 +452,13 @@ Start-Sleep -Milliseconds 400
 Confirm-That 'and brings the minimized window back, its clip as it was' ((-not [EyepieceE2e]::IsIconic($script:h)) -and (Get-Title) -eq $before) "minimized: $([EyepieceE2e]::IsIconic($script:h)), title '$(Get-Title)', was '$before'"
 Stop-Player
 
+# the pictures the browser made, each named before it goes, then the folders made for them. nothing recursive
+if (Test-Path -LiteralPath $previews) {
+    foreach ($made in @(Get-ChildItem -LiteralPath $previews -File)) { Write-Host "removing $($made.FullName)"; Remove-Item -LiteralPath $made.FullName }
+}
+foreach ($made in $previews, (Split-Path $previews), (Split-Path (Split-Path $previews)), $env:EYEPIECE_CACHE) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
 # the tests' own settings: the file, then the two folders made for it, each named before it goes. nothing recursive
 foreach ($made in (Join-Path $env:APPDATA 'eyepiece\settings.txt'), (Join-Path $env:APPDATA 'eyepiece'), $env:APPDATA) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }

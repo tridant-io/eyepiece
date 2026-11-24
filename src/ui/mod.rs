@@ -10,6 +10,7 @@ mod widgets;
 use crate::event::{Key, Mods};
 use crate::media::meta::Meta;
 use crate::play::Loop;
+use crate::preview::make::Pictures;
 use crate::view::{Guides, Look};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
@@ -289,7 +290,7 @@ pub struct Ui {
 
 impl Ui {
     /// `folder` is where the browser starts: the one it was last in.
-    pub fn new(size: (u32, u32), scale: f32, timecode: bool, folder: Option<PathBuf>) -> Ui {
+    pub fn new(size: (u32, u32), scale: f32, timecode: bool, folder: Option<PathBuf>, pictures: Option<Pictures>) -> Ui {
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts());
         let mut visuals = egui::Visuals::dark();
@@ -320,7 +321,7 @@ impl Ui {
             facts_rect: Rect::NOTHING,
             facts_button: Rect::NOTHING,
             volume_rect: Rect::NOTHING,
-            browser: browser::Browser::new(folder),
+            browser: browser::Browser::new(folder, pictures),
         }
     }
 
@@ -469,13 +470,19 @@ impl Ui {
         let full = ui.max_rect();
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         match &screen.clip {
-            Some(model) if !screen.browsing => self.clip(ui, screen, model, now, actions),
+            Some(model) if !screen.browsing => {
+                self.browser.away();
+                self.clip(ui, screen, model, now, actions)
+            }
             // no clip to look at: the strip stays up, and under it the browser, or why the file did not open
             _ => {
                 (self.menu, self.shown) = (None, true);
                 let body = Rect::from_min_max(strip.left_bottom(), full.max);
                 match screen.error.filter(|_| !screen.browsing) {
-                    Some(why) => message(ui, body, screen.tabs[screen.current], why),
+                    Some(why) => {
+                        self.browser.away();
+                        message(ui, body, screen.tabs[screen.current], why)
+                    }
                     None => match self.browser.draw(ui, body) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
                         Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),

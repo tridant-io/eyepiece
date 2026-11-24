@@ -2,6 +2,7 @@
 //! turn of the loop is one display refresh. while it stands still, the thread sleeps until something happens.
 
 use super::d3d::{Constants, Gpu, CONSTANTS_HLSL};
+use super::pictures;
 use super::ui_paint::UiPainter;
 use super::window::{self, Handle};
 use crate::audio::Audio;
@@ -20,6 +21,7 @@ use crate::ui::{Action, Facts, Model, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct3D11::{ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11Texture2D};
@@ -111,9 +113,9 @@ enum Painter {
 }
 
 /// a clip on screen.
-struct View {
-    clip: Clip,
-    transport: Transport,
+pub(super) struct View {
+    pub(super) clip: Clip,
+    pub(super) transport: Transport,
     ps: ID3D11PixelShader,
     painter: Painter,
     /// the color half of what the shader is told; the placement half is filled in at each draw
@@ -121,7 +123,7 @@ struct View {
     /// the frame that is in the painter now
     shown: Option<usize>,
     /// why the current frame cannot be shown, if it cannot
-    fault: Option<String>,
+    pub(super) fault: Option<String>,
     /// refreshes, while playing, on which no new frame was shown when one was due: the frame was not ready, or the
     /// display missed it. the clip runs that much late; no frame is skipped to make it up
     late: u64,
@@ -146,7 +148,7 @@ fn text(e: windows::core::Error) -> String {
 }
 
 impl View {
-    fn new(gpu: &Gpu, mut clip: Clip, hz: f64) -> Result<View, String> {
+    pub(super) fn new(gpu: &Gpu, mut clip: Clip, hz: f64) -> Result<View, String> {
         // a clip ffmpeg decodes starts here, now that there is a device for a hardware decoder to write into
         clip.start(Some(gpu.hardware()))?;
         let (source, painter, constants) = match &clip.lane {
@@ -260,13 +262,20 @@ impl View {
         false
     }
 
-    /// puts the transport's frame into the painter, waiting up to `patience` for it. true when the picture changed.
+    /// puts the transport's frame into the painter, waiting up to `patience` for it, with the frames play or a
+    /// step would show next read ahead. true when the picture changed.
     fn load(&mut self, gpu: &Gpu, patience: Duration) -> bool {
-        let (frame, want) = (self.transport.frame(), self.transport.ahead());
+        let want = self.transport.ahead();
+        self.load_wanting(gpu, patience, &want)
+    }
+
+    /// `load`, with the reader told to keep just `want` ready: the transport's frame first.
+    pub(super) fn load_wanting(&mut self, gpu: &Gpu, patience: Duration, want: &[usize]) -> bool {
+        let frame = self.transport.frame();
         match &self.clip.lane {
-            Lane::Hap(hap) => hap.source.want(&want),
-            Lane::Video(video) => video.source.want(&want),
-            Lane::Stills(stills) => stills.source.want(&want),
+            Lane::Hap(hap) => hap.source.want(want),
+            Lane::Video(video) => video.source.want(want),
+            Lane::Stills(stills) => stills.source.want(want),
             Lane::Waiting(_) => {}
         }
         if self.shown == Some(frame) {
@@ -330,7 +339,7 @@ impl View {
     }
 
     /// true while the frame the transport is on has not reached the painter.
-    fn waiting(&self) -> bool {
+    pub(super) fn waiting(&self) -> bool {
         self.shown != Some(self.transport.frame())
     }
 
@@ -368,7 +377,7 @@ impl View {
 
     /// the frame in the painter, drawn `w` x `h` into a picture of our own and read back (`Gpu::read_pixels`): the
     /// file's own frame as it is stored, whatever the window shows.
-    fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
+    pub(super) fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
         let views = self.views()?;
         let size = (self.clip.width as f32, self.clip.height as f32);
         let _lock = gpu.locked();
@@ -860,7 +869,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         Err(e) => return window::set_title(window, &format!("eyepiece · no graphics device: {e}")),
     };
     let hz = window::refresh_rate();
-    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone());
+    // the maker of the browser's pictures stands back while a clip plays
+    let playing_now = Arc::new(AtomicBool::new(false));
+    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
@@ -1186,6 +1197,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         // a frame that is nearly there is worth a short wait: while playing, half a refresh, since showing the old
         // frame again skips this one for good. standing still, a few milliseconds between looks at the window
         let playing = tabs.view().is_some_and(|v| v.transport.playing());
+        playing_now.store(playing, Ordering::Relaxed);
         let patience = if playing { Duration::from_secs_f64(0.5 / hz) } else { Duration::from_millis(4) };
         let changed = tabs.view().is_some_and(|v| v.load(&gpu, patience));
         // the chip was laid out before this frame arrived: a new value under the pointer is one more look

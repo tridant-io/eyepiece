@@ -10,6 +10,7 @@ use super::{cut_middle, font, text_top, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_
 use crate::browse::{self, Entry, Kind, Place, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
+use crate::preview::make::{self, Pictures, Want};
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, FontId, Galley, Painter, Pos2, Rect, Sense, StrokeKind, Vec2};
 use jobs::Jobs;
@@ -80,15 +81,25 @@ pub enum Chosen {
 }
 
 pub struct Browser {
-    /// where it starts: held until it is first shown, so a launch with a file reads no folder
+    /// where it starts, and the maker of its cards' pictures: held until it is first shown, so a launch with a
+    /// file reads no folder
     start: Option<PathBuf>,
+    pictures: Option<Pictures>,
     state: Option<State>,
 }
 
 impl Browser {
-    /// starts in `folder`; with none, in the first of the system's places (downloads).
-    pub fn new(folder: Option<PathBuf>) -> Browser {
-        Browser { start: folder, state: None }
+    /// starts in `folder`; with none, in the first of the system's places (downloads). without `pictures` the
+    /// cards stay plain.
+    pub fn new(folder: Option<PathBuf>, pictures: Option<Pictures>) -> Browser {
+        Browser { start: folder, pictures, state: None }
+    }
+
+    /// the browser is not on screen: no pictures are wanted.
+    pub fn away(&mut self) {
+        if let Some(state) = &mut self.state {
+            state.want(Vec::new());
+        }
     }
 
     /// the folder the main area shows: kept between runs.
@@ -100,8 +111,8 @@ impl Browser {
     }
 
     fn state(&mut self) -> &mut State {
-        let start = &mut self.start;
-        self.state.get_or_insert_with(|| State::new(start.take()))
+        let (start, pictures) = (&mut self.start, &mut self.pictures);
+        self.state.get_or_insert_with(|| State::new(start.take(), pictures.take()))
     }
 
     pub fn key(&mut self, key: Key, mods: Mods) {
@@ -144,6 +155,13 @@ struct State {
     asked: HashSet<PathBuf>,
     /// the unread file the selection is on, and since when
     resting: Option<(PathBuf, f64)>,
+    /// the maker of the cards' pictures, and what it was last asked for
+    pictures: Option<Pictures>,
+    wanted: Vec<Want>,
+    /// the pictures of the cards in the folder shown, as far as they have come
+    cards: HashMap<PathBuf, Card>,
+    /// the card the pointer is on, and since when: resting there asks for all of its previews
+    hover: Option<(PathBuf, f64)>,
     /// wheel notches not yet applied; how far the sidebar, the grid and the metadata column are scrolled, and how
     /// tall the sidebar's and the metadata column's contents were when last drawn
     wheel: i32,
@@ -209,8 +227,35 @@ impl Layout {
     }
 }
 
+/// a card's pictures: the frame each is of, in order
+struct Card {
+    /// the file's size and time when they were asked for: a changed file starts over
+    stamp: (u64, SystemTime),
+    clip_frames: usize,
+    pictures: Vec<(usize, egui::TextureHandle)>,
+    /// the poster has been answered for, and all of the previews: they are here, or not to be had
+    poster: bool,
+    all: bool,
+}
+
+impl Card {
+    /// the picture to show: the one nearest the place in the clip the pointer scrubs to (0 to 1), else the poster.
+    fn shown(&self, scrub: Option<f32>) -> Option<&(usize, egui::TextureHandle)> {
+        let wanted = match scrub {
+            Some(at) => (at * self.clip_frames.saturating_sub(1) as f32).round() as usize,
+            None => make::poster(self.clip_frames),
+        };
+        self.pictures.iter().min_by_key(|(frame, _)| frame.abs_diff(wanted))
+    }
+}
+
+/// what the folder listing says of a file, which names its pictures
+fn stamp(entry: &Entry) -> (u64, SystemTime) {
+    (entry.size.unwrap_or(0), entry.modified.unwrap_or(UNIX_EPOCH))
+}
+
 impl State {
-    fn new(start: Option<PathBuf>) -> State {
+    fn new(start: Option<PathBuf>, pictures: Option<Pictures>) -> State {
         let places = browse::places();
         let folder = start.or_else(|| places.first().map(|p| p.path.clone())).unwrap_or_default();
         let roots: Vec<PathBuf> = places.iter().map(|p| p.path.clone()).collect();
@@ -229,6 +274,10 @@ impl State {
             read: HashMap::new(),
             asked: HashSet::new(),
             resting: None,
+            pictures,
+            wanted: Vec::new(),
+            cards: HashMap::new(),
+            hover: None,
             wheel: 0,
             side_scroll: 0.0,
             side_height: 0.0,
@@ -250,6 +299,36 @@ impl State {
             self.asked.insert(file.clone());
         }
         self.chosen = Some(chosen);
+    }
+
+    /// tells the maker what is wanted now, when that has changed.
+    fn want(&mut self, wants: Vec<Want>) {
+        if let Some(pictures) = self.pictures.as_ref().filter(|_| wants != self.wanted) {
+            pictures.want(wants.clone());
+            self.wanted = wants;
+        }
+    }
+
+    /// takes in the pictures that have come.
+    fn take_pictures(&mut self, ctx: &egui::Context) {
+        while let Some(got) = self.pictures.as_ref().and_then(Pictures::take) {
+            let stamp = (got.want.size, got.want.modified);
+            let card = self.cards.entry(got.want.path.clone()).or_insert_with(|| Card { stamp, clip_frames: 0, pictures: Vec::new(), poster: false, all: false });
+            if card.stamp != stamp {
+                *card = Card { stamp, clip_frames: 0, pictures: Vec::new(), poster: false, all: false };
+            }
+            for (frame, pixels) in got.pictures {
+                card.clip_frames = got.clip_frames;
+                let image = egui::ColorImage::from_rgb([got.width as usize, got.height as usize], &pixels);
+                let texture = ctx.load_texture(format!("card {} {frame}", got.want.path.display()), image, egui::TextureOptions::LINEAR);
+                match card.pictures.binary_search_by_key(&frame, |(of, _)| *of) {
+                    Ok(at) => card.pictures[at].1 = texture,
+                    Err(at) => card.pictures.insert(at, (frame, texture)),
+                }
+            }
+            card.poster |= got.done;
+            card.all |= got.done && got.want.all;
+        }
     }
 
     fn take_answers(&mut self) {
@@ -532,6 +611,7 @@ impl State {
     /// the cards of the folder shown, as many across as fit; the selected one outlined.
     fn grid(&mut self, ui: &egui::Ui, rect: Rect, folder: &Path, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
+        self.take_pictures(ui.ctx());
         if self.grid_folder != folder {
             (self.grid_folder, self.grid_scroll, self.revealed) = (folder.to_path_buf(), 0.0, None);
         }
@@ -539,15 +619,19 @@ impl State {
         let entries = match self.nav.listings.get(folder) {
             None => {
                 say("reading…");
-                return;
+                return self.want(Vec::new());
             }
-            Some(Err(why)) => return self.cannot_read(ui, rect, &why.to_lowercase(), clicks),
+            Some(Err(why)) => {
+                let why = why.to_lowercase();
+                self.want(Vec::new());
+                return self.cannot_read(ui, rect, &why, clicks);
+            }
             Some(Ok(entries)) => entries,
         };
         let cards: Vec<&Entry> = entries.iter().filter(|e| is_card(e)).collect();
         if cards.is_empty() {
             say("no video here");
-            return;
+            return self.want(Vec::new());
         }
         let inner = rect.width() - 28.0;
         let per_row = (((inner + 12.0) / (CARD_MIN + 12.0)).floor() as usize).max(1);
@@ -567,17 +651,51 @@ impl State {
         self.grid_scroll = scroll.clamp(0.0, (rows as f32 * pitch + 14.0 - rect.height()).max(0.0));
         self.per_row = per_row;
 
+        // the cards on screen ask for their posters, and the one the pointer rests on for all of its previews first
+        let now = ui.input(|i| i.time);
+        let (mut wants, mut hovered) = (Vec::new(), false);
         for (i, card) in cards.iter().enumerate() {
             let top = rect.top() + 14.0 + (i / per_row) as f32 * pitch - self.grid_scroll;
             if top + height < rect.top() || top > rect.bottom() {
                 continue;
             }
             let area = Rect::from_min_size(Pos2::new(rect.left() + 14.0 + (i % per_row) as f32 * (width + 12.0), top), Vec2::new(width, height));
-            draw_card(&painter, area, thumb, card, at == Some(i));
-            if ui.interact(area.intersect(rect), ui.scope_id().with(("brw-card", i)), Sense::click()).clicked() {
+            let response = ui.interact(area.intersect(rect), ui.scope_id().with(("brw-card", i)), Sense::click());
+            let pictures = self.cards.get(&card.path).filter(|c| c.stamp == stamp(card));
+            // the pointer's place across the picture scrubs it
+            let scrub = response.hover_pos().map(|p| ((p.x - area.left()) / width).clamp(0.0, 1.0));
+            draw_card(&painter, area, thumb, card, at == Some(i), pictures, scrub);
+            if response.clicked() {
                 clicks.push((Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))));
             }
+            if !nav::makes_pictures(self.nav.volume, card) {
+                continue;
+            }
+            let want = |all| Want { path: card.path.clone(), size: stamp(card).0, modified: stamp(card).1, all };
+            if scrub.is_some() && !pictures.is_some_and(|c| c.all) {
+                hovered = true;
+                // a pointer only crossing the card reads nothing more than its poster
+                let wait = rest(&mut self.hover, &card.path, now);
+                if wait > 0.0 {
+                    ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
+                } else {
+                    wants.insert(0, want(true));
+                    continue;
+                }
+            }
+            if !pictures.is_some_and(|c| c.poster) {
+                wants.push(want(false));
+            }
         }
+        if !hovered {
+            self.hover = None;
+        }
+        // the pictures of a folder no longer shown are let go
+        self.cards.retain(|path, _| cards.iter().any(|c| &c.path == path));
+        if !wants.is_empty() {
+            ui.ctx().request_repaint_after(POLL);
+        }
+        self.want(wants);
     }
 
     /// the folder shown could not be listed: why, and the places to go to instead.
@@ -631,7 +749,12 @@ impl State {
         self.meta_scroll = self.meta_scroll.clamp(0.0, (self.meta_height - (foot - 10.0 - rect.top())).max(0.0));
         let top = rect.top() + 12.0 - self.meta_scroll;
         let picture = Rect::from_min_size(Pos2::new(left, top), Vec2::new(width, (width * 9.0 / 16.0).round()));
-        painter.rect_filled(picture, 0.0, PLAIN);
+        match self.cards.get(&card.path).filter(|c| c.stamp == stamp(card)).and_then(|c| c.shown(None)) {
+            Some((_, poster)) => draw_picture(&painter, picture, poster),
+            None => {
+                painter.rect_filled(picture, 0.0, PLAIN);
+            }
+        }
         painter.rect_stroke(picture, 0.0, (1.0, LINE), StrokeKind::Outside);
         let listed;
         let groups: &[Vec<Row>] = match self.read.get(&card.path).filter(|_| reads) {
@@ -724,15 +847,39 @@ fn button(ui: &egui::Ui, painter: &Painter, rect: Rect, name: impl std::hash::Ha
     response.clicked()
 }
 
-/// a card with no picture yet (the design's plain card): the file's type in its middle, a sequence's marks at its top
-/// right, then the name and what the listing says of the file.
-fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, on: bool) {
+/// a picture at its own shape, as large as fits in `rect`, on black
+fn draw_picture(painter: &Painter, rect: Rect, picture: &egui::TextureHandle) {
+    painter.rect_filled(rect, 0.0, Color32::BLACK);
+    let size = picture.size_vec2();
+    let fitted = Rect::from_center_size(rect.center(), size * (rect.width() / size.x).min(rect.height() / size.y));
+    painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+}
+
+/// a card: its picture, or until there is one the file's type in the middle of a plain one (the design's plain
+/// card); a sequence's marks at the top right; then the name and what the listing says of the file. while the
+/// pointer scrubs it (`scrub`, 0 to 1 across), a line marks the place and the frame shown is named.
+fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, on: bool, pictures: Option<&Card>, scrub: Option<f32>) {
     let picture = Rect::from_min_size(area.min, Vec2::new(area.width(), thumb));
-    painter.rect_filled(picture, 0.0, PLAIN);
+    match pictures.and_then(|c| c.shown(scrub)) {
+        Some((frame, shown)) => {
+            draw_picture(painter, picture, shown);
+            if let Some(at) = scrub {
+                let x = picture.left() + at * (picture.width() - 1.0);
+                painter.rect_filled(Rect::from_min_max(Pos2::new(x, picture.top()), Pos2::new(x + 1.0, picture.bottom())), 0.0, Color32::WHITE);
+                let galley = painter.layout_no_wrap(format!("{frame:06}"), font(MONO_MEDIUM, 10.0), FG);
+                let label = Rect::from_min_size(Pos2::new(picture.left() + 4.0, picture.bottom() - 4.0 - 16.0), Vec2::new(galley.size().x + 8.0, 16.0));
+                painter.rect_filled(label, 0.0, BADGE_BACK);
+                painter.galley(Pos2::new(label.left() + 4.0, top_of(painter, &galley, label.center().y)), galley, FG);
+            }
+        }
+        None => {
+            painter.rect_filled(picture, 0.0, PLAIN);
+            let kind = Path::new(&entry.name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+            let galley = spaced(painter, &kind, font(MONO_MEDIUM, 11.0), 1.54, PLAIN_TEXT);
+            painter.galley(Pos2::new(picture.center().x - galley.size().x / 2.0, top_of(painter, &galley, picture.center().y)), galley, PLAIN_TEXT);
+        }
+    }
     painter.rect_stroke(picture, 0.0, if on { (2.0, FG) } else { (1.0, LINE) }, StrokeKind::Outside);
-    let kind = Path::new(&entry.name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
-    let galley = spaced(painter, &kind, font(MONO_MEDIUM, 11.0), 1.54, PLAIN_TEXT);
-    painter.galley(Pos2::new(picture.center().x - galley.size().x / 2.0, top_of(painter, &galley, picture.center().y)), galley, PLAIN_TEXT);
     if let Kind::Sequence { missing, .. } = &entry.kind {
         // from the right: the missing frames, a fault in amber, then the sequence's own mark
         let mut right = picture.right() - 4.0;

@@ -59,6 +59,14 @@ pub fn reads_metadata(volume: Volume, entry: &Entry, asked: bool) -> bool {
     (volume != Volume::Network && !entry.away) || asked
 }
 
+/// a card gets a poster and hover previews only when its file is on a local volume and its data is on the disk.
+/// making them reads the file, so nothing on a network volume gets them, and no file that would have to be
+/// downloaded first. asking for a file's metadata does not change that: the design asks for previews separately
+/// (adr 0004), and that asking is not built.
+pub fn makes_pictures(volume: Volume, entry: &Entry) -> bool {
+    volume != Volume::Network && !entry.away && is_card(entry)
+}
+
 /// where the columns start for `folder`: the deepest of `places` that holds it, else its drive or share
 pub fn root_of(folder: &Path, places: &[PathBuf]) -> PathBuf {
     let place = places.iter().filter(|p| folder.starts_with(p)).max_by_key(|p| p.components().count());
@@ -540,6 +548,19 @@ mod tests {
         nav.choose_card(r.join(r"shots\d.mov"));
         assert_eq!((nav.previewing, nav.focus, nav.shown().len()), (false, Focus::Grid, 3));
         assert_eq!(nav.card().map(|c| c.name.as_str()), Some("d.mov"));
+    }
+
+    #[test]
+    fn pictures_are_made_only_of_local_files_that_are_on_the_disk() {
+        let dir = Path::new("shots");
+        let here = entry(dir, "a.mov", Kind::Clip);
+        let cloud = Entry { away: true, ..entry(dir, "b.mov", Kind::Clip) };
+        let run = entry(dir, "s.[0001-0003].exr", Kind::Sequence { first: 1, last: 3, missing: vec![], pad: 4 });
+        assert!(makes_pictures(Volume::Local, &here) && makes_pictures(Volume::Local, &run));
+        assert!(!makes_pictures(Volume::Local, &cloud));
+        assert!(!makes_pictures(Volume::Network, &here) && !makes_pictures(Volume::Network, &run));
+        // nor of what gets no card
+        assert!(!makes_pictures(Volume::Local, &entry(dir, "notes.txt", Kind::Other)) && !makes_pictures(Volume::Local, &entry(dir, "sub", Kind::Folder)));
     }
 
     #[test]

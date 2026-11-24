@@ -2,6 +2,8 @@
 //! folder. nothing here reads media: a clip is named by its path, size and modified time as the folder listing gives
 //! them. eviction removes only files this cache wrote, one at a time, and never a folder.
 
+pub mod make;
+
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -48,13 +50,14 @@ static WRITES: AtomicU32 = AtomicU32::new(0);
 
 impl Cache {
     /// the cache in the os cache folder: `<LOCALAPPDATA>\eyepiece\cache\previews` on windows. None when that
-    /// place cannot be named safely.
+    /// place cannot be named safely. `EYEPIECE_CACHE` names another folder to stand for the os cache folder: the
+    /// tests set it, so what they make stays out of the owner's cache.
     pub fn open() -> Option<Cache> {
         // macos will keep it in ~/Library/Caches/eyepiece; there is no mac build yet
         if !cfg!(windows) {
             return None;
         }
-        let root = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join(PLACE.iter().collect::<PathBuf>());
+        let root = PathBuf::from(std::env::var_os("EYEPIECE_CACHE").or_else(|| std::env::var_os("LOCALAPPDATA"))?).join(PLACE.iter().collect::<PathBuf>());
         safe_root(&root, home().as_deref(), &PLACE).then_some(Cache { root, budget: BUDGET })
     }
 
