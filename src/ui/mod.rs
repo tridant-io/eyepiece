@@ -386,6 +386,8 @@ pub struct Ui {
     tab_scroll: f32,
     tab_seen: (usize, usize, i32),
     tabs_over: Option<Rect>,
+    /// the window's buttons are at the strip's left, as a mac's windows have them
+    buttons_left: bool,
     /// the frame under the pointer on the timebar; the pictures had for the timebar, each with the frame it is of and
     /// its size: the clip's timebar strip, in order, and the one read last; and the one shown
     time_hover: Option<usize>,
@@ -445,6 +447,7 @@ impl Ui {
             tab_scroll: 0.0,
             tab_seen: (0, 0, 0),
             tabs_over: None,
+            buttons_left: false,
             time_hover: None,
             time_strip: Vec::new(),
             time_read: None,
@@ -480,6 +483,12 @@ impl Ui {
 
     pub fn browser_recent(&self) -> &[PathBuf] {
         self.browser.recent()
+    }
+
+    /// puts the window's buttons at the strip's left, close first, with the tabs after them: where a mac's windows
+    /// have theirs (the design's "no header").
+    pub fn set_buttons_left(&mut self, left: bool) {
+        self.buttons_left = left;
     }
 
     pub fn set_browser_recent(&mut self, recent: Vec<PathBuf>) {
@@ -977,11 +986,12 @@ impl Ui {
             }
         }
 
-        // the window's buttons, at the right: minimize, maximize, close. 10 x 10 marks in 40-wide buttons
-        let mut x = strip.right();
-        for (name, action) in [("close", Action::Close), ("maximize", Action::ToggleMaximize), ("minimize", Action::Minimize)] {
-            x -= WINDOW_BUTTON;
-            let rect = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(WINDOW_BUTTON, STRIP - 1.0));
+        // the window's buttons, at the right: minimize, maximize, close. on a mac at the left, where its windows have
+        // theirs: close, minimize, maximize. 10 x 10 marks in 40-wide buttons. the tabs have the rest: `from` to `x`
+        let (from, x) = if self.buttons_left { (strip.left() + 3.0 * WINDOW_BUTTON, strip.right()) } else { (strip.left(), strip.right() - 3.0 * WINDOW_BUTTON) };
+        for (i, (name, action)) in [("close", Action::Close), ("maximize", Action::ToggleMaximize), ("minimize", Action::Minimize)].into_iter().enumerate() {
+            let left = if self.buttons_left { strip.left() + [0.0, 2.0, 1.0][i] * WINDOW_BUTTON } else { strip.right() - (i + 1) as f32 * WINDOW_BUTTON };
+            let rect = Rect::from_min_size(Pos2::new(left, strip.top()), Vec2::new(WINDOW_BUTTON, STRIP - 1.0));
             let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
             if response.is_pointer_button_down_on() {
                 painter.rect_filled(rect, 0.0, PRESSED);
@@ -1010,7 +1020,7 @@ impl Ui {
 
         // the tabs, from the left: the one that is up is the bright, filled one, and carries the close mark. each is
         // as wide as its name up to a limit; too many for the strip, and they all narrow
-        let room = (x - strip.left() - PLUS).max(0.0);
+        let room = (x - from - PLUS).max(0.0);
         let place = |i: usize| screen.places.get(i).copied().flatten();
         let wide = |i: usize, name: &str| {
             let label = match place(i) {
@@ -1033,10 +1043,10 @@ impl Ui {
         let seen = (screen.current, widths.len(), room as i32);
         let came_up = std::mem::replace(&mut self.tab_seen, seen) != seen;
         self.tab_scroll = tab_scroll(self.tab_scroll, &widths, screen.current, room, came_up);
-        let view = Rect::from_min_max(strip.min, Pos2::new(if total > room { strip.left() + room } else { x }, strip.bottom()));
+        let view = Rect::from_min_max(Pos2::new(from, strip.top()), Pos2::new(if total > room { from + room } else { x }, strip.bottom()));
         self.tabs_over = (total > room).then_some(view);
         let clipped = painter.with_clip_rect(view);
-        let mut left = strip.left() - self.tab_scroll;
+        let mut left = from - self.tab_scroll;
         for (i, (name, width)) in screen.tabs.iter().zip(widths).enumerate() {
             let tab = Rect::from_min_size(Pos2::new(left, strip.top()), Vec2::new(width, STRIP - 1.0));
             left = tab.right();
@@ -1745,6 +1755,26 @@ mod tests {
     fn click(x: f32, y: f32) -> [(f32, f32, Option<(crate::event::Button, bool)>); 4] {
         use crate::event::Button::Left;
         [(x, y, None), (x, y, Some((Left, true))), (x, y, Some((Left, false))), (x, y, None)]
+    }
+
+    /// on a mac the window's buttons are at the strip's left, 40 wide each: close, minimize, maximize, as its windows
+    /// have them; the tabs start after them, and the strip's right end is the strip's own. "clip" is 4 of the type's
+    /// 6.9-wide letters in a tab 40 wider, with its close mark 14 from the tab's end.
+    #[test]
+    fn on_a_mac_the_windows_buttons_are_at_the_left_and_the_tabs_after_them() {
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        ui.set_buttons_left(true);
+        let close_mark = 120.0 + 27.6 + 40.0 - 14.0;
+        for (x, asked) in [(20.0, vec![Action::Close]), (60.0, vec![Action::Minimize]), (100.0, vec![Action::ToggleMaximize]), (close_mark, vec![Action::CloseTab(0)]), (880.0, vec![])] {
+            assert_eq!(drive(&mut ui, &click(x, 16.0)), asked, "a click at {x}");
+            std::thread::sleep(Duration::from_millis(350));
+        }
+        // elsewhere they are at the right, close last, and the tabs start at the left edge
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        for (x, asked) in [(880.0, vec![Action::Close]), (840.0, vec![Action::ToggleMaximize]), (800.0, vec![Action::Minimize]), (close_mark - 120.0, vec![Action::CloseTab(0)])] {
+            assert_eq!(drive(&mut ui, &click(x, 16.0)), asked, "a click at {x}");
+            std::thread::sleep(Duration::from_millis(350));
+        }
     }
 
     /// the design's fig. 14: a folder's tab has arrows beside its count that do what page up and page down do, on

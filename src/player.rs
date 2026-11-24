@@ -1413,6 +1413,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let playing_now = Arc::new(AtomicBool::new(false));
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
+    ui.set_buttons_left(cfg!(target_os = "macos"));
     // the player's one way out to the speakers, as loud as it was left
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
