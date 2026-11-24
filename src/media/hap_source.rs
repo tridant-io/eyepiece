@@ -62,7 +62,7 @@ impl Loader for HapLoader {
     type Item = Vec<u8>;
 
     /// one frame from the file. a frame that does not hold what frame 0 promised is refused, not shown.
-    fn load(&mut self, frame: usize) -> Result<Arc<Vec<u8>>, String> {
+    fn load(&mut self, frame: usize, _abandoned: &dyn Fn() -> bool) -> Result<Option<Arc<Vec<u8>>>, String> {
         let sample = self.samples[frame];
         self.raw.resize(sample.size, 0);
         ff::read_at(&self.file, &mut self.raw, sample.pos).map_err(|e| e.to_string())?;
@@ -74,7 +74,7 @@ impl Loader for HapLoader {
         let mut blocks = self.spare.pop().unwrap_or_default();
         blocks.resize(self.expect, 0);
         hap::decompress(layer, &mut blocks, SNAPPY_THREADS)?;
-        Ok(Arc::new(blocks))
+        Ok(Some(Arc::new(blocks)))
     }
 
     fn retire(&mut self, blocks: Vec<u8>) {

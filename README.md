@@ -8,9 +8,18 @@ what has been played on real files, at 4K and 60 frames a second:
 
 - hap, hap alpha, hap q, hap r and hap hdr, and hap q at 8K: our own code, blocks to the gpu as stored. hap q alpha and alpha-only follow the published spec, but no file of either was at hand. hap hdr goes to the screen as stored: values above 1.0 clip, with no tone map and no chip saying so yet.
 - h.264 and 10-bit hevc: the system's hardware decoder, drawn from the decoder's own surface with no copy. when the gpu does not take a stream the same clip decodes in software.
-- prores 422 hq: ffmpeg in software, one frame at a time on every core. prores 4444 xq at 4K60 does not hold its rate in software on the dev machine (about 30 frames a second), as phase 0 measured. alpha in a prores file is not drawn: the picture is shown as stored, over black.
+- prores 422 hq: ffmpeg in software, one frame at a time on every core. prores 4444 xq at 4K60 does not hold its rate in software on the dev machine (about 30 frames a second), as phase 0 measured.
 
-known gaps: chroma is read at the nearest sample, not blended at the file's siting yet. a file that does not name its color matrix gets the usual assumption (bt.709 at 720 lines and up, bt.601 below), and nothing on screen says so until the metadata panel exists. variable frame rates do not play. stepping back past the frames kept ready costs a decode from the last key frame. dropping a file on the window is written and not yet tested.
+known gaps:
+
+- **stepping back in h.264 and hevc is not instant past a key frame.** one step back inside the frames kept ready is one refresh. a step back across a key frame decodes that whole group again: measured on the dev machine, 1.5 s for 4K h.264 with a key frame every 250 frames, and one refresh for 4K hevc with a key frame every 60 only because the group was still on hand. the design's answer, frames kept on the gpu for stepping back, is not built.
+- chroma is read at the nearest sample, not blended at the file's siting yet.
+- a file that does not name its color matrix gets the usual assumption (bt.709 at 720 lines and up, bt.601 below), and nothing on screen says so until the metadata panel exists.
+- variable frame rates do not play. mkv and fragmented mp4 do not play: they carry no table of frames, and counting them by reading the file is not built.
+- prores decodes in software only, with ffmpeg's decoder; alpha in a prores file is not drawn.
+- dropping a file on the window is written and not yet tested.
+
+the title bar also says what went wrong: ` · n late` (refreshes that went by without the frame that was due), ` · n could not be shown` (frames the file could not give), and ` · reading` while the frame it names is still on its way.
 
 ## what is here
 
@@ -36,13 +45,13 @@ cargo test
 cargo run --release -- some-clip.mov
 # end to end: drives the built program with real keys and checks what it says (a window opens for a few seconds)
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e.ps1
-# pacing on real clips of your own: plays each for 10 s and counts refreshes that went by without the frame due
+# pacing on real clips of your own: plays each for 10 s; fails a clip that did not open, lost frames, or ran late
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& tests\play.ps1 -Clips a.mov,b.mov"
 ```
 
 keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. drop a file on the window to open it.
 
-while a clip plays the title bar is left alone; standing still it reads `name · frame / count · size · codec · rate`, and ` · n late` if any refresh went by without the frame that was due.
+while a clip plays the title bar is left alone; standing still it reads `name · frame / count · size · codec, how it is decoded · rate`.
 
 ## deploy
 

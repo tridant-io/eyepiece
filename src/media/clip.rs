@@ -72,7 +72,8 @@ impl Clip {
             let timeline = Timeline::new(video.time_base, &samples);
             let step = match (timeline.step(), samples.len()) {
                 (Some(step), _) => step,
-                (None, 0) => return Err(format!("{path}: no frames")),
+                // mkv and fragmented mp4 carry no table of frames: they have to be counted by reading the file, which is not built
+                (None, 0) => return Err(format!("{path}: this kind of file does not list its frames up front. it does not play yet.")),
                 (None, 1) => 1,
                 (None, _) => return Err(format!("{path}: its frames do not all last the same. variable frame rates do not play yet.")),
             };

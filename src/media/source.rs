@@ -18,7 +18,9 @@ pub enum Frame<T> {
 /// how one lane produces a frame. it runs on the worker thread and is the only thing that touches the file.
 pub trait Loader: Send + 'static {
     type Item: Send + Sync + 'static;
-    fn load(&mut self, frame: usize) -> Result<Arc<Self::Item>, String>;
+    /// produces a frame. a lane whose loads can be long asks `abandoned` now and then, and returns Ok(None) when it
+    /// says yes: the frame is no longer wanted, and something else is.
+    fn load(&mut self, frame: usize, abandoned: &dyn Fn() -> bool) -> Result<Option<Arc<Self::Item>>, String>;
     /// a frame nobody holds any more. the lane may reuse its memory; by default it is simply dropped.
     fn retire(&mut self, _item: Self::Item) {}
 }
@@ -142,10 +144,15 @@ fn work<L: Loader>(shared: &Shared<L::Item>, frames: usize, mut loader: L) {
             loader.retire(item);
         }
         let Some(frame) = missing else { continue };
-        let result = guarded(|| loader.load(frame));
+        let abandoned = || {
+            let s = shared.state.lock().unwrap();
+            s.quit || !wanted(s.frame, s.playing, frames).contains(&frame)
+        };
+        let result = guarded(|| loader.load(frame, &abandoned));
         let mut s = shared.state.lock().unwrap();
         match result {
-            Ok(item) => s.ready.push((frame, item)),
+            Ok(Some(item)) => s.ready.push((frame, item)),
+            Ok(None) => {}
             Err(why) => s.failed.push((frame, why)),
         }
         shared.arrived.notify_all();
@@ -174,11 +181,11 @@ mod tests {
     struct Numbers;
     impl Loader for Numbers {
         type Item = usize;
-        fn load(&mut self, frame: usize) -> Result<Arc<usize>, String> {
+        fn load(&mut self, frame: usize, _abandoned: &dyn Fn() -> bool) -> Result<Option<Arc<usize>>, String> {
             match frame {
                 3 => panic!("a parser bug"),
                 4 => Err("damaged".into()),
-                n => Ok(Arc::new(n * 10)),
+                n => Ok(Some(Arc::new(n * 10))),
             }
         }
     }

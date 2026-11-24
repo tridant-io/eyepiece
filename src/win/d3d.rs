@@ -316,3 +316,94 @@ impl Gpu {
         missed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::clip::{Clip, Lane};
+    use crate::media::dec::Picture;
+    use crate::media::source::Frame;
+    use std::time::Duration;
+
+    fn media(name: &str) -> String {
+        format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// a hardware device with no window: what the decoder needs, and enough to read its surfaces back.
+    fn device() -> (ID3D11Device, ID3D11DeviceContext, ID3D11Multithread) {
+        let (mut device, mut ctx) = (None, None);
+        unsafe {
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_VIDEO_SUPPORT, Some(&[D3D_FEATURE_LEVEL_11_0]), D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx)).expect("a hardware device");
+            let (device, ctx): (ID3D11Device, ID3D11DeviceContext) = (device.unwrap(), ctx.unwrap());
+            let multithread: ID3D11Multithread = ctx.cast().unwrap();
+            let _ = multithread.SetMultithreadProtected(true);
+            (device, ctx, multithread)
+        }
+    }
+
+    /// a picture's luma as sample values, whichever side decoded it: a surface is copied out of the gpu to be read.
+    fn luma(picture: &Picture, device: &ID3D11Device, ctx: &ID3D11DeviceContext, w: usize, h: usize) -> Vec<u16> {
+        let layout = picture.layout().expect("layout");
+        let deep = layout.stored.texel_bits > 8;
+        let sample = |row: &[u8], x: usize| if deep { u16::from_le_bytes([row[x * 2], row[x * 2 + 1]]) >> if layout.stored.top_aligned { 16 - layout.stored.bits } else { 0 } } else { row[x] as u16 };
+        if !layout.hardware {
+            let (data, stride, _) = picture.plane(0, layout.chroma_shift);
+            return (0..h).flat_map(|y| (0..w).map(move |x| (y, x))).map(|(y, x)| sample(&data[y * stride..], x)).collect();
+        }
+        unsafe {
+            let (texture, slice) = picture.surface();
+            let texture = ID3D11Texture2D::from_raw_borrowed(&texture).expect("surface");
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            texture.GetDesc(&mut desc);
+            (desc.ArraySize, desc.Usage, desc.BindFlags, desc.CPUAccessFlags, desc.MiscFlags) = (1, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32, 0);
+            let mut copy = None;
+            device.CreateTexture2D(&desc, None, Some(&mut copy)).expect("staging texture");
+            let copy: ID3D11Texture2D = copy.unwrap();
+            ctx.CopySubresourceRegion(&copy, 0, 0, 0, 0, texture, slice, None);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(&copy, 0, D3D11_MAP_READ, 0, Some(&mut m)).expect("map");
+            let rows = std::slice::from_raw_parts(m.pData as *const u8, m.RowPitch as usize * h);
+            let out = (0..h).flat_map(|y| (0..w).map(move |x| (y, x))).map(|(y, x)| sample(&rows[y * m.RowPitch as usize..], x)).collect();
+            ctx.Unmap(&copy, 0);
+            out
+        }
+    }
+
+    /// the frames of a clip in `order`, as luma. with `hardware`, the gpu must take the stream.
+    fn frames(name: &str, order: &[usize], hardware: Option<Hardware>, device: &ID3D11Device, ctx: &ID3D11DeviceContext) -> Vec<Vec<u16>> {
+        let mut clip = Clip::open(&media(name)).expect("open");
+        clip.start(hardware).expect("start");
+        let Lane::Video(video) = &clip.lane else { panic!("not the video lane") };
+        assert_eq!(video.layout.hardware, hardware.is_some(), "{name}: the gpu on this machine did not take this stream");
+        order
+            .iter()
+            .map(|&frame| {
+                video.source.want(frame, false);
+                match video.source.get(frame, Duration::from_secs(20)) {
+                    Frame::Ready(picture) => luma(&picture, device, ctx, clip.width, clip.height),
+                    Frame::Pending => panic!("{name}: frame {frame} never arrived"),
+                    Frame::Failed(why) => panic!("{name}: frame {frame}: {why}"),
+                }
+            })
+            .collect()
+    }
+
+    /// the hardware decoder, asked for frames in any order, returns exactly the frames the software decoder returns
+    /// straight through: the same samples, bit for bit. this is gate 1's check and the jump check in one, on the
+    /// path the player really uses for h.264 and hevc. needs a gpu with a video decoder.
+    #[test]
+    fn the_hardware_decoder_returns_the_right_frames_in_any_order() {
+        let (device, ctx, multithread) = device();
+        let hardware = Hardware { device: device.as_raw(), lock, unlock, lock_ctx: multithread.as_raw() };
+        for name in ["h264_320.mp4", "hevc10_320.mp4"] {
+            let straight: Vec<usize> = (0..24).collect();
+            let software = frames(name, &straight, None, &device, &ctx);
+            assert!((1..24).all(|i| software[i] != software[i - 1]), "{name}: the test clip's frames should all differ");
+            let order = [0, 13, 5, 23, 22, 21, 8, 7, 16, 15, 1, 23, 0, 9];
+            let jumped = frames(name, &order, Some(hardware), &device, &ctx);
+            for (frame, picture) in order.iter().zip(&jumped) {
+                assert!(*picture == software[*frame], "{name}: frame {frame} from the hardware decoder, reached by a jump, is not the software decoder's frame {frame}");
+            }
+        }
+    }
+}

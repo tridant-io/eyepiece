@@ -91,6 +91,8 @@ struct View {
     /// refreshes, while playing, on which no new frame was shown when one was due: the frame was not ready, or the
     /// display missed it. the clip runs that much late; no frame is skipped to make it up
     late: u64,
+    /// frames that could not be shown since the clip was opened
+    unshowable: u64,
 }
 
 fn text(e: windows::core::Error) -> String {
@@ -142,7 +144,7 @@ impl View {
         };
         let ps = gpu.pixel_shader(&source).map_err(text)?;
         let transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz);
-        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0 })
+        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0 })
     }
 
     /// puts the transport's frame into the painter, waiting up to `patience` for it. true when the picture changed.
@@ -197,6 +199,7 @@ impl View {
             Ok(false) => false,
             result => {
                 self.fault = result.err();
+                self.unshowable += self.fault.is_some() as u64;
                 self.shown = Some(frame);
                 true
             }
@@ -249,11 +252,21 @@ impl View {
             Painter::Surface { .. } => ", hardware",
             Painter::Planes { .. } => ", software",
         };
-        let state = match &self.fault {
-            Some(why) => format!(" · this frame cannot be shown: {why}"),
-            None if self.late > 0 => format!(" · {} late", self.late),
-            None => String::new(),
-        };
+        // what went wrong stays in the title: late refreshes, frames that could not be shown, and the one on screen
+        let mut state = String::new();
+        if self.late > 0 {
+            state += &format!(" · {} late", self.late);
+        }
+        if self.unshowable > 0 {
+            state += &format!(" · {} could not be shown", self.unshowable);
+        }
+        if let Some(why) = &self.fault {
+            state += &format!(" · this frame cannot be shown: {why}");
+        }
+        // the number is where the transport is; until that frame is in the painter the picture is still the old one
+        if self.waiting() {
+            state += " · reading";
+        }
         format!("{} · {} / {} · {} × {} · {}{decoded} · {}{state}", c.name, self.transport.frame(), c.timeline.frames(), c.width, c.height, c.codec, c.rate_text())
     }
 }

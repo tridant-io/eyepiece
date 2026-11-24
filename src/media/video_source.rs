@@ -80,9 +80,9 @@ impl VideoLoader {
 impl Loader for VideoLoader {
     type Item = Picture;
 
-    fn load(&mut self, frame: usize) -> Result<Arc<Picture>, String> {
+    fn load(&mut self, frame: usize, abandoned: &dyn Fn() -> bool) -> Result<Option<Arc<Picture>>, String> {
         if let Some((_, picture)) = self.recent.iter().find(|r| r.0 == frame) {
-            return Ok(picture.clone());
+            return Ok(Some(picture.clone()));
         }
         // a key frame's place in decode order is never later than its place in display order, so the last key frame
         // at or before this frame's number is where decoding can start
@@ -104,10 +104,14 @@ impl Loader for VideoLoader {
             self.next = Some(at + 1);
             self.remember(at, picture.clone());
             if at == frame {
-                return Ok(picture);
+                return Ok(Some(picture));
             }
             if at < frame {
                 passed_earlier = true;
+                // a long way to go, and the frame may no longer be wanted: look before decoding on
+                if abandoned() {
+                    return Ok(None);
+                }
                 continue;
             }
             if passed_earlier || key == 0 {
