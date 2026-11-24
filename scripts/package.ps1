@@ -1,5 +1,6 @@
 # builds the player and puts everything it needs to run in dist\eyepiece: the program, the four ffmpeg libraries it
-# loads, and their license. the program is signed with azure artifact signing, the way tridant's other apps are.
+# loads, their license, and the third-party notices. the program is signed with azure artifact signing, the way
+# tridant's other apps are.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1            build, test, package, sign
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -Install   and copy it to %LOCALAPPDATA%\Programs\eyepiece
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -NoSign    for a machine without the signing setup
@@ -28,13 +29,15 @@ Invoke-Checked 'the end-to-end test' { powershell -NoProfile -ExecutionPolicy By
 $dist = Join-Path $repo 'dist\eyepiece'
 New-Item -ItemType Directory -Force $dist | Out-Null
 Copy-Item (Join-Path $repo 'target\release\eyepiece.exe') $dist -Force
-# only what the program loads: avformat and avcodec, and the two they load in turn
+# only what the program loads: avformat, avcodec and avutil, and swresample, which avcodec loads and the audio code calls
 foreach ($dll in 'avformat-63.dll', 'avcodec-63.dll', 'avutil-61.dll', 'swresample-7.dll') { Copy-Item (Join-Path $ffmpeg "bin\$dll") $dist -Force }
 # ffmpeg is lgpl: its license travels with its libraries, which stay separate files a user may replace
 Copy-Item (Join-Path $ffmpeg 'LICENSE.txt') (Join-Path $dist 'ffmpeg-LICENSE.txt') -Force
 # the two typefaces drawn in the controls are built into the program; the open font license asks that it travel with them
 Copy-Item (Join-Path $repo 'assets/fonts/IBM-Plex-LICENSE.txt') (Join-Path $dist 'fonts-IBM-Plex-LICENSE.txt') -Force
 Copy-Item (Join-Path $repo 'assets/fonts/Archivo-OFL.txt') (Join-Path $dist 'fonts-Archivo-OFL.txt') -Force
+# every crate built into the program, ffmpeg and the typefaces, with their licenses; -Install copies it with the rest
+& (Join-Path $PSScriptRoot 'notices.ps1') -Out (Join-Path $dist 'THIRD-PARTY-NOTICES.txt') -Ffmpeg $ffmpeg
 
 $exe = Join-Path $dist 'eyepiece.exe'
 if (-not $NoSign) {

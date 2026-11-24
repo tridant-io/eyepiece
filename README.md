@@ -86,13 +86,15 @@ the timing checks (`play.ps1`, `launch.ps1`, `backstep.ps1`) mean nothing on a b
 ## deploy
 
 ```powershell
-# tests, release build, dist\eyepiece with the four ffmpeg libraries and their license, signed as "Tridant, Inc."
+# tests, release build, dist\eyepiece with the four ffmpeg libraries, their license and the notices, signed as "Tridant, Inc."
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1
 # the same, then copied to %LOCALAPPDATA%\Programs\eyepiece
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -Install
 ```
 
 signing uses azure artifact signing and needs `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` in the user's environment, the windows sdk's signtool, and microsoft's artifact signing client tools; `-NoSign` skips it. there is no installer yet: the folder is the install. macos builds will be signed on tec-mba with the owner's personal developer id for now.
+
+`THIRD-PARTY-NOTICES.txt` in the folder is what the build owes the code of others in it: every crate compiled into the program with its license text, ffmpeg (its version, its source, and how to put other libraries in place of ours) and the two typefaces. `scripts\notices.ps1` writes it from `Cargo.lock`, the crates' own source in the cargo registry and the ffmpeg libraries; the package step runs it, and it runs alone too. `scripts\notices.ps1 -Check` fails, naming the crate, when a crate's license is not on the allow list at the top of the script. today it names ffmpeg-sys-next, which is wtfpl.
 
 ## the gates (phase 0)
 
