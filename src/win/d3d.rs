@@ -30,10 +30,17 @@ pub struct Constants {
     pub scale_offset: [f32; 4],
     /// cr to r, cb to g, cr to g, cb to b
     pub matrix: [f32; 4],
+    /// from a texel of the picture as shown to the file's texel (`view::Look::to_source`): a matrix, row by row,
+    /// and what is added after it
+    pub to_source: [f32; 4],
+    pub to_source_add: [f32; 2],
+    /// 0 shows the picture; 1, 2, 3 and 4 show red, green, blue or alpha alone
+    pub channel: f32,
+    pub unused: f32,
 }
 
 /// the hlsl for `Constants`, shared by every picture shader.
-pub const CONSTANTS_HLSL: &str = "cbuffer Constants : register(b0) { float2 origin; float2 texels_per_pixel; float2 size; float2 chroma_per_luma; float4 scale_offset; float4 matrix_; };";
+pub const CONSTANTS_HLSL: &str = "cbuffer Constants : register(b0) { float2 origin; float2 texels_per_pixel; float2 size; float2 chroma_per_luma; float4 scale_offset; float4 matrix_; float4 to_source; float2 to_source_add; float channel; float unused_; };";
 
 pub struct Gpu {
     pub device: ID3D11Device,
@@ -303,11 +310,11 @@ impl Gpu {
         }
     }
 
-    /// draws `ps` over the rectangle (x, y, w, h) of the window, reading `views`. the placement fields of `constants`
-    /// are filled in here; `size` is the picture in texels.
-    pub fn draw(&self, ps: &ID3D11PixelShader, views: &[Option<ID3D11ShaderResourceView>], rect: (f32, f32, f32, f32), size: (f32, f32), mut constants: Constants) {
+    /// draws `ps` over the rectangle (x, y, w, h) of the target, reading `views`. `shown` is the picture's size in
+    /// texels as it is shown (a quarter turn swaps its sides); where it goes is filled into `constants` here.
+    pub fn draw(&self, ps: &ID3D11PixelShader, views: &[Option<ID3D11ShaderResourceView>], rect: (f32, f32, f32, f32), shown: (f32, f32), mut constants: Constants) {
         let (x, y, w, h) = rect;
-        (constants.origin, constants.texels_per_pixel, constants.size) = ([x, y], [size.0 / w, size.1 / h], [size.0, size.1]);
+        (constants.origin, constants.texels_per_pixel) = ([x, y], [shown.0 / w, shown.1 / h]);
         // direct3d takes a viewport only within about 32767 pixels of the corner, and a 4k picture at 16x is wider
         // than that. what is cut here is far off the target; the shader still places texels from the uncut rectangle
         let (left, top, right, bottom) = (x.max(-32768.0), y.max(-32768.0), (x + w).min(32767.0), (y + h).min(32767.0));
@@ -425,7 +432,7 @@ mod tests {
         order
             .iter()
             .map(|&frame| {
-                video.source.want(frame, false);
+                video.source.want(&[frame]);
                 match video.source.get(frame, Duration::from_secs(20)) {
                     Frame::Ready(picture) => luma(&picture, device, ctx, clip.width, clip.height),
                     Frame::Pending => panic!("{name}: frame {frame} never arrived"),

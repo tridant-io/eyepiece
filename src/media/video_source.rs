@@ -73,10 +73,9 @@ impl VideoLane {
         }
         let layout = first.layout()?;
         let hidden = samples.iter().filter(|s| s.hidden).count();
-        let frames = samples.len() - hidden;
         let mut loader = VideoLoader { input, decoder, samples, first_time: first.time(), step: step.max(1), next: Some(1), recent: VecDeque::new(), kept, hidden };
         loader.remember(0, Arc::new(first));
-        Ok(VideoLane { source: Source::start(frames, loader)?, layout })
+        Ok(VideoLane { source: Source::start(loader)?, layout })
     }
 }
 

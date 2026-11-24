@@ -1,5 +1,97 @@
-//! where the picture sits in the window: fitted, or zoomed about a point. pure arithmetic, following the design's
-//! prototype rule for rule. sizes are physical pixels: at 100% one video pixel is one pixel of the display.
+//! where the picture sits in the window (fitted, or zoomed about a point), how it is turned for the screen, and the
+//! lines drawn over it. pure arithmetic, following the design's prototype rule for rule. sizes are physical pixels:
+//! at 100% one video pixel is one pixel of the display.
+
+/// which of the picture's channels are shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Channel {
+    #[default]
+    Rgb,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+}
+
+/// how the picture is turned for the screen: mirrored, flipped, turned by quarters, one channel alone. it changes
+/// the view, never the file.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Look {
+    pub channel: Channel,
+    pub mirror: bool,
+    pub flip: bool,
+    /// quarter turns clockwise, 0 to 3
+    pub turns: u8,
+}
+
+impl Look {
+    /// the picture's size as shown: a quarter turn swaps its sides.
+    pub fn shown(&self, size: (usize, usize)) -> (usize, usize) {
+        if self.turns % 2 == 1 {
+            (size.1, size.0)
+        } else {
+            size
+        }
+    }
+
+    /// from a place in the picture as shown to the place in the file's picture: a 2 x 2 matrix, row by row, and what
+    /// is added after it. the file's picture is mirrored and flipped first and turned after (prototype `ofr`), so
+    /// this undoes the turn and then the mirror and flip.
+    pub fn to_source(self, size: (usize, usize)) -> ([f32; 4], [f32; 2]) {
+        let turn_back: [f32; 4] = match self.turns % 4 {
+            0 => [1.0, 0.0, 0.0, 1.0],
+            1 => [0.0, 1.0, -1.0, 0.0],
+            2 => [-1.0, 0.0, 0.0, -1.0],
+            _ => [0.0, -1.0, 1.0, 0.0],
+        };
+        let (x, y) = (if self.mirror { -1.0 } else { 1.0 }, if self.flip { -1.0 } else { 1.0 });
+        let m = [turn_back[0] * x, turn_back[1] * x, turn_back[2] * y, turn_back[3] * y];
+        // middles map to middles
+        let shown = self.shown(size);
+        let (from, to) = ((shown.0 as f32 / 2.0, shown.1 as f32 / 2.0), (size.0 as f32 / 2.0, size.1 as f32 / 2.0));
+        (m, [to.0 - (m[0] * from.0 + m[1] * from.1), to.1 - (m[2] * from.0 + m[3] * from.1)])
+    }
+
+    /// the file's pixel behind a pixel of the picture as shown.
+    pub fn source_pixel(&self, shown: (usize, usize), size: (usize, usize)) -> (usize, usize) {
+        let (m, add) = self.to_source(size);
+        let (x, y) = (shown.0 as f32 + 0.5, shown.1 as f32 + 0.5);
+        ((m[0] * x + m[1] * y + add[0]).floor() as usize, (m[2] * x + m[3] * y + add[1]).floor() as usize)
+    }
+
+    /// what the chip says, when the picture is not shown as the file has it: "mirrored · rotated 90° · red only".
+    pub fn label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.mirror {
+            parts.push("mirrored".to_string());
+        }
+        if self.flip {
+            parts.push("flipped".to_string());
+        }
+        if !self.turns.is_multiple_of(4) {
+            parts.push(format!("rotated {}°", self.turns as u32 % 4 * 90));
+        }
+        match self.channel {
+            Channel::Rgb => {}
+            Channel::Red => parts.push("red only".to_string()),
+            Channel::Green => parts.push("green only".to_string()),
+            Channel::Blue => parts.push("blue only".to_string()),
+            Channel::Alpha => parts.push("alpha only".to_string()),
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+/// the lines drawn over the picture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guides {
+    pub grid: bool,
+    /// center lines and circle
+    pub center: bool,
+    /// the grid's tile, in video pixels
+    pub tile: (u32, u32),
+    pub color: [u8; 3],
+}
 
 /// the stops shift + wheel walks through, with "fit" slotted in wherever it falls.
 pub const LADDER: [f32; 14] = [0.125, 0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0, 64.0];
@@ -31,9 +123,31 @@ impl Framing {
         self.zoom.unwrap_or_else(|| self.fit_scale(window))
     }
 
-    /// true when a zoom is set, rather than fit: a drag on the picture then pans it instead of moving the window.
+    /// true when a zoom is set, rather than fit.
     pub fn zoomed(&self) -> bool {
         self.zoom.is_some()
+    }
+
+    /// true when the picture is larger than the window either way: a drag on it then moves the picture, not the
+    /// window.
+    pub fn overflows(&self, window: (f32, f32)) -> bool {
+        let s = self.scale(window);
+        self.video.0 * s > window.0 + 0.5 || self.video.1 * s > window.1 + 0.5
+    }
+
+    /// where the middle of the window may be: a picture no larger than the window stays in the middle of it, and a
+    /// larger one moves until its edge meets the window's and no further.
+    fn held(&self, center: (f32, f32), window: (f32, f32)) -> (f32, f32) {
+        let s = self.scale(window);
+        let axis = |center: f32, video: f32, window: f32| {
+            let half = window / (2.0 * s);
+            if video * s <= window + 0.5 {
+                video / 2.0
+            } else {
+                center.clamp(half, video - half)
+            }
+        };
+        (axis(center.0, self.video.0, window.0), axis(center.1, self.video.1, window.1))
     }
 
     /// where the picture is drawn in the window: left, top, width, height. on whole display pixels, so that at a
@@ -41,7 +155,9 @@ impl Framing {
     pub fn rect(&self, window: (f32, f32)) -> (f32, f32, f32, f32) {
         let s = self.scale(window);
         let (w, h) = ((self.video.0 * s).round(), (self.video.1 * s).round());
-        ((window.0 / 2.0 - self.center.0 * s).round(), (window.1 / 2.0 - self.center.1 * s).round(), w, h)
+        // held again here: the window may have changed size since the picture was last moved
+        let center = self.held(self.center, window);
+        ((window.0 / 2.0 - center.0 * s).round(), (window.1 / 2.0 - center.1 * s).round(), w, h)
     }
 
     /// the video pixel under a point of the window, when there is one.
@@ -64,13 +180,10 @@ impl Framing {
         let (ax, ay) = at.map_or((0.0, 0.0), |p| (p.0 - window.0 / 2.0, p.1 - window.1 / 2.0));
         let under = (self.center.0 + ax / s0, self.center.1 + ay / s0);
         self.zoom = zoom.map(|z| z.clamp(LADDER[0], LADDER[LADDER.len() - 1])).filter(|z| (z - fit).abs() > NEAR);
-        match self.zoom {
-            Some(s1) => {
-                self.center = (under.0 - ax / s1, under.1 - ay / s1);
-                self.keep_in_reach();
-            }
+        self.center = match self.zoom {
+            Some(s1) => self.held((under.0 - ax / s1, under.1 - ay / s1), window),
             // fitted, the picture sits in the middle
-            None => self.center = (self.video.0 / 2.0, self.video.1 / 2.0),
+            None => (self.video.0 / 2.0, self.video.1 / 2.0),
         }
     }
 
@@ -99,16 +212,8 @@ impl Framing {
 
     /// moves the picture with the pointer, by this many display pixels.
     pub fn pan(&mut self, by: (f32, f32), window: (f32, f32)) {
-        if self.zoom.is_some() {
-            let s = self.scale(window);
-            self.center = (self.center.0 - by.0 / s, self.center.1 - by.1 / s);
-            self.keep_in_reach();
-        }
-    }
-
-    /// the picture can be pushed around until its edge reaches the middle of the window, and no further.
-    fn keep_in_reach(&mut self) {
-        self.center = (self.center.0.clamp(0.0, self.video.0), self.center.1.clamp(0.0, self.video.1));
+        let s = self.scale(window);
+        self.center = self.held((self.center.0 - by.0 / s, self.center.1 - by.1 / s), window);
     }
 
     /// what the bar says: "fit 43.2%", or "200%".
@@ -209,8 +314,34 @@ mod tests {
         f.pan((100.0, -40.0), WINDOW);
         assert_eq!((f.rect(WINDOW).0, f.rect(WINDOW).1), (x + 100.0, y - 40.0));
         f.pan((1e6, 1e6), WINDOW);
-        // pushed as far as it goes: the picture's corner sits at the middle of the window
-        assert_eq!((f.rect(WINDOW).0, f.rect(WINDOW).1), (960.0, 540.0));
+        // pushed as far as it goes: the picture's corner meets the window's
+        assert_eq!((f.rect(WINDOW).0, f.rect(WINDOW).1), (0.0, 0.0));
+        assert!(f.overflows(WINDOW));
+        // a picture smaller than the window stays in the middle of it, zoomed or not
+        let mut f = Framing::new((640, 360));
+        f.set_zoom(Some(2.0), Some((10.0, 10.0)), WINDOW);
+        f.pan((300.0, 300.0), WINDOW);
+        assert_eq!(f.rect(WINDOW), (320.0, 180.0, 1280.0, 720.0));
+        assert!(f.zoomed() && !f.overflows(WINDOW));
+    }
+
+    #[test]
+    fn a_turned_picture_reads_the_right_pixel_of_the_file() {
+        let size = (4, 2);
+        let straight = Look::default();
+        assert_eq!((straight.shown(size), straight.source_pixel((3, 1), size), straight.label()), (size, (3, 1), None));
+        // a quarter turn clockwise: the file's top left is shown at the top right
+        let turned = Look { turns: 1, ..Look::default() };
+        assert_eq!(turned.shown(size), (2, 4));
+        assert_eq!(turned.source_pixel((1, 0), size), (0, 0));
+        assert_eq!(turned.source_pixel((0, 3), size), (3, 1));
+        // mirrored: left and right change places
+        let mirrored = Look { mirror: true, ..Look::default() };
+        assert_eq!(mirrored.source_pixel((0, 1), size), (3, 1));
+        // mirrored first, then turned: the file's top right is shown at the top right
+        let both = Look { mirror: true, turns: 1, ..Look::default() };
+        assert_eq!(both.source_pixel((1, 0), size), (3, 0));
+        assert_eq!(Look { flip: true, turns: 3, channel: Channel::Red, ..Look::default() }.label().unwrap(), "flipped · rotated 270° · red only");
     }
 
     #[test]

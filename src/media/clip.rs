@@ -163,7 +163,7 @@ mod tests {
         let c = Clip::open(&media("hap_64.mov")).expect("open");
         let Lane::Hap(hap) = &c.lane else { panic!("not the hap lane") };
         for frame in [0, 2, 1] {
-            hap.source.want(frame, false);
+            hap.source.want(&[frame]);
             match hap.source.get(frame, Duration::from_secs(5)) {
                 Frame::Ready(blocks) => assert_eq!(blocks.len(), 64 / 4 * (64 / 4) * 8),
                 Frame::Pending => panic!("frame {frame} never arrived"),
@@ -189,7 +189,7 @@ mod tests {
         order
             .iter()
             .map(|&frame| {
-                video.source.want(frame, false);
+                video.source.want(&[frame]);
                 match video.source.get(frame, Duration::from_secs(10)) {
                     Frame::Ready(picture) => luma(&picture, c.width),
                     Frame::Pending => panic!("{name}: frame {frame} never arrived"),

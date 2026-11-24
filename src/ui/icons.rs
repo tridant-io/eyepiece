@@ -9,6 +9,9 @@ pub enum Icon {
     Next,
     Play,
     Pause,
+    Loop,
+    Guides,
+    Full,
 }
 
 /// the stroke the design gives every icon, in the icon's own units
@@ -34,6 +37,10 @@ pub fn draw(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     let fill = |points: &[(f32, f32)]| {
         painter.add(Shape::convex_polygon(points.iter().map(|&(x, y)| p(x, y)).collect(), color, Stroke::NONE));
     };
+    // a quarter of a circle as short lines, from one angle to another in degrees, clockwise on screen
+    let arc = |cx: f32, cy: f32, r: f32, from: f32, to: f32| -> Vec<(f32, f32)> {
+        (0..=6).map(|i| (from + (to - from) * i as f32 / 6.0).to_radians()).map(|a| (cx + r * a.cos(), cy + r * a.sin())).collect()
+    };
     match icon {
         Icon::Prev => {
             line(&[(5.0, 3.5), (5.0, 12.5)]);
@@ -47,6 +54,24 @@ pub fn draw(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Pause => {
             fill(&[(4.5, 3.0), (7.1, 3.0), (7.1, 13.0), (4.5, 13.0)]);
             fill(&[(8.9, 3.0), (11.5, 3.0), (11.5, 13.0), (8.9, 13.0)]);
+        }
+        Icon::Loop => {
+            line(&[&[(3.0, 7.5)][..], &arc(5.5, 7.0, 2.5, 180.0, 270.0), &[(13.0, 4.5)]].concat());
+            line(&[(11.0, 2.5), (13.0, 4.5), (11.0, 6.5)]);
+            line(&[&[(13.0, 8.5)][..], &arc(10.5, 9.0, 2.5, 0.0, 90.0), &[(3.0, 11.5)]].concat());
+            line(&[(5.0, 13.5), (3.0, 11.5), (5.0, 9.5)]);
+        }
+        Icon::Guides => {
+            painter.rect_stroke(egui::Rect::from_min_max(p(2.5, 2.5), p(13.5, 13.5)), 0.0, stroke, egui::StrokeKind::Middle);
+            painter.line_segment([p(8.0, 2.5), p(8.0, 13.5)], stroke);
+            painter.line_segment([p(2.5, 8.0), p(13.5, 8.0)], stroke);
+            painter.circle_stroke(p(8.0, 8.0), 2.7, stroke);
+        }
+        Icon::Full => {
+            line(&[(2.8, 6.0), (2.8, 2.8), (6.0, 2.8)]);
+            line(&[(10.0, 2.8), (13.2, 2.8), (13.2, 6.0)]);
+            line(&[(13.2, 10.0), (13.2, 13.2), (10.0, 13.2)]);
+            line(&[(6.0, 13.2), (2.8, 13.2), (2.8, 10.0)]);
         }
     }
 }

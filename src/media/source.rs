@@ -1,11 +1,9 @@
-//! frames on demand, for any kind of clip: a worker keeps the frame on screen and its neighbors ready, the render
-//! thread asks for the one it needs. what "loading a frame" means is the lane's own business (see `Loader`).
+//! frames on demand, for any kind of clip: a worker keeps ready the frames the render thread says it wants (the one
+//! on screen, and what comes next), and the render thread asks for the one it needs. what "loading a frame" means is
+//! the lane's own business (see `Loader`).
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-
-/// frames kept ready past the one on screen, in the direction of travel
-const AHEAD: usize = 4;
 
 pub enum Frame<T> {
     Ready(Arc<T>),
@@ -39,27 +37,11 @@ struct Shared<T> {
 }
 
 struct State<T> {
-    frame: usize,
-    playing: bool,
+    /// the frames to keep ready, most urgent first
+    want: Vec<usize>,
     ready: Vec<(usize, Arc<T>)>,
     failed: Vec<(usize, String)>,
     quit: bool,
-}
-
-/// the frames worth having ready, most urgent first: the one on screen, then what comes next while playing, or
-/// both neighbors while standing still, so a single step either way is already there.
-fn wanted(frame: usize, playing: bool, frames: usize) -> Vec<usize> {
-    if playing {
-        return (0..=AHEAD.min(frames - 1)).map(|i| (frame + i) % frames).collect();
-    }
-    let mut w = vec![frame];
-    if frame + 1 < frames {
-        w.push(frame + 1);
-    }
-    if frame > 0 {
-        w.push(frame - 1);
-    }
-    w
 }
 
 /// runs a step that reads an untrusted file. if it stops on something the parser did not foresee, that is this
@@ -69,20 +51,20 @@ pub fn guarded<T>(step: impl FnOnce() -> Result<T, String>) -> Result<T, String>
 }
 
 impl<T: Send + Sync + 'static> Source<T> {
-    /// starts the worker for a clip of `frames` frames.
-    pub fn start(frames: usize, loader: impl Loader<Item = T>) -> Result<Source<T>, String> {
-        let shared = Arc::new(Shared { state: Mutex::new(State { frame: 0, playing: false, ready: Vec::new(), failed: Vec::new(), quit: false }), wake: Condvar::new(), arrived: Condvar::new() });
+    /// starts the worker for a clip. it keeps frame 0 ready until told otherwise.
+    pub fn start(loader: impl Loader<Item = T>) -> Result<Source<T>, String> {
+        let shared = Arc::new(Shared { state: Mutex::new(State { want: vec![0], ready: Vec::new(), failed: Vec::new(), quit: false }), wake: Condvar::new(), arrived: Condvar::new() });
         let theirs = shared.clone();
-        let worker = std::thread::Builder::new().name("frames".into()).spawn(move || work(&theirs, frames.max(1), loader)).map_err(|e| e.to_string())?;
+        let worker = std::thread::Builder::new().name("frames".into()).spawn(move || work(&theirs, loader)).map_err(|e| e.to_string())?;
         Ok(Source { shared, worker: Some(worker) })
     }
 
-    /// tells the worker which frame is on screen and whether the clip is running, so it knows what to keep ready.
-    pub fn want(&self, frame: usize, playing: bool) {
+    /// tells the worker which frames to keep ready, most urgent first: the one on screen, then the ones that come
+    /// next (`play::Transport::ahead`). everything else is let go.
+    pub fn want(&self, frames: &[usize]) {
         let mut s = self.shared.state.lock().unwrap();
-        if s.frame != frame || s.playing != playing {
-            s.frame = frame;
-            s.playing = playing;
+        if s.want != frames {
+            s.want = frames.to_vec();
             self.shared.wake.notify_one();
         }
     }
@@ -114,7 +96,7 @@ impl<T> Drop for Source<T> {
     }
 }
 
-fn work<L: Loader>(shared: &Shared<L::Item>, frames: usize, mut loader: L) {
+fn work<L: Loader>(shared: &Shared<L::Item>, mut loader: L) {
     loop {
         let (missing, retired) = {
             let mut s = shared.state.lock().unwrap();
@@ -122,7 +104,7 @@ fn work<L: Loader>(shared: &Shared<L::Item>, frames: usize, mut loader: L) {
                 if s.quit {
                     return;
                 }
-                let want = wanted(s.frame, s.playing, frames);
+                let want = s.want.clone();
                 // let go of what is no longer near. what nobody else still holds goes back to the lane
                 let (mut retired, mut i) = (Vec::new(), 0);
                 while i < s.ready.len() {
@@ -146,7 +128,7 @@ fn work<L: Loader>(shared: &Shared<L::Item>, frames: usize, mut loader: L) {
         let Some(frame) = missing else { continue };
         let abandoned = || {
             let s = shared.state.lock().unwrap();
-            s.quit || !wanted(s.frame, s.playing, frames).contains(&frame)
+            s.quit || !s.want.contains(&frame)
         };
         let result = guarded(|| loader.load(frame, &abandoned));
         let mut s = shared.state.lock().unwrap();
@@ -163,20 +145,6 @@ fn work<L: Loader>(shared: &Shared<L::Item>, frames: usize, mut loader: L) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn standing_still_keeps_both_neighbors() {
-        assert_eq!(wanted(5, false, 10), [5, 6, 4]);
-        assert_eq!(wanted(0, false, 10), [0, 1]);
-        assert_eq!(wanted(9, false, 10), [9, 8]);
-        assert_eq!(wanted(0, false, 1), [0]);
-    }
-
-    #[test]
-    fn playing_looks_ahead_and_goes_round() {
-        assert_eq!(wanted(8, true, 10), [8, 9, 0, 1, 2]);
-        assert_eq!(wanted(1, true, 3), [1, 2, 0]);
-    }
-
     /// a lane whose frames are just their own numbers, and which breaks on frame 3.
     struct Numbers;
     impl Loader for Numbers {
@@ -192,9 +160,9 @@ mod tests {
 
     #[test]
     fn frames_arrive_and_faults_are_reported_not_fatal() {
-        let source = Source::start(10, Numbers).unwrap();
+        let source = Source::start(Numbers).unwrap();
         let get = |frame| {
-            source.want(frame, false);
+            source.want(&[frame]);
             source.get(frame, Duration::from_secs(5))
         };
         assert!(matches!(get(2), Frame::Ready(n) if *n == 20));

@@ -3,9 +3,12 @@
 //! was asked for. one unit here is one of the design's pixels; the display's scale turns it into physical pixels.
 
 mod icons;
+mod menus;
 mod widgets;
 
 use crate::event::{Key, Mods};
+use crate::play::Loop;
+use crate::view::{Guides, Look};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 use icons::Icon;
@@ -41,7 +44,8 @@ const ICON_BUTTON: Vec2 = Vec2::new(30.0, 28.0);
 const TEXT_BUTTON: f32 = 28.0;
 const GAP: f32 = 2.0;
 const PAD: f32 = 8.0;
-const MENU: f32 = 268.0;
+/// under this width the bar's labels are shortened
+const NARROW: f32 = 760.0;
 /// the controls fade in and out over this long, and go away this long after the pointer stops
 const FADE: f32 = 0.14;
 const IDLE: f64 = 2.4;
@@ -67,16 +71,32 @@ pub struct Model<'a> {
     pub rate: Option<(i64, i64)>,
     /// why the frame on screen cannot be shown, when it cannot
     pub fault: Option<&'a str>,
+    pub looping: Loop,
+    /// loop analysis, while it is on: the place in its round and the round's length, in frames
+    pub seam: Option<(usize, usize)>,
+    /// the seconds each side of the seam loop analysis uses
+    pub seam_seconds: f64,
+    pub speed: f64,
+    /// negative in reverse, 0 when not shuttling
+    pub shuttle: i32,
     /// the zoom as the bar says it ("fit 43.2%", "200%"), as a number (display pixels for one video pixel), whether
     /// one is set rather than fit, and whether it is a whole multiple
     pub zoom_label: String,
     pub zoom: f32,
     pub zoomed: bool,
     pub exact: bool,
-    /// the video pixel under the pointer, and the red, green and blue the screen is sent for it, on the scale of the
-    /// file's bit depth
+    /// the picture is larger than the window: a drag on it moves it, not the window
+    pub overflows: bool,
+    /// the file's pixel under the pointer, and the red, green and blue the screen is sent for it, on the scale of
+    /// the file's bit depth
     pub pixel: Option<(usize, usize)>,
     pub value: Option<[u32; 3]>,
+    /// where the picture is in the window, in physical pixels, and its size in video pixels as shown
+    pub picture: (f32, f32, f32, f32),
+    pub shown_size: (usize, usize),
+    pub look: Look,
+    pub guides: Guides,
+    pub fullscreen: bool,
 }
 
 /// what the user asked for through the controls.
@@ -85,12 +105,21 @@ pub enum Action {
     TogglePlay,
     Step(i64),
     Seek(usize),
+    /// loop analysis: to this place in its round
+    SeekPlace(usize),
+    Loop(Loop),
+    /// loop analysis on, with this many seconds each side of the seam, or off
+    Seam(Option<f64>),
+    Speed(f64),
     /// fit (None), or this many display pixels for one video pixel, about the middle of the window
     Zoom(Option<f32>),
     /// the double click on the picture, at this place in physical pixels: between fit and the last zoom
     ToggleFit((f32, f32)),
     /// the picture, dragged by this many physical pixels
     Pan((f32, f32)),
+    Look(Look),
+    Guides(Guides),
+    Fullscreen,
     /// the window: move it with the pointer, whose button is down; minimize; maximize or put back; close
     MoveWindow,
     Minimize,
@@ -108,12 +137,17 @@ pub struct Output {
     /// when the controls want drawing again with nothing new from the window: an animation is running, or the
     /// controls are due to fade. None when they are at rest.
     pub again: Option<Duration>,
+    /// the strip and the bar are up
+    pub shown: bool,
 }
 
 /// the menus that open over the bar
 #[derive(Clone, Copy, PartialEq)]
 enum Menu {
+    Loop,
+    Speed,
     Zoom,
+    View,
 }
 
 pub struct Ui {
@@ -138,12 +172,10 @@ pub struct Ui {
     menu: Option<Menu>,
     menu_rect: Rect,
     menu_button: Rect,
-    /// what is typed in the zoom menu's field
-    zoom_text: String,
 }
 
 impl Ui {
-    pub fn new(size: (u32, u32), scale: f32) -> Ui {
+    pub fn new(size: (u32, u32), scale: f32, timecode: bool) -> Ui {
         let ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::empty();
         let files: [(&str, &'static [u8]); 4] = [
@@ -177,11 +209,10 @@ impl Ui {
             awake_until: 0.0,
             chip_until: 0.0,
             view_changed: false,
-            timecode: false,
+            timecode,
             menu: None,
             menu_rect: Rect::NOTHING,
             menu_button: Rect::NOTHING,
-            zoom_text: String::new(),
         }
     }
 
@@ -261,6 +292,10 @@ impl Ui {
         self.timecode = !self.timecode;
     }
 
+    pub fn timecode(&self) -> bool {
+        self.timecode
+    }
+
     /// one pass: takes what the window reported since the last one, lays out and draws the controls.
     pub fn run(&mut self, model: &Model) -> Output {
         let now = self.started.elapsed().as_secs_f64();
@@ -272,23 +307,23 @@ impl Ui {
         let out = ctx.run_ui(raw, |ui| self.draw(ui, model, now, &mut actions));
         let again = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < Duration::from_secs(3600));
         self.moved = false;
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let full = ui.max_rect();
         // the picture, under everything else. a plain click on it shows or hides the controls. a drag moves the
-        // window when the whole frame is in view, and the picture when it is zoomed. a double click goes between
-        // fit and the last zoom
+        // window while the whole frame is in view, and the picture when it is larger than the window. a double click
+        // goes between fit and the last zoom
         let picture = ui.interact(full, ui.scope_id().with("picture"), Sense::click_and_drag());
-        if model.zoomed {
+        if model.overflows {
             if picture.dragged_by(egui::PointerButton::Primary) {
                 let by = picture.drag_delta() * self.scale;
                 if by != Vec2::ZERO {
                     actions.push(Action::Pan((by.x, by.y)));
                 }
             }
-        } else if picture.drag_started_by(egui::PointerButton::Primary) {
+        } else if picture.drag_started_by(egui::PointerButton::Primary) && !model.fullscreen {
             actions.push(Action::MoveWindow);
         }
         if picture.double_clicked() {
@@ -336,10 +371,16 @@ impl Ui {
         }
         let alpha = ui.ctx().animate_bool_with_time(ui.scope_id().with("chrome"), self.shown, FADE);
 
-        // what states the view sits under the strip when it is up, as in the design
-        let top = full.top() + 10.0 + STRIP * alpha;
+        self.guides(ui, model);
+        // what states the view sits under the strip when it is up, as in the design: a fault across the top, then
+        // loop analysis, speed and the look from the left, and the zoom at the right
+        let mut top = full.top() + 10.0 + STRIP * alpha;
         if let Some(why) = model.fault {
-            banner(ui, Pos2::new(full.left() + 10.0, top), full.width() - 20.0, &format!("this frame cannot be shown: {why}"));
+            top = banner(ui, Pos2::new(full.left() + 10.0, top), full.width() - 20.0, &format!("this frame cannot be shown: {why}")).bottom() + 8.0;
+        }
+        let mut left = full.left() + 10.0;
+        for parts in [seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)])].into_iter().flatten() {
+            left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0).right() + 8.0;
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
 
@@ -349,8 +390,51 @@ impl Ui {
         ui.set_opacity(alpha);
         self.strip(ui, strip, model, actions);
         self.bar(ui, bar, model, actions);
-        if self.menu == Some(Menu::Zoom) {
-            self.zoom_menu(ui, bar, model, alpha, actions);
+        if let Some(menu) = self.menu {
+            // the design stands a menu 7 above the bar, its right edge 4 past its button's, and 8 in from the window's
+            let corner = Pos2::new((self.menu_button.right() + 4.0).min(bar.right() - 8.0), bar.top() - 7.0);
+            self.menu_rect = menus::show(ui, menu, corner, alpha, model, actions);
+            // what a menu changes about the view is said by the chip
+            self.view_changed |= actions.iter().any(|a| matches!(a, Action::Zoom(_)));
+        }
+    }
+
+    /// the lines over the picture: the grid of tiles, the center lines and circle. one display pixel wide at 100%.
+    fn guides(&self, ui: &egui::Ui, model: &Model) {
+        let guides = model.guides;
+        if !guides.grid && !guides.center {
+            return;
+        }
+        let (x, y, w, h) = model.picture;
+        let (video_w, video_h) = (model.shown_size.0 as f32, model.shown_size.1 as f32);
+        let unit = 1.0 / self.scale;
+        let width = self.scale.round().max(1.0);
+        let color = Color32::from_rgb(guides.color[0], guides.color[1], guides.color[2]);
+        let painter = ui.painter().with_clip_rect(Rect::from_min_size(Pos2::new(x * unit, y * unit), Vec2::new(w * unit, h * unit)));
+        // a filled rectangle given in physical pixels
+        let fill = |x: f32, y: f32, w: f32, h: f32, color: Color32| painter.rect_filled(Rect::from_min_size(Pos2::new(x * unit, y * unit), Vec2::new(w * unit, h * unit)), 0.0, color);
+        let (across, down) = (|v: f32| (x + v * w / video_w).round(), |v: f32| (y + v * h / video_h).round());
+        if guides.grid {
+            let faint = color.gamma_multiply(0.75);
+            // every tile's edge, and the picture's own far edge kept inside it
+            let (mut at, tile) = (0.0, (guides.tile.0.max(1) as f32, guides.tile.1.max(1) as f32));
+            while at <= video_w {
+                fill(across(at).min(across(video_w) - width), down(0.0), width, down(video_h) - down(0.0), faint);
+                at += tile.0;
+            }
+            at = 0.0;
+            while at <= video_h {
+                fill(across(0.0), down(at).min(down(video_h) - width), across(video_w) - across(0.0), width, faint);
+                at += tile.1;
+            }
+        }
+        if guides.center {
+            let half = (width / 2.0).floor();
+            fill(across(video_w / 2.0) - half, down(0.0), width, down(video_h) - down(0.0), color);
+            fill(across(0.0), down(video_h / 2.0) - half, across(video_w) - across(0.0), width, color);
+            let middle = Pos2::new((x + w / 2.0) * unit, (y + h / 2.0) * unit);
+            let radius = video_w.min(video_h) / 2.0 * w / video_w - width / 2.0;
+            painter.circle_stroke(middle, radius * unit, (width * unit, color));
         }
     }
 
@@ -374,16 +458,7 @@ impl Ui {
                 parts.push((format!("{r} {g} {b}"), FG));
             }
         }
-        let mut job = LayoutJob::default();
-        for (text, color) in parts {
-            job.append(&text, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.0), color: color.gamma_multiply(alpha), ..Default::default() });
-        }
-        let painter = ui.painter();
-        let galley = painter.layout_job(job);
-        let rect = Align2::RIGHT_TOP.anchor_size(right_top, galley.size() + Vec2::new(16.0, 12.0));
-        painter.rect_filled(rect, 0.0, CHIP.gamma_multiply(alpha));
-        painter.rect_stroke(rect, 0.0, (1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
-        painter.galley(rect.min + Vec2::new(8.0, 6.0), galley, FG);
+        chip(ui, right_top, Align2::RIGHT_TOP, &parts, alpha);
     }
 
     /// the strip along the top: the clip's tab, and the window's own buttons. it is the title bar: a drag on it
@@ -393,10 +468,12 @@ impl Ui {
         painter.rect_filled(strip, 0.0, BAR);
         painter.rect_filled(Rect::from_min_max(Pos2::new(strip.left(), strip.bottom() - 1.0), strip.max), 0.0, LINE);
         let grab = ui.interact(strip, ui.scope_id().with("strip"), Sense::click_and_drag());
-        if grab.double_clicked() {
-            actions.push(Action::ToggleMaximize);
-        } else if grab.drag_started_by(egui::PointerButton::Primary) {
-            actions.push(Action::MoveWindow);
+        if !model.fullscreen {
+            if grab.double_clicked() {
+                actions.push(Action::ToggleMaximize);
+            } else if grab.drag_started_by(egui::PointerButton::Primary) {
+                actions.push(Action::MoveWindow);
+            }
         }
 
         // the window's buttons, at the right: minimize, maximize, close. 10 x 10 marks in 40-wide buttons
@@ -425,7 +502,8 @@ impl Ui {
                 }
             }
             if response.clicked() {
-                actions.push(action);
+                // in fullscreen the middle button leaves it, which is what putting the window back means there
+                actions.push(if model.fullscreen && action == Action::ToggleMaximize { Action::Fullscreen } else { action });
             }
         }
 
@@ -448,6 +526,7 @@ impl Ui {
         // a press on the bar is not a press on the picture under it
         ui.interact(bar, ui.scope_id().with("bar"), Sense::click_and_drag());
         let row = Rect::from_min_size(Pos2::new(bar.left(), bar.top() + 1.0), Vec2::new(bar.width(), ROW));
+        let narrow = bar.width() < NARROW;
 
         // from the left: previous frame, play, next frame, the readout
         let mut x = row.left() + PAD;
@@ -457,23 +536,24 @@ impl Ui {
             x += lead + w + GAP;
             r
         };
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev) {
+        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No) {
             actions.push(Action::Step(-1));
         }
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }) {
+        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No) {
             actions.push(Action::TogglePlay);
         }
-        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next) {
+        if icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No) {
             actions.push(Action::Step(1));
         }
         // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
-        let galley = painter.layout_job(readout(model, self.timecode));
+        let galley = painter.layout_job(readout(model, self.timecode, narrow));
         let rect = place(8.0, galley.size().x + 2.0 * PAD, TEXT_BUTTON);
-        if text_button(ui, rect, "readout", galley, false) {
+        if text_button(ui, rect, "readout", None, galley, false) {
             self.toggle_timecode();
         }
 
-        // from the right, in the design's order (those not built yet leave no gap): the zoom, as a number
+        // from the right, in the design's order (those not built yet leave no gap): fullscreen, the view, and the
+        // three that say what they are set to: zoom, speed, loop
         let mut right = row.right() - PAD;
         let mut place = |w: f32, h: f32| {
             right -= w;
@@ -481,78 +561,77 @@ impl Ui {
             right -= GAP;
             r
         };
-        let galley = painter.layout_no_wrap(model.zoom_label.clone(), font(MONO_MEDIUM, 11.5), FG);
-        let rect = place(galley.size().x + 2.0 * PAD, TEXT_BUTTON);
-        if text_button(ui, rect, "zoom", galley, self.menu == Some(Menu::Zoom)) {
-            self.menu = if self.menu == Some(Menu::Zoom) { None } else { Some(Menu::Zoom) };
-            self.menu_button = rect;
-            self.zoom_text = percent(model.zoom);
+        if icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No) {
+            actions.push(Action::Fullscreen);
+        }
+        let turned = model.look != Look::default() || model.guides.grid || model.guides.center;
+        let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
+        let lit = if self.menu == Some(Menu::View) {
+            Lit::Open
+        } else if turned {
+            Lit::Active
+        } else {
+            Lit::No
+        };
+        if icon_button(ui, rect, "view", Icon::Guides, lit) {
+            self.toggle_menu(Menu::View, rect);
+        }
+        let speed = format!("{}×", (model.speed * 100.0).round() / 100.0);
+        let looping = match (model.seam, model.looping) {
+            (Some(_), _) if narrow => "analysis".to_string(),
+            (Some(_), _) => format!("analysis {:.1}s", model.seam_seconds),
+            (None, Loop::Off) => (if narrow { "off" } else { "loop off" }).to_string(),
+            (None, Loop::One) => (if narrow { "one" } else { "loop one" }).to_string(),
+        };
+        for (menu, name, icon, label) in [(Menu::Zoom, "zoom", None, model.zoom_label.clone()), (Menu::Speed, "speed", None, speed), (Menu::Loop, "loop", Some(Icon::Loop), looping)] {
+            let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
+            let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
+            if text_button(ui, rect, name, icon, galley, self.menu == Some(menu)) {
+                self.toggle_menu(menu, rect);
+            }
         }
 
         self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), row.bottom()), bar.max), model, actions);
     }
 
-    /// the zoom menu: the stops, a long slider, and a field to type into.
-    fn zoom_menu(&mut self, ui: &mut egui::Ui, bar: Rect, model: &Model, alpha: f32, actions: &mut Vec<Action>) {
-        let anchor = Pos2::new((self.menu_button.center().x - MENU / 2.0).clamp(bar.left() + 6.0, bar.right() - MENU - 6.0), bar.top() - 7.0);
-        let shown = widgets::menu(ui, "zoom-menu", anchor, alpha, |ui| {
-            widgets::heading(ui, "zoom", &["0", "1", "2"]);
-            let stops: [(&str, Option<f32>); 5] = [("fit", None), ("1:1", Some(1.0)), ("2×", Some(2.0)), ("4×", Some(4.0)), ("8×", Some(8.0))];
-            let on = stops.iter().position(|(_, z)| match z {
-                None => !model.zoomed,
-                Some(z) => model.zoomed && (model.zoom - z).abs() < 1e-4,
-            });
-            let labels: Vec<&str> = stops.iter().map(|s| s.0).collect();
-            if let Some(i) = widgets::segments(ui, "zoom-stops", &labels, on) {
-                actions.push(Action::Zoom(stops[i].1));
-                self.zoom_text = stops[i].1.map_or_else(String::new, percent);
-            }
-            // the slider runs from 12.5% to 6400%, evenly in doublings
-            let (low, high) = (crate::view::LADDER[0], crate::view::LADDER[crate::view::LADDER.len() - 1]);
-            let at = ((model.zoom / low).ln() / (high / low).ln()).clamp(0.0, 1.0);
-            let typing = widgets::slider_and_field(ui, "zoom-slider", at, &mut self.zoom_text, "%");
-            if let Some(t) = typing.slid {
-                let zoom = low * (high / low).powf(t);
-                actions.push(Action::Zoom(Some(zoom)));
-                self.zoom_text = percent(zoom);
-            } else if typing.entered {
-                if let Ok(p) = self.zoom_text.trim().trim_end_matches('%').parse::<f32>() {
-                    actions.push(Action::Zoom(Some((p / 100.0).clamp(low, high))));
-                }
-            } else if !typing.focused {
-                self.zoom_text = percent(model.zoom);
-            }
-            widgets::note(ui, "100% is one video pixel on one display pixel. from there up, pixels are drawn as squares with no smoothing.");
-        });
-        self.menu_rect = shown;
-        self.view_changed |= !actions.is_empty();
+    /// opens a menu over its button, or closes it when it is the one open.
+    fn toggle_menu(&mut self, menu: Menu, button: Rect) {
+        self.menu = (self.menu != Some(menu)).then_some(menu);
+        self.menu_button = button;
     }
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
+    /// in loop analysis it is the round: the clip's last seconds, the seam marked in the middle, its first seconds.
     fn timebar(&mut self, ui: &mut egui::Ui, area: Rect, model: &Model, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
         let response = ui.interact(area, ui.scope_id().with("timebar"), Sense::click_and_drag());
-        let last = model.frames.saturating_sub(1).max(1) as f32;
-        let frame_at = |x: f32| (((x - area.left()) / area.width()).clamp(0.0, 1.0) * last).round() as usize;
+        let (at, last) = match model.seam {
+            Some((place, length)) => (place, length.saturating_sub(1).max(1) as f32),
+            None => (model.frame, model.frames.saturating_sub(1).max(1) as f32),
+        };
+        let stop_at = |x: f32| (((x - area.left()) / area.width()).clamp(0.0, 1.0) * last).round() as usize;
         let scrubbing = response.is_pointer_button_down_on();
         let thick = ui.ctx().animate_bool_with_time(ui.scope_id().with("thick"), response.hovered() || scrubbing, 0.1);
         let height = TRACK_THIN + (TRACK_THICK - TRACK_THIN) * thick;
         let track = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - height), area.max);
-        let head = area.left() + area.width() * (model.frame as f32 / last).min(1.0);
+        let head = area.left() + area.width() * (at as f32 / last).min(1.0);
         painter.rect_filled(track, 0.0, TRACK);
         painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(head, track.bottom())), 0.0, FILL);
+        if model.seam.is_some() {
+            painter.rect_filled(Rect::from_min_max(Pos2::new(area.center().x - 0.5, track.top() - 9.0), Pos2::new(area.center().x + 0.5, track.bottom())), 0.0, Color32::WHITE);
+        }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
 
         // a drag follows the pointer; a click goes there too, even one that came and went within a single pass
         if let Some(p) = response.interact_pointer_pos().filter(|_| scrubbing || response.clicked()) {
-            let to = frame_at(p.x);
-            if to != model.frame {
-                actions.push(Action::Seek(to));
+            let to = stop_at(p.x);
+            if to != at {
+                actions.push(if model.seam.is_some() { Action::SeekPlace(to) } else { Action::Seek(to) });
             }
         }
         // the frame under the pointer, by number. (its picture comes with the timebar preview.)
-        if let Some(p) = response.hover_pos() {
-            let galley = painter.layout_no_wrap(format!("{:06}", frame_at(p.x)), font(MONO_MEDIUM, 10.5), FG);
+        if let Some(p) = response.hover_pos().filter(|_| model.seam.is_none()) {
+            let galley = painter.layout_no_wrap(format!("{:06}", stop_at(p.x)), font(MONO_MEDIUM, 10.5), FG);
             let size = galley.size() + Vec2::new(16.0, 10.0);
             let left = (p.x - size.x / 2.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0);
             let rect = Rect::from_min_size(Pos2::new(left, area.top() - ROW - 8.0 - size.y), size);
@@ -563,54 +642,95 @@ impl Ui {
     }
 }
 
-/// a zoom as the field shows it: "200", "35.4".
-fn percent(zoom: f32) -> String {
-    let p = zoom * 100.0;
-    if zoom >= 1.0 { format!("{}", p.round()) } else { format!("{}", (p * 10.0).round() / 10.0) }
+/// what the loop analysis chip says, while it is on.
+fn seam_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
+    let seconds = model.seam_seconds;
+    model.seam.map(|_| vec![("loop analysis".to_string(), FG), (format!(" · last {seconds:.1} s "), FG), ("→".to_string(), DIM), (format!(" first {seconds:.1} s"), FG)])
+}
+
+/// what the speed chip says, when the clip is not running at its own rate: "2× speed", "−4× reverse".
+fn speed_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
+    let number = |rate: f64| format!("{}× ", (rate * 100.0).round() / 100.0);
+    if model.shuttle != 0 && (model.shuttle != 1 || model.speed != 1.0) {
+        let sign = if model.shuttle < 0 { "−" } else { "" };
+        return Some(vec![(format!("{sign}{}", number(model.shuttle.abs() as f64)), FG), ((if model.shuttle < 0 { "reverse" } else { "shuttle" }).to_string(), DIM)]);
+    }
+    (model.speed != 1.0).then(|| vec![(number(model.speed), FG), ("speed".to_string(), DIM)])
+}
+
+/// a chip: a few words in a dark box, placed by one of its corners. returns the box.
+fn chip(ui: &egui::Ui, corner: Pos2, anchor: Align2, parts: &[(String, Color32)], alpha: f32) -> Rect {
+    let mut job = LayoutJob::default();
+    for (text, color) in parts {
+        job.append(text, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.0), color: color.gamma_multiply(alpha), ..Default::default() });
+    }
+    let painter = ui.painter();
+    let galley = painter.layout_job(job);
+    let rect = anchor.anchor_size(corner, galley.size() + Vec2::new(16.0, 12.0));
+    painter.rect_filled(rect, 0.0, CHIP.gamma_multiply(alpha));
+    painter.rect_stroke(rect, 0.0, (1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+    painter.galley(rect.min + Vec2::new(8.0, 6.0), galley, FG);
+    rect
+}
+
+/// how a button on the bar is lit: not, because its menu is open, or because what it sets is on
+#[derive(Clone, Copy, PartialEq)]
+enum Lit {
+    No,
+    Open,
+    Active,
 }
 
 /// a 30 x 28 button holding one icon. true when clicked.
-fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon) -> bool {
+fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) -> bool {
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
-    if response.is_pointer_button_down_on() {
+    if response.is_pointer_button_down_on() || lit == Lit::Active {
         ui.painter().rect_filled(rect, 3.0, PRESSED);
-    } else if response.hovered() {
+    } else if response.hovered() || lit == Lit::Open {
         ui.painter().rect_filled(rect, 3.0, HOVER);
     }
     icons::draw(ui.painter(), rect, icon, FG);
     response.clicked()
 }
 
-/// a 28-high button holding text, lit while its menu is open. true when clicked.
-fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, galley: Arc<egui::Galley>, open: bool) -> bool {
+/// a 28-high button holding text, with an icon before it or none, lit while its menu is open. true when clicked.
+fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, galley: Arc<egui::Galley>, open: bool) -> bool {
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
     if response.hovered() || open {
         ui.painter().rect_filled(rect, 3.0, HOVER);
     }
-    ui.painter().galley(Pos2::new(rect.left() + PAD, rect.center().y - galley.size().y / 2.0), galley, FG);
+    let mut left = rect.left() + PAD;
+    if let Some(icon) = icon {
+        icons::draw(ui.painter(), Rect::from_min_size(Pos2::new(left, rect.center().y - 8.0), Vec2::splat(16.0)), icon, FG);
+        left += 16.0 + 6.0;
+    }
+    ui.painter().galley(Pos2::new(left, rect.center().y - galley.size().y / 2.0), galley, FG);
     response.clicked()
 }
 
 /// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and the total in dim.
-fn readout(model: &Model, timecode: bool) -> LayoutJob {
+/// on a narrow bar the timecode's total is left out.
+fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
     let fps = model.rate.map(|(n, d)| (n as f64 / d as f64).round() as usize).filter(|f| *f > 0);
     let (label, at, total) = match fps.filter(|_| timecode) {
         Some(fps) => {
             let tc = |f: usize| format!("{:02}:{:02}:{:02}:{:02}", f / fps / 3600, f / fps / 60 % 60, f / fps % 60, f % fps);
-            ("TC", tc(model.frame), tc(model.frames))
+            ("TC", tc(model.frame), (!narrow).then(|| tc(model.frames)))
         }
-        None => ("F", format!("{:06}", model.frame), format!("{:06}", model.frames)),
+        None => ("F", format!("{:06}", model.frame), Some(format!("{:06}", model.frames))),
     };
     let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
     let mut job = LayoutJob::default();
     job.append(label, 0.0, text(9.5, DIM, 9.5 * 0.12));
     job.append(&at, 2.0 + 7.0, text(11.5, FG, 11.5 * 0.02));
-    job.append(&format!(" / {total}"), 0.0, text(11.5, DIM, 11.5 * 0.02));
+    if let Some(total) = total {
+        job.append(&format!(" / {total}"), 0.0, text(11.5, DIM, 11.5 * 0.02));
+    }
     job
 }
 
-/// a line of trouble with the amber edge: the one place amber is used, for a fault in the file.
-fn banner(ui: &egui::Ui, at: Pos2, width: f32, text: &str) {
+/// a line of trouble with the amber edge: the one place amber is used, for a fault in the file. returns its box.
+fn banner(ui: &egui::Ui, at: Pos2, width: f32, text: &str) -> Rect {
     let painter = ui.painter();
     let galley = painter.layout(text.to_string(), font(MONO, 11.5), DIM, width - 24.0);
     let rect = Rect::from_min_size(at, galley.size() + Vec2::new(22.0, 16.0));
@@ -618,4 +738,5 @@ fn banner(ui: &egui::Ui, at: Pos2, width: f32, text: &str) {
     painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
     painter.rect_filled(Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())), 0.0, AMBER);
     painter.galley(rect.min + Vec2::new(12.0, 8.0), galley, DIM);
+    rect
 }

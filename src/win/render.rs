@@ -10,28 +10,46 @@ use crate::media::color;
 use crate::media::dec::{Layout, Picture};
 use crate::media::hap::Tex;
 use crate::media::source::Frame;
-use crate::play::Transport;
+use crate::play::{Loop, Show, Transport};
+use crate::settings::{self, Settings};
 use crate::ui::{Action, Model, Ui};
-use crate::view::Framing;
+use crate::view::{Channel, Framing, Guides, Look};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct3D11::{ID3D11PixelShader, ID3D11ShaderResourceView, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::*;
 
-/// every picture shader ends with this. the lane's own code in front of it defines `texel`, one source texel as rgb.
-/// at 100% and above every screen pixel is one texel, read by integer address: no filter. below 100% the four nearest
-/// texels are converted first and then blended, because stored samples cannot be blended before they are converted.
+/// every picture shader ends with this. the lane's own code in front of it defines `texel`, one of the file's texels
+/// as red, green, blue and alpha. `shown` is a texel of the picture as it is shown: mirrored, flipped and turned.
+/// at 100% and above every screen pixel is one texel, read by integer address: no filter. from ten screen pixels a
+/// texel, a dark line marks each texel's edge. below 100% the four nearest texels are converted first and then
+/// blended, because stored samples cannot be blended before they are converted.
 const MAIN: &str = "
+float4 shown(int2 p) {
+    float2 c = p + 0.5;
+    return texel(int2(floor(float2(dot(to_source.xy, c), dot(to_source.zw, c)) + to_source_add)));
+}
 float4 main(float4 pos : SV_Position) : SV_Target {
     float2 at = (pos.xy - origin) * texels_per_pixel;
-    if (texels_per_pixel.x <= 1.0) return float4(texel(int2(at)), 1);
-    float2 f = at - 0.5;
-    int2 p = int2(floor(f));
-    float2 w = f - floor(f);
-    float3 top = lerp(texel(p), texel(p + int2(1, 0)), w.x);
-    float3 bottom = lerp(texel(p + int2(0, 1)), texel(p + int2(1, 1)), w.x);
-    return float4(lerp(top, bottom, w.y), 1);
+    float4 c;
+    if (texels_per_pixel.x <= 1.0) {
+        c = shown(int2(at));
+        float2 into = frac(at) / texels_per_pixel;
+        if (texels_per_pixel.x <= 0.1 && (into.x < 1.0 || into.y < 1.0)) c.rgb *= 0.58;
+    } else {
+        float2 f = at - 0.5;
+        int2 p = int2(floor(f));
+        float2 w = f - floor(f);
+        float4 top = lerp(shown(p), shown(p + int2(1, 0)), w.x);
+        float4 bottom = lerp(shown(p + int2(0, 1)), shown(p + int2(1, 1)), w.x);
+        c = lerp(top, bottom, w.y);
+    }
+    if (channel == 1) c.rgb = float3(c.r, 0, 0);
+    if (channel == 2) c.rgb = float3(0, c.g, 0);
+    if (channel == 3) c.rgb = float3(0, 0, c.b);
+    if (channel == 4) c.rgb = c.aaa;
+    return c;
 }";
 
 /// hap: one block-compressed texture. `CONVERT` says what the variant stores.
@@ -43,7 +61,7 @@ float3 ycocg(float4 v) {
     float co = v.x / scale, cg = v.y / scale, y = v.w;
     return float3(y + co - cg, y + cg, y - co - cg);
 }
-float3 texel(int2 p) { return CONVERT(t.Load(int3(clamp(p, int2(0, 0), int2(size) - 1), 0))); }";
+float4 texel(int2 p) { return CONVERT(t.Load(int3(clamp(p, int2(0, 0), int2(size) - 1), 0))); }";
 
 /// y'cbcr pictures, from a hardware decoder's surface (luma plane and a plane of chroma pairs, one slice of an array)
 /// or from three planes in ordinary memory. the numbers come from `media::color`. chroma is the nearest sample for
@@ -61,11 +79,11 @@ Texture2D<float> tv : register(t2);
 float luma(int2 p) { return ty.Load(int3(p, 0)); }
 float2 chroma(int2 p) { return float2(tu.Load(int3(p, 0)), tv.Load(int3(p, 0))); }
 #endif
-float3 texel(int2 p) {
+float4 texel(int2 p) {
     p = clamp(p, int2(0, 0), int2(size) - 1);
     float y = luma(p) * scale_offset.x + scale_offset.y;
     float2 c = chroma(int2(p * chroma_per_luma)) * scale_offset.z + scale_offset.w;
-    return float3(y + matrix_.x * c.y, y + matrix_.y * c.x + matrix_.z * c.y, y + matrix_.w * c.x);
+    return float4(y + matrix_.x * c.y, y + matrix_.y * c.x + matrix_.z * c.y, y + matrix_.w * c.x, 1);
 }";
 
 /// where the current frame's samples are, for the shader.
@@ -98,6 +116,8 @@ struct View {
     unshowable: u64,
     /// where the picture sits in the window: fitted, or zoomed and panned
     framing: Framing,
+    /// how it is turned for the screen
+    look: Look,
     /// the last pixel read back for the zoom chip: the frame, the pixel, its red, green and blue
     probe: Option<(usize, (usize, usize), [u32; 3])>,
 }
@@ -121,10 +141,10 @@ impl View {
                     Tex::Bc6s => DXGI_FORMAT_BC6H_SF16,
                 };
                 let convert = match hap.tex {
-                    Tex::YCoCgBc3 => "ycocg(v)",
+                    Tex::YCoCgBc3 => "float4(ycocg(v), 1)",
                     // a lone alpha plane is shown as gray
-                    Tex::Bc4 => "v.rrr",
-                    _ => "v.rgb",
+                    Tex::Bc4 => "v.rrrr",
+                    _ => "v",
                 };
                 let (tex, view) = gpu.dynamic_texture(hap.padded.0 as u32, hap.padded.1 as u32, format).map_err(text)?;
                 (format!("#define CONVERT(v) {convert}\n{CONSTANTS_HLSL}\n{HAP}\n{MAIN}"), Painter::Blocks { tex, view }, Constants::default())
@@ -150,17 +170,19 @@ impl View {
             Lane::Waiting(_) => return Err("the clip did not start".into()),
         };
         let ps = gpu.pixel_shader(&source).map_err(text)?;
+        // the picture as the file has it: the look changes these two at each draw
+        let constants = Constants { size: [clip.width as f32, clip.height as f32], to_source: [1.0, 0.0, 0.0, 1.0], ..constants };
         let transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz);
         let framing = Framing::new((clip.width, clip.height));
-        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, probe: None })
+        Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None })
     }
 
     /// puts the transport's frame into the painter, waiting up to `patience` for it. true when the picture changed.
     fn load(&mut self, gpu: &Gpu, patience: Duration) -> bool {
-        let (frame, playing) = (self.transport.frame(), self.transport.playing());
+        let (frame, want) = (self.transport.frame(), self.transport.ahead());
         match &self.clip.lane {
-            Lane::Hap(hap) => hap.source.want(frame, playing),
-            Lane::Video(video) => video.source.want(frame, playing),
+            Lane::Hap(hap) => hap.source.want(&want),
+            Lane::Video(video) => video.source.want(&want),
             Lane::Waiting(_) => {}
         }
         if self.shown == Some(frame) {
@@ -232,14 +254,23 @@ impl View {
         })
     }
 
-    fn size(&self) -> (f32, f32) {
-        (self.clip.width as f32, self.clip.height as f32)
+    fn size(&self) -> (usize, usize) {
+        (self.clip.width, self.clip.height)
     }
 
+    /// the picture, turned as the look has it, where the framing puts it. nothing during the pause on black.
     fn draw(&self, gpu: &Gpu) {
-        if let Some(views) = self.views() {
-            gpu.draw(&self.ps, &views, self.framing.rect((gpu.w as f32, gpu.h as f32)), self.size(), self.constants);
-        }
+        let (Some(views), Show::Frame(_)) = (self.views(), self.transport.show()) else { return };
+        let (to_source, to_source_add) = self.look.to_source(self.size());
+        let channel = match self.look.channel {
+            Channel::Rgb => 0.0,
+            Channel::Red => 1.0,
+            Channel::Green => 2.0,
+            Channel::Blue => 3.0,
+            Channel::Alpha => 4.0,
+        };
+        let shown = self.look.shown(self.size());
+        gpu.draw(&self.ps, &views, self.framing.rect((gpu.w as f32, gpu.h as f32)), (shown.0 as f32, shown.1 as f32), Constants { to_source, to_source_add, channel, ..self.constants });
     }
 
     /// bits a sample: the top of the scale pixel values are given on.
@@ -261,11 +292,21 @@ impl View {
         self.probe = None;
         let (Some((frame, pixel)), Some(views)) = (wanted, self.views()) else { return false };
         let _lock = gpu.locked();
-        let read = gpu.read_pixels(1, 1, |gpu| gpu.draw(&self.ps, &views, (-(pixel.0 as f32), -(pixel.1 as f32), self.size().0, self.size().1), self.size(), self.constants));
+        let size = (self.clip.width as f32, self.clip.height as f32);
+        let read = gpu.read_pixels(1, 1, |gpu| gpu.draw(&self.ps, &views, (-(pixel.0 as f32), -(pixel.1 as f32), size.0, size.1), size, self.constants));
         let Ok(read) = read else { return false };
         let top = ((1u32 << self.depth()) - 1) as f32;
         self.probe = Some((frame, pixel, [0, 1, 2].map(|i| (read[i] as f32 / 65535.0 * top).round() as u32)));
         true
+    }
+
+    /// turns the picture another way. it then starts fitted again (prototype `orient`); one channel alone leaves
+    /// the zoom as it is.
+    fn set_look(&mut self, look: Look) {
+        if (look.mirror, look.flip, look.turns) != (self.look.mirror, self.look.flip, self.look.turns) {
+            self.framing = Framing::new(look.shown(self.size()));
+        }
+        self.look = look;
     }
 
     /// a key, for the clip. the place is the pointer's when it is over the picture. true when the key changed the view.
@@ -297,6 +338,15 @@ impl View {
             (Key::Right, true) => self.transport.step(10),
             (Key::F, true) | (Key::Home, _) => self.transport.go(0),
             (Key::G, true) | (Key::End, _) => self.transport.go(last),
+            (Key::J, _) => self.transport.shuttle(-1),
+            (Key::K, _) => self.transport.shuttle_stop(),
+            (Key::L, _) => self.transport.shuttle(1),
+            (Key::Minus, _) => self.transport.speed_step(-1),
+            (Key::Equals, _) => self.transport.speed_step(1),
+            (Key::Backspace, _) => self.transport.speed_reset(),
+            (Key::H, _) => self.set_look(Look { mirror: !self.look.mirror, ..self.look }),
+            (Key::V, _) => self.set_look(Look { flip: !self.look.flip, ..self.look }),
+            (Key::Q, _) => self.set_look(Look { turns: (self.look.turns + 1) % 4, ..self.look }),
             (Key::Digit0 | Key::Digit1 | Key::Digit2, _) => {
                 let zoom = match key {
                     Key::Digit0 => None,
@@ -311,8 +361,8 @@ impl View {
         false
     }
 
-    /// what the controls show. the pixel is the video pixel under the pointer, when the zoom chip is to name it.
-    fn model(&self, window: (f32, f32), pixel: Option<(usize, usize)>) -> Model<'_> {
+    /// what the controls show. the pixel is the file's pixel under the pointer, when the zoom chip is to name it.
+    fn model(&self, window: (f32, f32), pixel: Option<(usize, usize)>, settings: &Settings, fullscreen: bool) -> Model<'_> {
         Model {
             name: &self.clip.name,
             frame: self.transport.frame(),
@@ -320,17 +370,28 @@ impl View {
             playing: self.transport.playing(),
             rate: self.clip.timeline.rate(),
             fault: self.fault.as_deref(),
+            looping: self.transport.loop_mode(),
+            seam: self.transport.seam_place(),
+            seam_seconds: settings.loop_analysis_seconds as f64,
+            speed: self.transport.speed(),
+            shuttle: self.transport.shuttle_rate(),
             zoom_label: self.framing.label(window),
             zoom: self.framing.scale(window),
             zoomed: self.framing.zoomed(),
             exact: self.framing.exact(window),
+            overflows: self.framing.overflows(window),
             pixel,
             value: self.probe.filter(|(_, at, _)| Some(*at) == pixel).map(|(.., value)| value),
+            picture: self.framing.rect(window),
+            shown_size: self.look.shown(self.size()),
+            look: self.look,
+            guides: guides(settings),
+            fullscreen,
         }
     }
 
     /// what the window's title says: the taskbar and the tests read it.
-    fn title(&self, window: (f32, f32)) -> String {
+    fn title(&self, window: (f32, f32), settings: &Settings) -> String {
         let c = &self.clip;
         // the panel will have to admit whether the gpu or the cpu decodes; until then the title does
         let decoded = match &self.painter {
@@ -353,6 +414,23 @@ impl View {
         if self.waiting() {
             state += " · reading";
         }
+        // what is not as a clip opens: loop, speed, the look, the guides, the zoom
+        if self.transport.seam().is_some() {
+            state += " · loop analysis";
+        } else if self.transport.loop_mode() == Loop::Off {
+            state += " · loop off";
+        }
+        if self.transport.speed() != 1.0 {
+            state += &format!(" · {}×", self.transport.speed());
+        }
+        if let Some(look) = self.look.label() {
+            state += &format!(" · {look}");
+        }
+        for (on, name) in [(settings.grid, "grid"), (settings.center, "center")] {
+            if on {
+                state += &format!(" · {name}");
+            }
+        }
         if self.framing.zoomed() {
             state += &format!(" · {}", self.framing.label(window));
         }
@@ -365,14 +443,20 @@ impl View {
 
 /// puts a newly opened clip in the window, sized to it. a file that could not be opened leaves what was there and
 /// says why in the title.
-fn show(gpu: &Gpu, window: Handle, clip: Result<Clip, String>, hz: f64, current: &mut Option<View>) {
+fn show(gpu: &Gpu, window: Handle, clip: Result<Clip, String>, hz: f64, settings: &Settings, current: &mut Option<View>) {
     match clip.and_then(|clip| View::new(gpu, clip, hz)) {
-        Ok(view) => {
+        Ok(mut view) => {
             window::fit(window, window::client_for((view.clip.width, view.clip.height)));
+            view.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
             *current = Some(view);
         }
         Err(why) => window::set_title(window, &format!("eyepiece · {why}")),
     }
+}
+
+/// the guides as the settings have them.
+fn guides(settings: &Settings) -> Guides {
+    Guides { grid: settings.grid, center: settings.center, tile: settings.tile, color: settings.guide_color }
 }
 
 /// the pointer, when it is over the picture: between the strip and the bar, as in the design's prototype.
@@ -380,7 +464,16 @@ fn over_picture(pointer: Option<(f32, f32)>, window: (f32, f32), scale: f32) -> 
     pointer.filter(|p| p.1 > 34.0 * scale && p.1 < window.1 - 52.0 * scale)
 }
 
+/// runs the player until its window closes. what is kept between runs is read first and written back after.
 pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, String>>) {
+    let mut settings = Settings::load();
+    play(window, events, first, &mut settings);
+    if let Err(e) = settings.save() {
+        eprintln!("eyepiece: the settings were not saved: {e}");
+    }
+}
+
+fn play(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, String>>, settings: &mut Settings) {
     let (w, h) = window::client_size(window);
     // declared before the view on purpose: the view, and with it any decoder writing to this device, goes first
     let mut gpu = match Gpu::new(window.0, w, h) {
@@ -388,7 +481,7 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
         Err(e) => return window::set_title(window, &format!("eyepiece · no graphics device: {e}")),
     };
     let hz = window::refresh_rate();
-    let mut ui = Ui::new((w, h), window::scale(window));
+    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode);
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
@@ -398,8 +491,10 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
     let mut view: Option<View> = None;
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
+    // the picture area fills a display; the pointer is shown (it hides in fullscreen while the controls are away)
+    let (mut fullscreen, mut pointer_shown) = (false, true);
     if let Some(clip) = first {
-        show(&gpu, window, clip, hz, &mut view);
+        show(&gpu, window, clip, hz, settings, &mut view);
     }
     let (mut redraw, mut titled) = (true, None);
     loop {
@@ -450,7 +545,7 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                     pointer = None;
                     ui.pointer_leave();
                 }
-                Event::Open(path) => show(&gpu, window, Clip::open(&path), hz, &mut view),
+                Event::Open(path) => show(&gpu, window, Clip::open(&path), hz, settings, &mut view),
                 // a field being typed into takes the keys; escape closes it and its menu
                 Event::Key { key, mods } if ui.typing() => {
                     ui.key(key, mods);
@@ -458,10 +553,38 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                         ui.escape();
                     }
                 }
+                // escape leaves fullscreen first, then closes a menu
                 Event::Key { key: Key::Escape, .. } => {
-                    ui.escape();
+                    if fullscreen {
+                        fullscreen = false;
+                        window::set_fullscreen(window, false, false);
+                    } else {
+                        ui.escape();
+                    }
                 }
-                Event::Key { key: Key::T, mods } if !mods.ctrl && !mods.alt => ui.toggle_timecode(),
+                // the keys that are not one clip's: fullscreen (with shift, on the next display), the readout, the
+                // guides, the loop mode and loop analysis, which are kept between runs
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::P | Key::T | Key::D | Key::C | Key::R | Key::A) => match key {
+                    Key::P => {
+                        fullscreen = !fullscreen || mods.shift;
+                        window::set_fullscreen(window, fullscreen, mods.shift);
+                    }
+                    Key::T => ui.toggle_timecode(),
+                    Key::D => settings.grid = !settings.grid,
+                    Key::C => settings.center = !settings.center,
+                    Key::R => {
+                        // off, one, and round again; from loop analysis, back to plain looping
+                        settings.loop_file = if settings.loop_file == settings::Loop::Off || view.as_ref().is_some_and(|v| v.transport.seam().is_some()) { settings::Loop::One } else { settings::Loop::Off };
+                        if let Some(v) = &mut view {
+                            v.transport.set_loop(if settings.loop_file == settings::Loop::Off { Loop::Off } else { Loop::One });
+                        }
+                    }
+                    _ => {
+                        if let Some(v) = &mut view {
+                            v.transport.set_seam(v.transport.seam().is_none().then_some(settings.loop_analysis_seconds as f64));
+                        }
+                    }
+                },
                 Event::Key { key, mods } => {
                     if view.as_mut().is_some_and(|v| v.key(key, mods, over_picture(pointer, size, scale), size)) {
                         ui.view_changed();
@@ -494,17 +617,37 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
         // fetched, so a click and its picture are one refresh apart
         let size = (gpu.w as f32, gpu.h as f32);
         // the pixel the zoom chip names: the one under the pointer, while a zoom is set
-        let pixel_of = |v: &View| over_picture(pointer, size, scale).filter(|_| v.framing.zoomed()).and_then(|p| v.framing.pixel_at(p, size));
+        let pixel_of = |v: &View| over_picture(pointer, size, scale).filter(|_| v.framing.zoomed()).and_then(|p| v.framing.pixel_at(p, size)).map(|shown| v.look.source_pixel(shown, v.size()));
         let controls = view.as_mut().map(|v| {
-            let out = ui.run(&v.model(size, pixel_of(v)));
+            let out = ui.run(&v.model(size, pixel_of(v), settings, fullscreen));
+            settings.timecode = ui.timecode();
             for action in &out.actions {
                 match action {
                     Action::TogglePlay => v.transport.set_playing(!v.transport.playing()),
                     Action::Step(by) => v.transport.step(*by),
                     Action::Seek(frame) => v.transport.go(*frame as i64),
+                    Action::SeekPlace(place) => v.transport.go_place(*place),
+                    Action::Loop(mode) => {
+                        settings.loop_file = if *mode == Loop::Off { settings::Loop::Off } else { settings::Loop::One };
+                        v.transport.set_loop(*mode);
+                    }
+                    Action::Seam(seconds) => {
+                        v.transport.set_seam(*seconds);
+                        // the transport holds the seconds to what it takes: keep what it kept
+                        if let Some(kept) = v.transport.seam() {
+                            settings.loop_analysis_seconds = kept as f32;
+                        }
+                    }
+                    Action::Speed(speed) => v.transport.set_speed(*speed),
                     Action::Zoom(zoom) => v.framing.set_zoom(*zoom, None, size),
                     Action::ToggleFit(at) => v.framing.toggle_fit(Some(*at), size),
                     Action::Pan(by) => v.framing.pan(*by, size),
+                    Action::Look(look) => v.set_look(*look),
+                    Action::Guides(to) => (settings.grid, settings.center, settings.tile) = (to.grid, to.center, to.tile),
+                    Action::Fullscreen => {
+                        fullscreen = !fullscreen;
+                        window::set_fullscreen(window, fullscreen, false);
+                    }
                     Action::MoveWindow => window::begin_move(window),
                     Action::Minimize => window::minimize(window),
                     Action::ToggleMaximize => window::toggle_maximize(window),
@@ -531,6 +674,11 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
                 None => {}
             }
             again |= !out.actions.is_empty();
+            // fullscreen with the controls away is the frame and nothing else: no pointer either
+            if pointer_shown != (!fullscreen || out.shown) {
+                pointer_shown = !pointer_shown;
+                window::show_pointer(window, pointer_shown);
+            }
         }
 
         // a frame that is nearly there is worth a short wait: while playing, half a refresh, since showing the old
@@ -560,27 +708,34 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
             }
             let missed = gpu.present(playing, Duration::from_secs_f64(1.0 / hz));
             if let Some(v) = &mut view {
-                if playing {
+                // the pause on black between rounds of loop analysis shows no frame: nothing to be late with
+                let black = v.transport.show() == Show::Black;
+                if playing && !black {
                     v.late += missed as u64 + v.waiting() as u64;
                 }
-                // only a refresh that showed the frame it was due counts toward the next one
-                if !v.waiting() {
+                // only a refresh that showed what it was due counts toward the next one
+                if black || !v.waiting() {
                     v.transport.tick();
                 }
+                // play that ended by itself (looping off, at the clip's end) is one more look, for the controls and
+                // the title
+                again |= playing && !v.transport.playing();
             }
             redraw = false;
             // the title follows the frame while the clip stands still. it is left alone during play: redrawing a
             // title bar makes the compositor miss a refresh now and then
             if !playing {
-                let title = view.as_ref().map(|v| v.title(size));
+                let title = view.as_ref().map(|v| v.title(size, settings));
                 if title.is_some() && title != titled {
                     window::set_title(window, title.as_deref().unwrap());
                     titled = title;
                 }
             }
         }
-        if let Some(out) = &controls {
+        if let Some(mut out) = controls {
             ui_painter.free_textures(&out.textures);
+            // both halves are done with: egui checks that no change is dropped unseen
+            out.textures.clear();
         }
         redraw |= again;
     }

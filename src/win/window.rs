@@ -8,10 +8,10 @@ use crate::event::{Button, Event, Key, Mods};
 use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
-use windows::core::{w, Result, PCWSTR};
+use windows::core::{w, Result, BOOL, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
-use windows::Win32::Graphics::Gdi::{GetStockObject, ScreenToClient, BLACK_BRUSH, HBRUSH};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_RBUTTON};
@@ -29,12 +29,19 @@ const MIN_CLIENT: (i32, i32) = (640, 360);
 /// system's own invisible border outside the picture
 const TOP_GRIP: i32 = 5;
 
+/// the test seam's mark on a pointer message: a bit of the message's first parameter that windows itself never sets
+const POSTED: usize = 0x8000;
+
 /// our own messages, posted by the render thread: a new title is waiting in `TITLE`; move the window with the
 /// pointer; minimize; maximize or restore
 const WM_TITLE: u32 = WM_APP;
 const WM_BEGIN_MOVE: u32 = WM_APP + 1;
 const WM_MINIMIZE: u32 = WM_APP + 2;
 const WM_TOGGLE_MAXIMIZE: u32 = WM_APP + 3;
+/// fullscreen: 0 leaves it, 1 fills the display the window is on, 2 fills the next display
+const WM_FULLSCREEN: u32 = WM_APP + 4;
+/// the pointer over the picture: 1 shown, 0 hidden
+const WM_POINTER: u32 = WM_APP + 5;
 /// the title the render thread last asked for. one window a process, for now.
 static TITLE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -44,8 +51,12 @@ struct Shared {
     wheel: i32,
     /// windows has been asked to say when the pointer leaves
     tracking: bool,
-    /// the test seam: input is posted to the window, so the keyboard's real state says nothing about it
+    /// the test seam: input is posted to the window, marked as the tests' own, and the real pointer and keyboard
+    /// are not listened to
     posted: bool,
+    /// while fullscreen: where the window was, to put it back
+    restore: Option<WINDOWPLACEMENT>,
+    pointer_hidden: bool,
 }
 
 /// a window handle that may cross to the render thread: win32 lets any thread size, title and present to a window.
@@ -108,7 +119,7 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
         let posted_pointer = std::env::var_os("EYEPIECE_POSTED_POINTER").is_some();
         let (x, y, w, h) = outer(client);
         let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("eyepiece"), w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer })) as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, restore: None, pointer_hidden: false })) as isize);
         // square corners and no border line, so no pixel of the picture is covered (windows 11; ignored before it)
         let (square, no_color) = (1u32, 0xffff_fffeu32);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square as *const u32 as *const c_void, 4);
@@ -133,10 +144,19 @@ pub fn run() {
     }
 }
 
-/// resizes the window so its picture area is `client`, centered. for a newly opened clip.
+/// true while the window has its frame: not fullscreen.
+unsafe fn framed(hwnd: HWND) -> bool {
+    GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_THICKFRAME.0 != 0
+}
+
+/// resizes the window so its picture area is `client`, centered. for a newly opened clip. a fullscreen window
+/// stays as it is.
 pub fn fit(window: Handle, client: (u32, u32)) {
     let (x, y, w, h) = outer(client);
     unsafe {
+        if !framed(window.0) {
+            return;
+        }
         let _ = SetWindowPos(window.0, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
@@ -155,8 +175,12 @@ pub fn client_size(window: Handle) -> (u32, u32) {
 }
 
 fn post(window: Handle, message: u32) {
+    post_with(window, message, 0);
+}
+
+fn post_with(window: Handle, message: u32, value: usize) {
     unsafe {
-        let _ = PostMessageW(Some(window.0), message, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(Some(window.0), message, WPARAM(value), LPARAM(0));
     }
 }
 
@@ -184,6 +208,17 @@ pub fn toggle_maximize(window: Handle) {
 
 pub fn close(window: Handle) {
     post(window, WM_CLOSE);
+}
+
+/// fills a display with the picture area, or puts the window back as it was. `next_display` fills the display
+/// after the one the window is on, whether or not it is fullscreen already.
+pub fn set_fullscreen(window: Handle, on: bool, next_display: bool) {
+    post_with(window, WM_FULLSCREEN, if !on { 0 } else if next_display { 2 } else { 1 });
+}
+
+/// shows or hides the pointer while it is over the picture.
+pub fn show_pointer(window: Handle, shown: bool) {
+    post_with(window, WM_POINTER, shown as usize);
 }
 
 /// the rate the desktop is composed at, in Hz, as the system reports it. 60 if it will not say.
@@ -273,7 +308,7 @@ unsafe fn frame_without_top(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
 /// ours to give a grip, since the picture starts at it.
 unsafe fn hit(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let found = DefWindowProcW(hwnd, msg, wp, lp);
-    if found.0 != HTCLIENT as isize || IsZoomed(hwnd).as_bool() {
+    if found.0 != HTCLIENT as isize || IsZoomed(hwnd).as_bool() || !framed(hwnd) {
         return found;
     }
     let (x, y) = xy(lp);
@@ -291,6 +326,19 @@ unsafe fn hit(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     } else {
         HTTOP
     } as isize)
+}
+
+unsafe extern "system" fn list_display(display: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> BOOL {
+    (*(list.0 as *mut Vec<HMONITOR>)).push(display);
+    true.into()
+}
+
+/// the display after this one, in the system's order; this one when it is the only one.
+unsafe fn next_display(current: HMONITOR) -> HMONITOR {
+    let mut all: Vec<HMONITOR> = Vec::new();
+    let _ = EnumDisplayMonitors(None, None, Some(list_display), LPARAM(&mut all as *mut Vec<HMONITOR> as isize));
+    let at = all.iter().position(|d| *d == current).unwrap_or(0);
+    all.get((at + 1) % all.len().max(1)).copied().unwrap_or(current)
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -315,6 +363,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     let send = |e: Event| {
         let _ = (*shared).events.send(e);
     };
+    // under the test seam only the tests' own input counts, or a person moving the real pointer over the window
+    // would turn a test's click into a drag. theirs is marked: pointer messages carry `POSTED`, keys and typed
+    // characters carry no scan code
+    if (*shared).posted {
+        let theirs = match msg {
+            WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => wp.0 & POSTED != 0,
+            WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR => (lp.0 >> 16) & 0xff == 0,
+            _ => true,
+        };
+        if !theirs {
+            return LRESULT(0);
+        }
+    }
     match msg {
         WM_KEYDOWN => {
             if let Some(key) = key(wp.0 as u16) {
@@ -407,6 +468,44 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TOGGLE_MAXIMIZE => {
             let _ = ShowWindow(hwnd, if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE });
             LRESULT(0)
+        }
+        WM_FULLSCREEN if wp.0 == 0 => {
+            if let Some(placement) = (*shared).restore.take() {
+                SetWindowLongW(hwnd, GWL_STYLE, (STYLE | WS_VISIBLE).0 as i32);
+                let _ = SetWindowPlacement(hwnd, &placement);
+                let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
+            LRESULT(0)
+        }
+        WM_FULLSCREEN => {
+            let mut display = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if wp.0 == 2 {
+                display = next_display(display);
+            }
+            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(display, &mut info).as_bool() {
+                if (*shared).restore.is_none() {
+                    let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+                    let _ = GetWindowPlacement(hwnd, &mut placement);
+                    (*shared).restore = Some(placement);
+                    // no frame at all: the picture area is the whole display
+                    SetWindowLongW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as i32);
+                }
+                let r = info.rcMonitor;
+                let _ = SetWindowPos(hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+            }
+            LRESULT(0)
+        }
+        WM_POINTER => {
+            (*shared).pointer_hidden = wp.0 == 0;
+            // at once, not at the pointer's next move
+            SetCursor(if wp.0 == 0 { None } else { LoadCursorW(None, IDC_ARROW).ok() });
+            LRESULT(0)
+        }
+        // windows asks which pointer to show whenever it moves over the window
+        WM_SETCURSOR if (*shared).pointer_hidden && (lp.0 & 0xffff) as u32 == HTCLIENT => {
+            SetCursor(None);
+            LRESULT(1)
         }
         WM_DPICHANGED => {
             send(Event::Scale(((wp.0 >> 16) & 0xffff) as f32 / 96.0));

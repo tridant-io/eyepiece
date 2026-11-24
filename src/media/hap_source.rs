@@ -52,8 +52,7 @@ impl HapLane {
         if len != expect {
             return Err(format!("hap frame holds {len} bytes of texture, but {width} x {height} needs {expect}"));
         }
-        let frames = samples.len();
-        let source = Source::start(frames, HapLoader { file, samples, tex, expect, raw, spare: Vec::new() })?;
+        let source = Source::start(HapLoader { file, samples, tex, expect, raw, spare: Vec::new() })?;
         Ok(HapLane { source, tex, padded })
     }
 }
