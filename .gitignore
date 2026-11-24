@@ -2,3 +2,5 @@ target/
 spike/third_party/
 spike/media/
 *.log
+/third_party/
+/dist/

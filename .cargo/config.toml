@@ -1,0 +1,4 @@
+# where scripts\setup.ps1 puts the pinned ffmpeg and the libclang that reads its headers
+[env]
+FFMPEG_DIR = { value = "third_party/ffmpeg", relative = true }
+LIBCLANG_PATH = { value = "third_party/libclang", relative = true }
