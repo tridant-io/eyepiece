@@ -19,9 +19,10 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     if instance::handed_over(first.as_deref()) {
         return Ok(());
     }
+    Gpu::early();
     // the header is read before the window exists, so the window has the clip's shape from the start and never
-    // jumps. that takes a few milliseconds; the graphics device takes a few hundred, and meanwhile the first frame
-    // is already being read
+    // jumps. that takes a few milliseconds; the graphics device, which is being made meanwhile, takes far longer,
+    // and the first frame is already being read
     // a file that would have to be read through first (it lists no frames) is left for the window to open
     let first = first.map(|path| {
         let clip = Clip::open_known(&path);

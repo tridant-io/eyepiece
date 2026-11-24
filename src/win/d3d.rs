@@ -4,6 +4,8 @@
 
 use crate::media::dec::Hardware;
 use std::ffi::c_void;
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 use windows::core::{Interface, Result, PCSTR};
 use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
@@ -47,6 +49,21 @@ pub struct Constants {
 
 /// the hlsl for `Constants`, shared by every picture shader.
 pub const CONSTANTS_HLSL: &str = "cbuffer Constants : register(b0) { float2 origin; float2 texels_per_pixel; float2 size; float2 chroma_per_luma; float4 scale_offset; float4 matrix_; float4 to_source; float2 to_source_add; float channel; float bilinear; float2 siting; float alpha_scale; float unused_; };";
+
+/// the window's device, being made on a thread of its own since the program started (`Gpu::early`).
+static EARLY: Mutex<Option<JoinHandle<Result<Made>>>> = Mutex::new(None);
+
+/// a device and its context, which may be made on one thread and used on another: direct3d 11's device is
+/// free-threaded, and its context is used by one thread at a time (the lock in `Gpu`).
+struct Made(ID3D11Device, ID3D11DeviceContext);
+unsafe impl Send for Made {}
+
+fn device() -> Result<Made> {
+    let (mut device, mut ctx) = (None, None);
+    let levels: [D3D_FEATURE_LEVEL; 2] = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
+    unsafe { D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, Some(&levels), D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx))? };
+    Ok(Made(device.unwrap(), ctx.unwrap()))
+}
 
 pub struct Gpu {
     pub device: ID3D11Device,
@@ -122,6 +139,13 @@ pub(super) fn compile(src: &str, target: &str) -> Result<Vec<u8>> {
 }
 
 impl Gpu {
+    /// starts making the window's device, on a thread of its own. making it is most of a start (160 ms of 205 on
+    /// the dev machine, the driver loading) and needs no window: started first, it is made while the file's header
+    /// is read and the window is made. `new` takes it.
+    pub fn early() {
+        *EARLY.lock().unwrap() = std::thread::Builder::new().name("device".into()).spawn(device).ok();
+    }
+
     /// a hardware device and a swapchain on the window, `w` x `h` pixels.
     pub fn new(window: super::window::Handle, w: u32, h: u32) -> Result<Gpu> {
         Gpu::make(Some(window.0), w, h)
@@ -133,11 +157,13 @@ impl Gpu {
     }
 
     fn make(hwnd: Option<HWND>, w: u32, h: u32) -> Result<Gpu> {
-        let (mut device, mut ctx) = (None, None);
-        let levels: [D3D_FEATURE_LEVEL; 2] = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
+        // the window's device is the one started early, when one was; a device with no window is made here
+        let early = hwnd.and_then(|_| EARLY.lock().unwrap().take()).and_then(|making| making.join().ok());
+        let Made(device, ctx) = match early {
+            Some(made) => made?,
+            None => device()?,
+        };
         unsafe {
-            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, Some(&levels), D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx))?;
-            let (device, ctx): (ID3D11Device, ID3D11DeviceContext) = (device.unwrap(), ctx.unwrap());
             // the decoder uses this device from its own thread
             let multithread: ID3D11Multithread = ctx.cast()?;
             let _ = multithread.SetMultithreadProtected(true);
