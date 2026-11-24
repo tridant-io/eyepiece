@@ -6,6 +6,16 @@ mod paint;
 mod ui_paint;
 pub mod window;
 
+/// what a loop holds for one turn: nothing here. on macos it lets go of what the system handed out in the turn.
+pub struct Pool;
+
+impl Pool {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Pool {
+        Pool
+    }
+}
+
 pub use d3d::Gpu;
 pub use paint::Paint;
 pub use ui_paint::UiPainter;

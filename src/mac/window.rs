@@ -5,13 +5,16 @@
 
 use crate::event::{Button, Event, Key, Mods};
 use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationPresentationOptions, NSBackingStoreType, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
-    NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationPresentationOptions, NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent,
+    NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSData, NSDate, NSDefaultRunLoopMode, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSData, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_metal::MTLCreateSystemDefaultDevice;
 use objc2_quartz_core::CAMetalLayer;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -33,6 +36,10 @@ static CLOSED: AtomicBool = AtomicBool::new(false);
 static CLIENT: (AtomicU32, AtomicU32) = (AtomicU32::new(1), AtomicU32::new(1));
 static SCALE: AtomicU32 = AtomicU32::new(0);
 static ROOM: (AtomicU32, AtomicU32) = (AtomicU32::new(1920), AtomicU32::new(1080));
+/// whether any of the window can be seen, as the system last said: one that cannot has no frame to wait for
+static VISIBLE: AtomicBool = AtomicBool::new(true);
+/// the refresh rate of the display the window is on, as the bits of an f32; 0 until it is known
+static HZ: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     /// the window and its view, on the main thread. what changes between events is the view's own (`ViewState`)
@@ -94,6 +101,57 @@ define_class!(
         }
     }
 );
+
+define_class!(
+    // SAFETY: as above; it keeps nothing
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "EyepieceDelegate"]
+    struct Delegate;
+
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    unsafe impl NSApplicationDelegate for Delegate {
+        // quit from the dock, a logout or a restart: the window closes its own way, so what is kept between runs is
+        // saved, and the program then ends by itself a moment later
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
+            close(Handle(std::ptr::null()));
+            NSApplicationTerminateReply::TerminateCancel
+        }
+    }
+
+    unsafe impl NSWindowDelegate for Delegate {
+        #[unsafe(method(windowDidChangeOcclusionState:))]
+        fn occlusion_changed(&self, _notification: &NSNotification) {
+            watched();
+        }
+
+        #[unsafe(method(windowDidChangeScreen:))]
+        fn screen_changed(&self, _notification: &NSNotification) {
+            watched();
+        }
+    }
+);
+
+/// takes whether the window can be seen and its display's refresh rate, for the render thread to read.
+fn watch(window: &NSWindow) {
+    VISIBLE.store(window.occlusionState().contains(NSWindowOcclusionState::Visible), Ordering::Relaxed);
+    if let Some(screen) = window.screen() {
+        HZ.store((screen.maximumFramesPerSecond() as f32).to_bits(), Ordering::Relaxed);
+    }
+}
+
+fn watched() {
+    if let Some((window, _)) = WINDOW.with_borrow(|window| window.clone()) {
+        watch(&window);
+    }
+}
+
+/// true while any of the window can be seen.
+pub fn visible() -> bool {
+    VISIBLE.load(Ordering::Relaxed)
+}
 
 define_class!(
     // SAFETY: as above
@@ -176,13 +234,19 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
+            // the coasting after the fingers lift is not the user's: a frame is stepped to, not thrown at
+            if !event.momentumPhase().is_empty() {
+                return;
+            }
+            // with shift held the system turns a mouse's wheel sideways
+            let held = mods(event);
+            let moved = if held.shift && event.scrollingDeltaY() == 0.0 { event.scrollingDeltaX() } else { event.scrollingDeltaY() };
             // a mouse's wheel counts in lines, one a notch; a trackpad in points, which are gathered into notches
-            let travel = if event.hasPreciseScrollingDeltas() { event.scrollingDeltaY() / NOTCH } else { event.scrollingDeltaY() };
-            let total = self.ivars().wheel.get() + travel;
+            let total = self.ivars().wheel.get() + if event.hasPreciseScrollingDeltas() { moved / NOTCH } else { moved };
             let notches = total.trunc();
             self.ivars().wheel.set(total - notches);
             if notches != 0.0 {
-                send(Event::Wheel { notches: notches as i32, mods: mods(event) });
+                send(Event::Wheel { notches: notches as i32, mods: held });
             }
         }
 
@@ -278,6 +342,10 @@ impl PictureView {
         let size = self.bounds().size;
         let (w, h) = (((size.width * scale).round() as u32).max(1), ((size.height * scale).round() as u32).max(1));
         SCALE.store((scale as f32).to_bits(), Ordering::Relaxed);
+        // a layer the view is given, not one it makes, is not told the display's scale
+        if let Some(layer) = self.layer() {
+            layer.setContentsScale(scale);
+        }
         if (CLIENT.0.swap(w, Ordering::Relaxed), CLIENT.1.swap(h, Ordering::Relaxed)) != (w, h) {
             send(Event::Resize { w, h });
         }
@@ -290,10 +358,48 @@ fn mods(event: &NSEvent) -> Mods {
     Mods { shift: held.contains(NSEventModifierFlags::Shift), alt: held.contains(NSEventModifierFlags::Option), ctrl: held.contains(NSEventModifierFlags::Command) || held.contains(NSEventModifierFlags::Control) }
 }
 
+/// a key by its place on the keyboard, as an american layout letters it: for a layout that types no latin letters.
+fn by_place(code: u16) -> Key {
+    match code {
+        0 => Key::A,
+        8 => Key::C,
+        2 => Key::D,
+        14 => Key::E,
+        3 => Key::F,
+        5 => Key::G,
+        4 => Key::H,
+        34 => Key::I,
+        38 => Key::J,
+        40 => Key::K,
+        37 => Key::L,
+        46 => Key::M,
+        45 => Key::N,
+        31 => Key::O,
+        35 => Key::P,
+        12 => Key::Q,
+        15 => Key::R,
+        1 => Key::S,
+        17 => Key::T,
+        9 => Key::V,
+        13 => Key::W,
+        6 => Key::Z,
+        29 => Key::Digit0,
+        18 => Key::Digit1,
+        19 => Key::Digit2,
+        27 => Key::Minus,
+        24 => Key::Equals,
+        33 => Key::BracketLeft,
+        30 => Key::BracketRight,
+        44 => Key::Slash,
+        _ => Key::Other,
+    }
+}
+
 /// a key press as one of our keys: the keys with no letter by their place on the keyboard, the rest by the letter the
 /// layout gives them, whatever is held with them.
 fn key(event: &NSEvent) -> Option<Key> {
-    Some(match unsafe { event.keyCode() } {
+    let code = unsafe { event.keyCode() };
+    Some(match code {
         49 => Key::Space,
         36 | 76 => Key::Enter,
         53 => Key::Escape,
@@ -339,6 +445,7 @@ fn key(event: &NSEvent) -> Option<Key> {
             Some('v') => Key::V,
             Some('w') => Key::W,
             Some('z') => Key::Z,
+            Some(c) if !c.is_ascii() => by_place(code),
             Some(_) => Key::Other,
             None => return None,
         },
@@ -351,14 +458,17 @@ pub fn client_for(video: (usize, usize)) -> (u32, u32) {
     let (max_w, max_h) = (ROOM.0.load(Ordering::Relaxed) as f64, ROOM.1.load(Ordering::Relaxed) as f64);
     let (vw, vh) = (video.0.max(1) as f64, video.1.max(1) as f64);
     let fitted = (max_w / vw).min(max_h / vh).min(1.0);
-    let scale = f32::from_bits(SCALE.load(Ordering::Relaxed)) as f64;
-    (((vw * fitted).round()).max(MIN_CLIENT.0 * scale) as u32, ((vh * fitted).round()).max(MIN_CLIENT.1 * scale) as u32)
+    (((vw * fitted).round()).max(MIN_CLIENT.0 * points()) as u32, ((vh * fitted).round()).max(MIN_CLIENT.1 * points()) as u32)
+}
+
+/// physical pixels for one point on the main display; 1 while no display has said.
+fn points() -> f64 {
+    Some(f32::from_bits(SCALE.load(Ordering::Relaxed)) as f64).filter(|scale| *scale > 0.0).unwrap_or(1.0)
 }
 
 /// the picture area of a window opened with no clip: 1180 x 720 of the design's pixels, as on windows.
 pub fn client_for_none() -> (u32, u32) {
-    let scale = f32::from_bits(SCALE.load(Ordering::Relaxed)) as f64;
-    client_for(((1180.0 * scale) as usize, (720.0 * scale) as usize))
+    client_for(((1180.0 * points()) as usize, (720.0 * points()) as usize))
 }
 
 /// where a window with `client` physical pixels of picture goes: centered in the display's free area.
@@ -383,6 +493,9 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, Strin
     *EVENTS.lock().unwrap() = Some(events);
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // lives as long as the program: the application and the window hold it without keeping it
+    let delegate: Retained<Delegate> = unsafe { msg_send![Delegate::alloc(mtm), init] };
+    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.finishLaunching();
     let screen = NSScreen::mainScreen(mtm).ok_or("no display")?;
     let rect = placed(&screen, client);
@@ -391,12 +504,24 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, Strin
     let window: Retained<NSWindow> = Retained::into_super(window);
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str("eyepiece"));
+    window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    std::mem::forget(delegate);
+    // black until the first frame, not the system's window gray
+    window.setBackgroundColor(Some(&NSColor::blackColor()));
     window.setHasShadow(true);
     window.setContentMinSize(NSSize::new(MIN_CLIENT.0, MIN_CLIENT.1));
     window.setAcceptsMouseMovedEvents(true);
     let view = PictureView::alloc(mtm).set_ivars(ViewState { wheel: Cell::new(0.0), pressed: RefCell::new(None), restore: Cell::new(None), pointer: Cell::new(Pointer::Arrow) });
     let view: Retained<PictureView> = unsafe { msg_send![super(view), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), rect.size)] };
+    // the layer is set up here, before the view has it: the render thread only draws into it
     let layer = CAMetalLayer::new();
+    layer.setDevice(MTLCreateSystemDefaultDevice().as_deref());
+    layer.setPixelFormat(super::metal::TARGETS[0]);
+    // a frame may wait for the display behind one other, not two: a step shows a refresh sooner
+    layer.setMaximumDrawableCount(2);
+    // the picture's alpha is the file's, not a way to see through the window
+    layer.setOpaque(true);
+    layer.setContentsScale(screen.backingScaleFactor());
     layer.setDrawableSize(CGSize { width: client.0 as f64, height: client.1 as f64 });
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
@@ -411,10 +536,10 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, Strin
     window.makeKeyAndOrderFront(None);
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
+    watch(&window);
+    // the layer lives as long as the view, which is kept
     let handle = Handle(Retained::as_ptr(&layer));
     WINDOW.set(Some((window, view)));
-    // the layer lives as long as the view, which is kept
-    std::mem::forget(layer);
     Ok(handle)
 }
 
@@ -423,9 +548,12 @@ pub fn run() {
     let Some(mtm) = MainThreadMarker::new() else { return };
     let app = NSApplication::sharedApplication(mtm);
     while !CLOSED.load(Ordering::Relaxed) {
-        if let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&NSDate::distantFuture()), unsafe { NSDefaultRunLoopMode }, true) {
-            app.sendEvent(&event);
-        }
+        // what appkit hands out while one event is dealt with is let go when it is done
+        objc2::rc::autoreleasepool(|_| {
+            if let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(NSEventMask::Any, Some(&NSDate::distantFuture()), unsafe { NSDefaultRunLoopMode }, true) {
+                app.sendEvent(&event);
+            }
+        });
     }
 }
 
@@ -462,10 +590,10 @@ pub fn set_title(_window: Handle, title: &str) {
 pub fn begin_move(_window: Handle) {
     on_main(|window, view, _| {
         // only while the button is still down: a quick flick may have ended before this arrives
-        let pressed = view.ivars().pressed.borrow().clone();
-        if let Some(pressed) = pressed {
-            window.performWindowDragWithEvent(&pressed);
-        }
+        let (Some(pressed), true) = (view.ivars().pressed.take(), NSEvent::pressedMouseButtons() & 1 != 0) else { return };
+        window.performWindowDragWithEvent(&pressed);
+        // the system has the drag from here, and the button's release with it: the controls are told it is up
+        view.button(&pressed, Button::Left, false);
     });
 }
 
@@ -501,7 +629,10 @@ pub fn set_fullscreen(_window: Handle, on: bool, next_display: bool) {
         if !on {
             if let Some(was) = restore.take() {
                 app.setPresentationOptions(NSApplicationPresentationOptions::Default);
+                window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::Resizable | NSWindowStyleMask::Miniaturizable);
+                window.setHasShadow(true);
                 window.setFrame_display(was, true);
+                window.makeFirstResponder(Some(view));
             }
             return;
         }
@@ -517,7 +648,11 @@ pub fn set_fullscreen(_window: Handle, on: bool, next_display: bool) {
             restore.set(Some(window.frame()));
         }
         app.setPresentationOptions(NSApplicationPresentationOptions::HideDock | NSApplicationPresentationOptions::HideMenuBar);
+        // no edges that resize and no shadow while it fills the display
+        window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::Miniaturizable);
+        window.setHasShadow(false);
         window.setFrame_display(screen.frame(), true);
+        window.makeFirstResponder(Some(view));
     });
 }
 
@@ -533,11 +668,11 @@ pub enum Pointer {
 /// which pointer shows while it is over the picture area.
 pub fn show_pointer(_window: Handle, pointer: Pointer) {
     on_main(move |window, view, _| {
-        // hiding and showing are counted by the system: one of each, in turn
-        match (view.ivars().pointer.replace(pointer) == Pointer::Hidden, pointer == Pointer::Hidden) {
-            (false, true) => NSCursor::hide(),
-            (true, false) => NSCursor::unhide(),
-            _ => {}
+        view.ivars().pointer.set(pointer);
+        // hidden until it next moves, which brings the controls back and the pointer with them: hiding it outright
+        // would hide it on every display, with no move over this window to bring it back
+        if pointer == Pointer::Hidden {
+            NSCursor::setHiddenUntilMouseMoves(true);
         }
         window.invalidateCursorRectsForView(view);
     });
@@ -571,8 +706,13 @@ pub fn clock() -> String {
     format!("{:02}:{:02}", now.hour(), now.minute())
 }
 
-/// the main display's refresh rate, in Hz, as the system reports it. 60 if it will not say.
+/// the refresh rate of the display the window is on, in Hz; before that is known the main display's, as the system
+/// reports it. 60 if it will not say.
 pub fn refresh_rate() -> f64 {
+    let known = f32::from_bits(HZ.load(Ordering::Relaxed));
+    if known > 0.0 {
+        return known as f64;
+    }
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGMainDisplayID() -> u32;

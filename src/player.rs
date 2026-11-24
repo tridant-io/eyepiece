@@ -1450,6 +1450,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // anywhere (N opens a new tab; its "n" must not pick a file in that tab's browser)
     let mut command = false;
     loop {
+        let _pool = crate::sys::Pool::new();
+        // a window's first frames may not reach the display: it is drawn again until one has
+        redraw |= !gpu.reached();
         // with nothing moving and nothing owed, sleep until the window says something or the controls are due
         let playing = tabs.view().is_some_and(|v| v.transport.playing());
         let waiting = tabs.view().is_some_and(|v| v.waiting());

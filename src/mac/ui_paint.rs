@@ -68,6 +68,7 @@ impl UiPainter {
                     Some([x, y]) => (x, y),
                 };
                 if let Some(tex) = self.textures.get(id) {
+                    gpu.settle();
                     let region = MTLRegion { origin: MTLOrigin { x, y, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
                     unsafe { tex.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, bytes, w * 4) };
                 }

@@ -8,7 +8,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CGSize;
 use objc2_foundation::NSString;
 use objc2_metal::*;
-use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer, CATransaction};
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -78,10 +78,15 @@ struct Pass {
 /// when the display showed the frames presented, as the system reports it later, and what that says was missed.
 #[derive(Default)]
 struct Shown {
-    /// the last frame's time on the display, in seconds
+    /// the last counted frame's time on the display, in seconds; 0 before the first of a count
     last: f64,
     /// refreshes that went by without a new frame since the count was last taken
     missed: u32,
+    /// which count is running: a present that is not counted starts another, and what comes back from an earlier
+    /// one is left out
+    count: u64,
+    /// a frame is known to have reached the display
+    reached: bool,
 }
 
 pub struct Gpu {
@@ -93,7 +98,11 @@ pub struct Gpu {
     pub h: u32,
     /// the window's frame between `clear` and `present`, or a picture of our own inside `read_pixels`
     pass: RefCell<Option<Pass>>,
+    /// the frame last sent to the gpu, which may still be reading the textures it draws from
+    sent: RefCell<Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>>,
     shown: Arc<Mutex<Shown>>,
+    /// frames presented so far
+    presents: u32,
 }
 
 /// metal needs no lock of ours around its calls: the decoder writes into surfaces of its own.
@@ -107,21 +116,36 @@ impl Gpu {
     /// the default device, drawing into the window's layer, `w` x `h` pixels.
     pub fn new(window: super::window::Handle, w: u32, h: u32) -> Result<Gpu, String> {
         let layer = unsafe { Retained::retain(window.0 as *mut CAMetalLayer) }.ok_or("the window has no layer")?;
-        let mut gpu = Gpu::offscreen()?;
-        layer.setDevice(Some(&gpu.device));
-        layer.setPixelFormat(TARGETS[0]);
-        // a frame may wait for the display behind one other, not two: a step shows a refresh sooner
-        layer.setMaximumDrawableCount(2);
-        layer.setDrawableSize(CGSize { width: w as f64, height: h as f64 });
-        (gpu.layer, gpu.w, gpu.h) = (Some(layer), w, h);
+        // the device the window gave its layer
+        let device = layer.device().ok_or("the window's layer has no device")?;
+        let mut gpu = Gpu::on(device)?;
+        (gpu.layer, gpu.w, gpu.h) = (Some(layer), 0, 0);
+        gpu.resize(w, h)?;
         Ok(gpu)
     }
 
     /// the default device with no window: it draws only into pictures of its own (`read_pixels`).
     pub fn offscreen() -> Result<Gpu, String> {
-        let device = MTLCreateSystemDefaultDevice().ok_or("no metal device")?;
+        Gpu::on(MTLCreateSystemDefaultDevice().ok_or("no metal device")?)
+    }
+
+    fn on(device: Retained<ProtocolObject<dyn MTLDevice>>) -> Result<Gpu, String> {
         let queue = device.newCommandQueue().ok_or("no command queue")?;
-        Ok(Gpu { device, queue, layer: None, w: 0, h: 0, pass: RefCell::new(None), shown: Arc::default() })
+        Ok(Gpu { device, queue, layer: None, w: 0, h: 0, pass: RefCell::new(None), sent: RefCell::new(None), shown: Arc::default(), presents: 0 })
+    }
+
+    /// true once a frame is known to have reached the display. the first presents after a window opens do not
+    /// (phase 0): until one has, the window's picture is drawn again. after two seconds of presents it is taken as
+    /// said, so a window that cannot be seen is not drawn for ever.
+    pub fn reached(&self) -> bool {
+        self.layer.is_none() || self.presents > 120 || self.shown.lock().unwrap().reached
+    }
+
+    /// waits until the gpu is done with the frame last sent: the textures it reads are about to be written again.
+    pub fn settle(&self) {
+        if let Some(sent) = self.sent.borrow_mut().take() {
+            sent.waitUntilCompleted();
+        }
     }
 
     /// what a hardware decoder needs of the renderer: nothing, here.
@@ -135,8 +159,12 @@ impl Gpu {
 
     /// the window's picture area changed size.
     pub fn resize(&mut self, w: u32, h: u32) -> Result<(), String> {
-        if let Some(layer) = &self.layer {
+        if let Some(layer) = self.layer.as_ref().filter(|_| (w, h) != (self.w, self.h)) {
+            // this thread has no run loop to close a change to a layer for it
+            CATransaction::begin();
+            CATransaction::setDisableActions(true);
             layer.setDrawableSize(CGSize { width: w as f64, height: h as f64 });
+            CATransaction::commit();
         }
         (self.w, self.h) = (w, h);
         Ok(())
@@ -189,6 +217,7 @@ impl Gpu {
         if data.len() < stride * (rows - 1) + row_bytes {
             return Err("the frame is shorter than its picture".into());
         }
+        self.settle();
         let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: tex.width(), height: tex.height(), depth: 1 } };
         unsafe { tex.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, 0, NonNull::new(data.as_ptr() as *mut c_void).unwrap(), stride) };
         Ok(())
@@ -236,6 +265,7 @@ impl Gpu {
     /// from the source picture, at its own size, never from what the window happens to show.
     /// `draw` does the drawing, with `Gpu::draw`. call it between frames.
     pub fn read_pixels(&self, w: u32, h: u32, draw: impl FnOnce(&Gpu)) -> Result<Vec<u16>, String> {
+        let _pool = super::Pool::new();
         let target = self.texture(w, h, TARGETS[1], MTLTextureUsage::RenderTarget)?;
         let (buffer, encoder) = self.begin(&target).ok_or("no pass")?;
         let outer = self.pass.replace(Some(Pass { buffer, encoder, drawable: None, target: 1, size: (w, h) }));
@@ -254,11 +284,13 @@ impl Gpu {
     pub fn flush(&self) {}
 
     /// starts a frame: the whole window black. waits here until the display has a back buffer free, which is what
-    /// paces play to the refresh. with none in a second (a window that cannot be seen), nothing is drawn.
+    /// paces play to the refresh. a window that cannot be seen is not asked for one (the wait for it can take a
+    /// second), and nothing is drawn.
     pub fn clear(&self) {
-        let Some(drawable) = self.layer.as_ref().and_then(|layer| layer.nextDrawable()) else { return };
-        let Some((buffer, encoder)) = self.begin(&drawable.texture()) else { return };
-        self.pass.replace(Some(Pass { buffer, encoder, drawable: Some(drawable), target: 0, size: (self.w, self.h) }));
+        let Some(drawable) = self.layer.as_ref().filter(|_| super::window::visible()).and_then(|layer| layer.nextDrawable()) else { return };
+        let texture = drawable.texture();
+        let Some((buffer, encoder)) = self.begin(&texture) else { return };
+        self.pass.replace(Some(Pass { buffer, encoder, drawable: Some(drawable), target: 0, size: (texture.width() as u32, texture.height() as u32) }));
     }
 
     /// the pass being drawn into, for the painter of the controls: its encoder, which of `TARGETS` it is, its size.
@@ -297,9 +329,17 @@ impl Gpu {
     /// a window that cannot be seen has no drawable: the wait is then `refresh` of ordinary sleep, so a clip that is
     /// playing keeps its pace and the loop does not spin.
     pub fn present(&mut self, counting: bool, refresh: Duration) -> u32 {
+        // a present that is not counted, or none at all, ends the count that was running: whatever comes back
+        // later from a frame of it is left out, and the time stood still is never counted as missed
+        let count = {
+            let mut shown = self.shown.lock().unwrap();
+            if !counting || self.pass.borrow().is_none() {
+                (shown.count, shown.last, shown.missed) = (shown.count + 1, 0.0, 0);
+            }
+            shown.count
+        };
         let Some(pass) = self.pass.take() else {
             std::thread::sleep(refresh);
-            *self.shown.lock().unwrap() = Shown::default();
             return 0;
         };
         pass.encoder.endEncoding();
@@ -310,10 +350,13 @@ impl Gpu {
                 let at = unsafe { drawable.as_ref() }.presentedTime();
                 let mut shown = shown.lock().unwrap();
                 if at > 0.0 {
-                    if shown.last > 0.0 && period > 0.0 {
-                        shown.missed += (((at - shown.last) / period).round() as u32).saturating_sub(1);
+                    shown.reached = true;
+                    if counting && shown.count == count {
+                        if shown.last > 0.0 && period > 0.0 {
+                            shown.missed += (((at - shown.last) / period).round() as u32).saturating_sub(1);
+                        }
+                        shown.last = at;
                     }
-                    shown.last = at;
                 }
             });
             let drawable: &ProtocolObject<dyn MTLDrawable> = ProtocolObject::from_ref(&**drawable);
@@ -321,11 +364,11 @@ impl Gpu {
             pass.buffer.presentDrawable(drawable);
         }
         pass.buffer.commit();
-        let mut shown = self.shown.lock().unwrap();
+        self.sent.replace(Some(pass.buffer));
+        self.presents = self.presents.saturating_add(1);
         if !counting {
-            *shown = Shown::default();
             return 0;
         }
-        std::mem::take(&mut shown.missed)
+        std::mem::take(&mut self.shown.lock().unwrap().missed)
     }
 }

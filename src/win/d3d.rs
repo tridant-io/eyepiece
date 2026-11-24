@@ -354,6 +354,11 @@ impl Gpu {
         }
     }
 
+    /// true once a frame is known to have reached the display: here every present does.
+    pub fn reached(&self) -> bool {
+        true
+    }
+
     /// hands the device's work to the gpu now, and with it the memory of what was let go.
     pub fn flush(&self) {
         unsafe {
