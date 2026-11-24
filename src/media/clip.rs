@@ -182,7 +182,7 @@ impl Clip {
         let rate_assumed = rate.is_none() && run.frames > 1;
         let (num, den) = rate.unwrap_or((24, 1));
         let timeline = Timeline::even((den, num), run.frames, 1);
-        let lane = SeqLane::open(run.frames, run.missing.clone(), (run.at, image), run.path_of)?;
+        let lane = SeqLane::open(run.missing.clone(), (run.at, image), run.path_of)?;
         Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed })
     }
 
@@ -313,7 +313,7 @@ mod tests {
     /// the red of a still frame's first pixel, or why the frame cannot be shown.
     fn red(c: &Clip, frame: usize) -> Result<u8, String> {
         let Lane::Stills(stills) = &c.lane else { panic!("not the stills lane") };
-        stills.source.want(frame, false);
+        stills.source.want(&[frame]);
         match stills.source.get(frame, Duration::from_secs(10)) {
             Frame::Ready(image) => Ok(image.data[0]),
             Frame::Pending => panic!("frame {frame} never arrived"),

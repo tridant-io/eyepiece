@@ -71,6 +71,10 @@ pub struct Model<'a> {
     pub rate: Option<(i64, i64)>,
     /// why the frame on screen cannot be shown, when it cannot
     pub fault: Option<&'a str>,
+    /// a sequence's frames that have no file
+    pub gaps: &'a [usize],
+    /// the file holds linear light (exr), shown through the srgb curve
+    pub linear: bool,
     pub looping: Loop,
     /// loop analysis, while it is on: the place in its round and the round's length, in frames
     pub seam: Option<(usize, usize)>,
@@ -379,7 +383,8 @@ impl Ui {
             top = banner(ui, Pos2::new(full.left() + 10.0, top), full.width() - 20.0, &format!("this frame cannot be shown: {why}")).bottom() + 8.0;
         }
         let mut left = full.left() + 10.0;
-        for parts in [seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)])].into_iter().flatten() {
+        let linear = model.linear.then(|| vec![("linear".to_string(), FG), (" · shown through srgb".to_string(), DIM)]);
+        for parts in [seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)]), linear].into_iter().flatten() {
             left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0).right() + 8.0;
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
@@ -619,6 +624,12 @@ impl Ui {
         painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(head, track.bottom())), 0.0, FILL);
         if model.seam.is_some() {
             painter.rect_filled(Rect::from_min_max(Pos2::new(area.center().x - 0.5, track.top() - 9.0), Pos2::new(area.center().x + 0.5, track.bottom())), 0.0, Color32::WHITE);
+        } else {
+            // a sequence's missing frames: amber, the color of a fault in the file
+            for gap in model.gaps {
+                let x = area.left() + area.width() * (*gap as f32 / last).min(1.0);
+                painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, track.top() - 4.0), Pos2::new(x + 1.0, track.bottom())), 0.0, AMBER);
+            }
         }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
 

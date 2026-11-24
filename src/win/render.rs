@@ -10,6 +10,7 @@ use crate::media::color;
 use crate::media::dec::{Layout, Picture};
 use crate::media::hap::Tex;
 use crate::media::source::Frame;
+use crate::media::still::Samples;
 use crate::play::{Loop, Show, Transport};
 use crate::settings::{self, Settings};
 use crate::ui::{Action, Model, Ui};
@@ -52,9 +53,14 @@ float4 main(float4 pos : SV_Position) : SV_Target {
     return c;
 }";
 
-/// hap: one block-compressed texture. `CONVERT` says what the variant stores.
-const HAP: &str = "
+/// one texture holding the whole picture: hap's block-compressed one, or a still's red, green, blue and alpha.
+/// `CONVERT` says what is stored. linear light (exr) goes through the srgb curve; what is above 1.0 stops at white.
+const ONE_TEXTURE: &str = "
 Texture2D<float4> t : register(t0);
+float3 srgb(float3 v) {
+    v = max(v, 0);
+    return lerp(v * 12.92, 1.055 * pow(v, 1.0 / 2.4) - 0.055, step(0.0031308, v));
+}
 float3 ycocg(float4 v) {
     v.xy -= 0.50196078431373;
     float scale = v.z * (255.0 / 8.0) + 1.0;
@@ -90,6 +96,9 @@ float4 texel(int2 p) {
 enum Painter {
     /// hap: one texture of blocks, rewritten every frame
     Blocks { tex: ID3D11Texture2D, view: ID3D11ShaderResourceView },
+    /// stills: one texture of red, green, blue and alpha, rewritten every frame. `bits` is the scale pixel values
+    /// are given on
+    Image { tex: ID3D11Texture2D, view: ID3D11ShaderResourceView, bits: u32 },
     /// software pictures: luma, cb and cr textures, rewritten every frame
     Planes { planes: Vec<(ID3D11Texture2D, ID3D11ShaderResourceView)>, layout: Layout },
     /// hardware pictures: views onto the decoder's own surface. the picture is held with them, so the decoder does
@@ -147,7 +156,7 @@ impl View {
                     _ => "v",
                 };
                 let (tex, view) = gpu.dynamic_texture(hap.padded.0 as u32, hap.padded.1 as u32, format).map_err(text)?;
-                (format!("#define CONVERT(v) {convert}\n{CONSTANTS_HLSL}\n{HAP}\n{MAIN}"), Painter::Blocks { tex, view }, Constants::default())
+                (format!("#define CONVERT(v) {convert}\n{CONSTANTS_HLSL}\n{ONE_TEXTURE}\n{MAIN}"), Painter::Blocks { tex, view }, Constants::default())
             }
             Lane::Video(video) => {
                 let layout = video.layout;
@@ -168,12 +177,23 @@ impl View {
                 }
             }
             Lane::Waiting(_) => return Err("the clip did not start".into()),
-            Lane::Stills(_) => return Err("stills are not drawn yet".into()),
+            Lane::Stills(stills) => {
+                let (format, convert, bits) = match stills.samples {
+                    Samples::U8 => (DXGI_FORMAT_R8G8B8A8_UNORM, "v", stills.bits),
+                    Samples::U16 => (DXGI_FORMAT_R16G16B16A16_UNORM, "v", stills.bits),
+                    // exr holds linear light. what the pixel readout gives for it is what the screen is sent
+                    Samples::F32 => (DXGI_FORMAT_R32G32B32A32_FLOAT, "float4(srgb(v.rgb), v.a)", 16),
+                };
+                let (tex, view) = gpu.dynamic_texture(clip.width as u32, clip.height as u32, format).map_err(text)?;
+                (format!("#define CONVERT(v) {convert}\n{CONSTANTS_HLSL}\n{ONE_TEXTURE}\n{MAIN}"), Painter::Image { tex, view, bits }, Constants::default())
+            }
         };
         let ps = gpu.pixel_shader(&source).map_err(text)?;
         // the picture as the file has it: the look changes these two at each draw
         let constants = Constants { size: [clip.width as f32, clip.height as f32], to_source: [1.0, 0.0, 0.0, 1.0], ..constants };
-        let transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz);
+        let mut transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz);
+        // a sequence opened by one of its files opens on that file's frame
+        transport.go(clip.first_frame as i64);
         let framing = Framing::new((clip.width, clip.height));
         Ok(View { clip, transport, ps, painter, constants, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None })
     }
@@ -184,7 +204,8 @@ impl View {
         match &self.clip.lane {
             Lane::Hap(hap) => hap.source.want(&want),
             Lane::Video(video) => video.source.want(&want),
-            Lane::Waiting(_) | Lane::Stills(_) => {}
+            Lane::Stills(stills) => stills.source.want(&want),
+            Lane::Waiting(_) => {}
         }
         if self.shown == Some(frame) {
             return false;
@@ -196,6 +217,15 @@ impl View {
                     let row_bytes = hap.padded.0 / 4 * hap.tex.block_bytes();
                     let _lock = gpu.locked();
                     gpu.fill(tex, &blocks, hap.padded.1 / 4, row_bytes, row_bytes).map(|()| true).map_err(text)
+                }
+                Frame::Failed(why) => Err(why),
+                Frame::Pending => Ok(false),
+            },
+            (Lane::Stills(stills), Painter::Image { tex, .. }) => match stills.source.get(frame, patience) {
+                Frame::Ready(image) => {
+                    let row_bytes = image.data.len() / image.height.max(1);
+                    let _lock = gpu.locked();
+                    gpu.fill(tex, &image.data, image.height, row_bytes, row_bytes).map(|()| true).map_err(text)
                 }
                 Frame::Failed(why) => Err(why),
                 Frame::Pending => Ok(false),
@@ -218,7 +248,7 @@ impl View {
                             .map(|()| true)
                             .map_err(text)
                         }
-                        Painter::Blocks { .. } => Err("the clip and its painter disagree".into()),
+                        Painter::Blocks { .. } | Painter::Image { .. } => Err("the clip and its painter disagree".into()),
                     }
                 }
                 Frame::Failed(why) => Err(why),
@@ -248,7 +278,7 @@ impl View {
             return None;
         }
         Some(match &self.painter {
-            Painter::Blocks { view, .. } => vec![Some(view.clone())],
+            Painter::Blocks { view, .. } | Painter::Image { view, .. } => vec![Some(view.clone())],
             Painter::Planes { planes, .. } => planes.iter().map(|p| Some(p.1.clone())).collect(),
             Painter::Surface { held: Some((_, y, c)), .. } => vec![Some(y.clone()), Some(c.clone())],
             Painter::Surface { held: None, .. } => return None,
@@ -278,6 +308,7 @@ impl View {
     fn depth(&self) -> u32 {
         match &self.painter {
             Painter::Blocks { .. } => 8,
+            Painter::Image { bits, .. } => *bits,
             Painter::Planes { layout, .. } | Painter::Surface { layout, .. } => layout.stored.bits,
         }
     }
@@ -371,6 +402,8 @@ impl View {
             playing: self.transport.playing(),
             rate: self.clip.timeline.rate(),
             fault: self.fault.as_deref(),
+            gaps: &self.clip.missing,
+            linear: matches!(&self.clip.lane, Lane::Stills(stills) if stills.samples == Samples::F32),
             looping: self.transport.loop_mode(),
             seam: self.transport.seam_place(),
             seam_seconds: settings.loop_analysis_seconds as f64,
@@ -396,7 +429,7 @@ impl View {
         let c = &self.clip;
         // the panel will have to admit whether the gpu or the cpu decodes; until then the title does
         let decoded = match &self.painter {
-            Painter::Blocks { .. } => "",
+            Painter::Blocks { .. } | Painter::Image { .. } => "",
             Painter::Surface { .. } => ", hardware",
             Painter::Planes { .. } => ", software",
         };

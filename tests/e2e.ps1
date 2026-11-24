@@ -259,6 +259,21 @@ Send-Key 0x23; Assert-Frame 'prores: end goes to the last frame' 3 4 'software'
 Send-Key 0x46; Assert-Frame 'prores: a step back' 2 4 'software'
 Stop-Player
 
+# ---- stills: a numbered run is one clip, opened on the frame of the file given; a frame with no file says so
+Start-Player (Join-Path $media 'seq.0004.png')
+Assert-Title 'one file of a numbered run opens the whole run, on its own frame' '^seq\.\[0001-0005\]\.png . 3 / 5 . 16 . 16 . png . 24 fps assumed$'
+Send-Key 0x46; Assert-Title 'the frame with no file says so' ' . this frame cannot be shown: this frame.s file is missing$'
+Send-Key 0x46; Assert-Title 'and the frames around it show' '^seq\.\[0001-0005\]\.png . 1 / 5 . .* . 1 could not be shown$'
+Stop-Player
+Start-Player (Join-Path $media 'still_10bit.dpx')
+$mid = Get-Middle
+Move-Pointer $mid[0] $mid[1]; Send-Key 0x31
+Assert-Title 'a lone still is one frame, and a 10-bit dpx gives its values on the 10-bit scale' '^still_10bit\.dpx . 0 / 1 . 16 . 16 . dpx . still . 100% . x 8 y 8 . 520 512 777$'
+Stop-Player
+Start-Player (Join-Path $media 'still_half.exr')
+Assert-Title 'an exr opens' '^still_half\.exr . 0 / 1 . 16 . 16 . exr . still$'
+Stop-Player
+
 # ---- what cannot be opened says why, and the window stays
 Start-Player (Join-Path $media 'h264_64.mkv')
 Assert-Title 'a file that lists no frames up front says so' '^eyepiece . .*h264_64\.mkv: this kind of file does not list its frames up front'
