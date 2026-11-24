@@ -14,6 +14,7 @@ public static class EyepieceE2e {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetClassLongPtrW(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
@@ -159,6 +160,8 @@ $media = Join-Path $PSScriptRoot 'media'
 # ---- hap: our own lane, and everything about the window
 Start-Player (Join-Path $media 'hapq_64.mov')
 Assert-Title 'hap q opens on frame 0 and reads the file exactly' '^hapq_64\.mov . 0 / 3 . 64 . 64 . hap q . 60000/1001 fps$'
+# the window's class carries the icon linked into the exe (-14 is GCLP_HICON): what the taskbar shows for it
+Confirm-That 'the window carries the program''s icon' ([EyepieceE2e]::GetClassLongPtrW($script:h, -14) -ne [IntPtr]::Zero) 'the window''s class has no icon'
 Send-Key 0x47; Assert-Frame 'G steps forward' 1 3
 Send-Key 0x27; Assert-Frame 'right arrow steps forward' 2 3
 Send-Key 0x47; Assert-Frame 'a step past the end stays on the last frame' 2 3

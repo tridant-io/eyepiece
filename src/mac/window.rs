@@ -11,7 +11,7 @@ use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThr
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationPresentationOptions, NSApplicationTerminateReply, NSBackingStoreType, NSColor, NSCursor, NSDragOperation, NSDraggingInfo, NSEvent,
     NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeString, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
-    NSAutoresizingMaskOptions, NSButton, NSWindowButton, NSWindowOcclusionState, NSWindowStyleMask, NSWorkspace,
+    NSAutoresizingMaskOptions, NSButton, NSImage, NSWindowButton, NSWindowOcclusionState, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSData, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL};
@@ -602,6 +602,10 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, Strin
     // lives as long as the program: the application and the window hold it without keeping it
     let delegate: Retained<Delegate> = unsafe { msg_send![Delegate::alloc(mtm), init] };
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    // the dock's picture of the program: a bare program, with no bundle round it, has none of its own
+    if let Some(icon) = NSImage::initWithData(objc2::AllocAnyThread::alloc(), &NSData::with_bytes(include_bytes!("../../assets/icon/eyepiece.png"))) {
+        unsafe { app.setApplicationIconImage(Some(&icon)) };
+    }
     app.finishLaunching();
     let screen = NSScreen::mainScreen(mtm).ok_or("no display")?;
     let rect = placed(&screen, client);

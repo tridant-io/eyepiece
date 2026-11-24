@@ -123,6 +123,9 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
             lpszClassName: PCWSTR(name.as_ptr()),
             hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
+            // the program's icon, the first in the exe (build.rs), for the taskbar and the window switcher. the
+            // tests' own programs have none, and get the system's
+            hIcon: LoadIconW(Some(inst.into()), PCWSTR(1 as *const u16)).unwrap_or_default(),
             ..Default::default()
         };
         RegisterClassW(&class);

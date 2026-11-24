@@ -1,7 +1,9 @@
 # eyepiece mark
 
-not chosen yet. the owner asked for a mark that sits with the product icons on tridant.io and stands on its own
-(2026-11-23). three rounds have been made. the drawings are in `concepts/`, the sheets beside this file.
+chosen (2026-11-24): the rendered eyepiece of round three, at 33 degrees. it is the program's icon: `scripts\icon.ps1`
+makes `assets\icon\` from `eyepiece-render.png` (the windows .ico and the .res the exe links, and the mac dock's
+png). the owner asked for a mark that sits with the product icons on tridant.io and stands on its own (2026-11-23);
+three rounds were made. the drawings are in `concepts/`, the sheets beside this file.
 
 - `sheet-render.png`, `eyepiece-render.png`, `3d/eyepiece.py`: round three, F rendered in blender (below).
 - `sheet-lens.png`, `sheet-lens-large.png`: round two, the lens (below). six directions, each as an app icon dark and
@@ -45,8 +47,9 @@ well lit, readable very small and very large.
   shorter than a real one of this width; the glass
   is its upper surface alone, since a whole lens showed every light three times over; the grip's ribs are shading,
   not shape; nothing is engraved.
-- small: from 48 px down the render made small is a ring and a blur, as the sheet shows. it stands for 64 px and up;
-  16 to 48 still want layers drawn for their size.
+- small: from 48 px down the render made small is a ring and a blur, as the sheet shows. in the icon the render is
+  used from 48 px up, and 16, 20, 24, 32 and 40 px are drawn for their size by `scripts\icon.ps1`: the same
+  eyepiece from the same side in a few flat shapes, the bezel a bright ring, the light and the orange on black glass.
 
 ## round two: the lens (2026-11-24)
 
@@ -81,13 +84,14 @@ made small, and show what is lost.
 
 ## open with the owner
 
-- the render of F: the angle, the finish, and what it still lacks.
+- the mark on tridant.io: the site's strip shows flat one-tone marks, and this one is a render. not done; the
+  site is another repository.
 - its tone on the site. the player's orange (#ff5a36) reads as a second transmission there, and graphite as
   "disabled"; violet (#7d3fb8 light, #b384ea dark) is the one hue the family does not use. orange stays as the
   single accent inside the app icon.
 
-## still to do for the one chosen
+## still to do
 
-a look for marks too close to it; 16, 20, 24, 32, 40 and 48 px layers drawn for their size; the windows .ico and
-the macos .icns; the name set beside it (archivo semibold, lowercase); a look at it in a real taskbar at 100, 125
-and 150%.
+a look for marks too close to it; the macos .icns, when the program has a bundle to put it in (until then the dock
+gets the png at run time); the name set beside it (archivo semibold, lowercase); a look at it in a real taskbar at
+100, 125 and 150%, which only a person at the screen can give.

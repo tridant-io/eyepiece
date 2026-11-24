@@ -79,7 +79,9 @@ the title bar also says what went wrong: ` · n late` (refreshes that went by wi
 |---|---|
 | `src/` | the player. `media/` reads files (ffmpeg for containers, our own code for hap), `play.rs` paces frames to the display (speed, shuttle, looping, loop analysis), `view.rs` places and turns the picture, `ui/` draws the controls (`ui/keys.rs` is every command with its key, which the table of keys, the right-click menu and the tooltips read), `settings.rs` is what is kept between runs, `markup.rs` keeps the marks drawn on a clip, by frame, in the file's own pixels (`ui/markup.rs` draws them, the row of tools, and what a saved screenshot carries), `player.rs` is the render thread (the tabs, a played folder, what a key does, the title), which knows nothing of the system it runs on: the window, the graphics device and the painters of a clip's frames and of the controls are one module for each system with the same things in it, `win/` for windows (direct3d 11) and `mac/` for macos (metal, appkit; see above for what of it has run). `pictures.rs` reads frames with no window, for the browser's cards and the timebar. `timecode.rs` names frames by the clock. `browse/` lists folders from their listing alone, `media/meta.rs` reads the metadata panel's facts, `shot.rs` writes screenshot files, `audio/` plays a clip's sound (decoded on its own thread, the system's default output, pitch kept at other speeds). `preview/` makes the browser's posters and hover previews and keeps them in the cache, on disk. `media/watch.rs` notices that an open file changed on disk. |
 | `tests/media/` | tiny clips the unit tests read, and the script that made them |
-| `scripts/` | setup, and the build that packages and signs |
+| `scripts/` | setup, the build that packages and signs, and `icon.ps1`, which makes the program's icon |
+| `assets/` | the two typefaces with their licenses, and `icon/`: the program's icon as the exe links it and as the mac's dock shows it |
+| `docs/design/logo/` | the mark: the rounds it went through, the blender script that renders it, and what is still open |
 | `docs/design/plan.html` | the approved design, rev c (2026-11-23). open it in a browser. |
 | `docs/phase-0.md` | the gates the design had to pass before any player code: what each proves and what it found |
 | `docs/adr/` | decisions that are hard to reverse, one file each |
@@ -125,6 +127,17 @@ the tests drive the controls with posted messages, not the real pointer and keyb
 standing still, the player reads ahead what play would show next (one frame for a lane with one worker's worth, up to 32 for stills and notchlc), so play starts on frames that are already there.
 
 the timing checks (`play.ps1`, `launch.ps1`, `backstep.ps1`, `hover.ps1`) mean nothing on a busy machine, and a busy gpu counts (on 2026-11-23, with an encoder, touchdesigner and obs on the gpu, a hap clip that had run with 2 late refreshes in 4 s showed 53): on 2026-11-23, with other test suites holding this pc at 97% cpu, a clip that had run with 2 late refreshes in 10 s showed 246 in 6 s, with the same build.
+
+## the icon
+
+the program's icon is the rendered eyepiece in `docs/design/logo/` (the owner's pick, 2026-11-24). it is in the exe, so explorer, the taskbar and the window switcher show it, and the mac's dock gets it when the program starts (there is no bundle there yet to carry one). to change it, render the mark again (`docs/design/logo/README.md`) and run:
+
+```powershell
+# assets\icon: the .ico, the .res the build links, and the dock's png. needs the windows sdk's rc.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\icon.ps1
+```
+
+48 px and up are the render made small; 40 px and down are drawn for their size by that script. checked: windows finds the icon in the built exe and hands back its 32 and 16 px layers, and the window's class carries it (end to end). not checked: how it sits in a real taskbar at 100, 125 and 150%, which nothing here may look at, and the mac's dock, which was not seen.
 
 ## deploy
 
