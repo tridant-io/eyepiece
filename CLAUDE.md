@@ -21,6 +21,7 @@ use the terms in `GLOSSARY.md` and read the ADRs in `docs/adr/` for the area you
 
 ## working here
 
-- `spike/` is throwaway. it answers the gates in `docs/phase-0.md` and is deleted when the player starts.
+- `spike/` is throwaway. it answers the gates in `docs/phase-0.md`. it stays while the mac renderer still has gates to rerun, and is deleted after that with the owner's ok. the player never depends on it.
+- the player is the crate at the repo root. `cargo test` and `cargo run` need `scripts\setup.ps1` once.
 - commits: `type: details`, lowercase, one line. types: fix, feat, chore, docs, refactor, test, release.
 - a phase is done when its build is installed and checked on the owner's machine, not when it passes here.
