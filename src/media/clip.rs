@@ -476,17 +476,10 @@ mod tests {
                 passes[1].2 = started.elapsed() - passes[0].2;
                 let ms = |d: Duration| d.as_millis();
                 println!("{} run {run}: lone frame {} ms; first pass {}/{} in {} ms; second pass {}/{} in {} ms", clip.name, ms(lone), passes[0].0, passes[0].1, ms(passes[0].2), passes[1].0, passes[1].1, ms(passes[1].2));
-                results.push((lone, passes));
+                results.push([ms(lone), passes[0].0 as u128, ms(passes[0].2), passes[1].0 as u128, ms(passes[1].2)]);
             }
-            let pick = |f: &dyn Fn(&(Duration, [(usize, usize, Duration); 2])) -> u128| median(results.iter().map(f).collect());
-            println!(
-                "{path} median of {runs}: lone frame {} ms; first pass {} on time in {} ms; second pass {} on time in {} ms",
-                pick(&|r| r.0.as_millis()),
-                pick(&|r| r.1[0].0 as u128),
-                pick(&|r| r.1[0].2.as_millis()),
-                pick(&|r| r.1[1].0 as u128),
-                pick(&|r| r.1[1].2.as_millis()),
-            );
+            let m: Vec<u128> = (0..5).map(|i| median(results.iter().map(|r| r[i]).collect())).collect();
+            println!("{path} median of {runs}: lone frame {} ms; first pass {} on time in {} ms; second pass {} on time in {} ms", m[0], m[1], m[2], m[3], m[4]);
         }
     }
 }
