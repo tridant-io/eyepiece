@@ -343,6 +343,8 @@ Start-Player
 Assert-Title 'started with no file, the browser is up' '^eyepiece$'
 # folders are listed off the drawing thread: each gets a moment to arrive before the keys move in it
 Start-Sleep -Milliseconds 1000
+$before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
+Confirm-That 'the browser at rest, its folders listed, uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 # a double click opens the card its first click hit, though that click brings in the metadata column and moves the
 # cards along. here the first card, beside as many columns as fit and no metadata column
 $columns = [math]::Floor(((Get-Width) - 150 - 360) / 168); $main = 150 + 168 * $columns; $inner = (Get-Width) - $main - 28
@@ -365,6 +367,12 @@ $script:name = 'x_roll.mov'; Send-Key 0x0D; Assert-Frame 'a letter selects the f
 Send-Key 0x4F; Start-Sleep -Milliseconds 500; Send-Key 0x50; Send-Key 0x52
 $script:name = 'prores_64.mov'; Send-Key 0x0D; Assert-Frame 'letters typed together select by the first letters of a name' 0 4
 Send-Key 0x4F; Assert-Title 'the browser is over the clip again' ' . browser$'
+# a double click on nothing opens nothing, however recently a clip was clicked: here its row, the fourth of the last
+# column (the metadata column is up, so the columns that fit are fewer), then the empty grid at the bottom
+$columns = [math]::Floor(((Get-Width) - 150 - 316 - 360) / 168)
+Click-At (150 + 168 * $columns - 84) (32 + 8 + 26.25 * 3.5); Start-Sleep -Milliseconds 1000
+DoubleClick-At (150 + 168 * $columns + 100) ((Get-Height) - 80); Start-Sleep -Milliseconds 1000
+Assert-Title 'a double click on nothing opens nothing' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
 Stop-Player
 # what the section made, file by file, then its folders, each named before it goes. nothing recursive

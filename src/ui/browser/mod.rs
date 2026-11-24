@@ -14,7 +14,7 @@ use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, FontId, Galley, Painter, Pos2, Rect, Sense, StrokeKind, Vec2};
 use jobs::Jobs;
 use nav::{is_card, Listing, Nav};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -136,8 +136,8 @@ struct State {
     metas: Jobs<Result<Meta, String>>,
     /// listings read before the browser was last away: shown while they are read again
     stale: HashSet<PathBuf>,
-    /// the selected card's metadata, once read
-    meta: Option<(PathBuf, Result<Meta, String>)>,
+    /// the metadata read: the selected card's, and that of the files asked about
+    read: HashMap<PathBuf, Result<Meta, String>>,
     /// the files whose metadata was asked for, or that were opened from here: on a network volume, read
     asked: HashSet<PathBuf>,
     /// wheel notches not yet applied; how far the sidebar, the grid and the metadata column are scrolled, and how
@@ -222,7 +222,7 @@ impl State {
             lists: Jobs::new(),
             metas: Jobs::new(),
             stale: HashSet::new(),
-            meta: None,
+            read: HashMap::new(),
             asked: HashSet::new(),
             wheel: 0,
             side_scroll: 0.0,
@@ -252,9 +252,7 @@ impl State {
             self.stale.remove(&folder);
             self.nav.listings.insert(folder, listing);
         }
-        if let Some(answer) = self.metas.answers().pop() {
-            self.meta = Some(answer);
-        }
+        self.read.extend(self.metas.answers());
         self.nav.settle();
     }
 
@@ -281,13 +279,17 @@ impl State {
         if let Some(rect) = layout.meta {
             self.metadata(ui, rect, &mut clicks);
         }
-        // a double click acts on what its first press was on, not on what its second one lands on
-        let double = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary) && i.pointer.interact_pos().is_some_and(|p| area.contains(p)));
+        // a double click acts on what its first press was on, not on what its second one lands on. a press on nothing
+        // leaves nothing for one
+        let (single, double) = ui.input(|i| {
+            let inside = i.pointer.interact_pos().is_some_and(|p| area.contains(p));
+            (inside && i.pointer.primary_clicked(), inside && i.pointer.button_double_clicked(egui::PointerButton::Primary))
+        });
         let clicks: Vec<Click> = if double {
             self.twice.take().into_iter().collect()
         } else {
-            if let Some((_, twice)) = clicks.last_mut() {
-                self.twice = twice.take();
+            if single {
+                self.twice = clicks.last_mut().and_then(|(_, twice)| twice.take());
             }
             clicks.into_iter().map(|(click, _)| click).collect()
         };
@@ -308,7 +310,10 @@ impl State {
     fn click(&mut self, click: Click) {
         match click {
             Click::Place(place) => self.nav.go(&place),
-            Click::Row(at, entry, folder) => self.nav.select(at, entry, folder),
+            Click::Row(at, entry, folder) => {
+                self.nav.select(at, entry, folder);
+                self.nav.focus = nav::Focus::Columns;
+            }
             Click::Enter => self.nav.enter(),
             Click::Card(card) => self.nav.choose_card(card),
             Click::Open(file) => self.choose(Chosen::Open(file)),
@@ -333,10 +338,12 @@ impl State {
         listings.retain(|folder, _| path.iter().any(|c| &c.folder == folder));
         self.stale.retain(|folder| listings.contains_key(folder));
 
+        // what was read is kept for the files asked about, so going back to one does not open it again
         let file = self.nav.metadata(&self.asked);
+        self.read.retain(|f, _| self.asked.contains(f) || file.as_ref() == Some(f));
         self.metas.keep_only(|f| Some(f) == file.as_deref());
         if let Some(file) = file {
-            if self.meta.as_ref().is_none_or(|(read, _)| read != &file) && !self.metas.waiting(&file) {
+            if !self.read.contains_key(&file) && !self.metas.waiting(&file) {
                 self.metas.ask(file, read_meta);
             }
         }
@@ -614,15 +621,15 @@ impl State {
         painter.rect_filled(picture, 0.0, PLAIN);
         painter.rect_stroke(picture, 0.0, (1.0, LINE), StrokeKind::Outside);
         let listed;
-        let groups: &[Vec<Row>] = match &self.meta {
-            Some((file, Ok(meta))) if reads && file == &card.path => &meta.groups,
-            meta => {
-                let rest = match meta {
+        let groups: &[Vec<Row>] = match self.read.get(&card.path).filter(|_| reads) {
+            Some(Ok(meta)) => &meta.groups,
+            read => {
+                let rest = match read {
                     _ if !readable => fact("everything else", "not read for stills and sequences yet.".to_string(), Tone::Assumed),
                     _ if !reads => fact("everything else", "not read. opening the file reads it.".to_string(), Tone::Assumed),
                     // not amber: a file locked or out of reach is no fault of the file's
-                    Some((file, Err(why))) if file == &card.path => {
-                        let why = why.strip_prefix(&format!("{}: ", file.to_string_lossy())).unwrap_or(why);
+                    Some(Err(why)) => {
+                        let why = why.strip_prefix(&format!("{}: ", card.path.to_string_lossy())).unwrap_or(why);
                         fact("everything else", format!("could not be read: {}", why.to_lowercase()), Tone::Assumed)
                     }
                     _ => fact("everything else", "reading…".to_string(), Tone::Assumed),
