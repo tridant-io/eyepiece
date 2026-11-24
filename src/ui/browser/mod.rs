@@ -796,7 +796,7 @@ fn list(folder: &Path) -> Listing {
 }
 
 fn read_meta(file: &Path) -> Result<Meta, String> {
-    Meta::read(&file.to_string_lossy())
+    Meta::read_known(&file.to_string_lossy())
 }
 
 /// a scroll that keeps the span from `top`, `height` high, inside a view `view` high with `pad` to spare, moving as

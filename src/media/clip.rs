@@ -10,8 +10,9 @@ use super::timeline::Timeline;
 use super::video_source::{Times, VideoLane};
 use crate::browse::{self, Kind};
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 pub struct Clip {
     /// the file's name without its folder; a sequence's as the browser shows it, name.[0001-0240].exr
@@ -124,7 +125,7 @@ pub(super) fn codec_name(video: &Video) -> Option<&'static str> {
 /// table whose decode times are not evenly spaced (with b-frames these do not say when frames are shown), are counted
 /// by the packet pass (`Input::count`), on a reader of its own. other containers without a table are not counted:
 /// their seeking is not by key frame.
-pub(super) fn stored(path: &str, input: &Input, video: &Video, counted: &AtomicUsize) -> Result<(Vec<Sample>, Option<Vec<i64>>), String> {
+pub(super) fn stored(path: &str, input: &Input, video: &Video, count: &Count) -> Result<(Vec<Sample>, Option<Vec<i64>>), String> {
     let samples = input.samples(video.index);
     let format = input.format_name();
     let (mov, mkv) = (format.starts_with("mov,"), format == "matroska,webm");
@@ -136,9 +137,40 @@ pub(super) fn stored(path: &str, input: &Input, video: &Video, counted: &AtomicU
     if (whole && shown_by_table) || !(mov || mkv) {
         return Ok((samples, None));
     }
-    let (samples, shown) = Input::open(path)?.count(video.index, counted)?;
-    Ok((samples, Some(shown)))
+    // counted once in a run: the file is known after that by its path, size and time
+    let stamp = std::fs::metadata(path).map(|m| (path.to_string(), m.len(), m.modified().ok())).map_err(|e| format!("{path}: {e}"))?;
+    let known = KNOWN.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(of, _)| *of == stamp).map(|(_, found)| found.clone());
+    if let Some(found) = known {
+        return Ok((found.0.clone(), Some(found.1.clone())));
+    }
+    let Count::Read { counted, stop } = count else { return Err(format!("{path}: {UNCOUNTED}")) };
+    let found = Arc::new(Input::open(path)?.count(video.index, counted, stop)?);
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    // a few files' worth: the clip on screen, its neighbors, the ones just looked at
+    if known.len() >= KEPT {
+        known.remove(0);
+    }
+    known.push((stamp, found.clone()));
+    Ok((found.0.clone(), Some(found.1.clone())))
 }
+
+/// what the packet pass found, for the files this run has counted last: each by its path, size and modified time
+type Counted = (Vec<Sample>, Vec<i64>);
+static KNOWN: Mutex<Vec<((String, u64, Option<SystemTime>), Arc<Counted>)>> = Mutex::new(Vec::new());
+const KEPT: usize = 16;
+
+/// whether a file that lists no frames up front may be read through to count them.
+pub enum Count<'a> {
+    /// yes, for a file that is opened to play: `counted` follows how far the count has got, and setting `stop`
+    /// ends it
+    Read { counted: &'a AtomicUsize, stop: &'a AtomicBool },
+    /// only if it has been counted in this run already: a card's picture or a line of metadata is not worth
+    /// reading a whole file for
+    Known,
+}
+
+/// why a file is not opened when it would have to be counted first and may not be
+pub const UNCOUNTED: &str = "its frames are not listed up front, and counting them reads the whole file. opening it does that.";
 
 /// a clip's frames: the samples in the order they are read, the times of the frames shown, and how long every frame
 /// lasts when they all last the same. `shown` is the times the packet pass found, when it ran.
@@ -175,12 +207,22 @@ pub(super) fn frames(video: &Video, mut samples: Vec<Sample>, shown: Option<Vec<
 impl Clip {
     /// reads the header. a hap clip or stills start reading at once; any other waits for `start`.
     pub fn open(path: &str) -> Result<Clip, String> {
-        Clip::open_counting(path, &AtomicUsize::new(0))
+        Clip::open_counting(path, &AtomicUsize::new(0), &AtomicBool::new(false))
     }
 
     /// `open`, for a worker: while the packet pass reads a file that lists no frames up front, `counted` follows how
-    /// many it has counted so far.
-    pub fn open_counting(path: &str, counted: &AtomicUsize) -> Result<Clip, String> {
+    /// many it has counted so far, and setting `stop` ends it.
+    pub fn open_counting(path: &str, counted: &AtomicUsize, stop: &AtomicBool) -> Result<Clip, String> {
+        Clip::open_with(path, &Count::Read { counted, stop })
+    }
+
+    /// `open`, for the browser's pictures and the like: a file that would have to be counted first is refused,
+    /// unless this run has counted it already.
+    pub fn open_known(path: &str) -> Result<Clip, String> {
+        Clip::open_with(path, &Count::Known)
+    }
+
+    fn open_with(path: &str, count: &Count) -> Result<Clip, String> {
         if still::is_still(path) {
             return Clip::open_stills(path);
         }
@@ -189,7 +231,7 @@ impl Clip {
         let tag = ff::fourcc(video.tag);
         let name = file_name(path);
         let codec = codec_name(&video).ok_or_else(|| format!("{path}: {} ({tag}) does not play yet. this build plays hap, notchlc, prores, h.264, hevc and vp9.", video.codec_name))?;
-        let (samples, shown) = stored(path, &input, &video, counted)?;
+        let (samples, shown) = stored(path, &input, &video, count)?;
         let counted = shown.is_some();
         let (samples, timeline, step) = frames(&video, samples, shown);
         let lane = if hap_variant(&tag).is_some() {
@@ -346,7 +388,7 @@ mod tests {
         for (name, keys) in [("h264_64.mkv", [0, 133, 267]), ("h264_frag_64.mp4", [1024, 3072, 5120])] {
             let input = Input::open(&media(name)).unwrap();
             let video = input.first_video().unwrap();
-            let (samples, _) = stored(&media(name), &input, &video, &AtomicUsize::new(0)).unwrap();
+            let (samples, _) = stored(&media(name), &input, &video, &Count::Read { counted: &AtomicUsize::new(0), stop: &AtomicBool::new(false) }).unwrap();
             let times: Vec<i64> = samples.iter().filter(|s| s.key).map(|s| s.time).collect();
             assert_eq!(times, keys, "{name}");
         }
@@ -361,9 +403,47 @@ mod tests {
         for name in tables.iter().chain(&mp4s) {
             let input = Input::open(&media(name)).unwrap();
             let video = input.first_video().unwrap();
-            let (_, shown) = stored(&media(name), &input, &video, &AtomicUsize::new(0)).unwrap();
+            let (_, shown) = stored(&media(name), &input, &video, &Count::Known).unwrap();
             assert!(shown.is_none(), "{name} was counted");
         }
+    }
+
+    /// a file that lists no frames is read through only when it is opened to play, and then once: after that this
+    /// run knows its frames, whoever opens it next. (each kind is its own copy here, so no other test has counted it.)
+    #[test]
+    fn a_file_is_counted_once_and_only_to_play_it() {
+        for name in ["h264_64.mkv", "h264_frag_64.mp4", "h264_vfr_64.mp4", "vp9_64.webm"] {
+            let copy = std::env::temp_dir().join(format!("eyepiece-count-{}-{name}", std::process::id()));
+            std::fs::copy(media(name), &copy).unwrap();
+            let path = copy.to_str().unwrap();
+            let refused = Clip::open_known(path).err().unwrap_or_else(|| panic!("{name} was counted for a picture"));
+            assert!(refused.ends_with(UNCOUNTED), "{refused}");
+            let counted = AtomicUsize::new(0);
+            let frames = Clip::open_counting(path, &counted, &AtomicBool::new(false)).expect("open").timeline.frames();
+            assert_eq!((frames, counted.load(std::sync::atomic::Ordering::Relaxed) >= 12), (12, true), "{name}");
+            // known now: the same frames, with no second count
+            let again = AtomicUsize::new(0);
+            assert_eq!(Clip::open_counting(path, &again, &AtomicBool::new(false)).expect("open again").timeline.frames(), 12);
+            assert_eq!(again.load(std::sync::atomic::Ordering::Relaxed), 0, "{name} was counted twice");
+            assert_eq!(Clip::open_known(path).expect("known").timeline.frames(), 12);
+            // written over, it is another file: not known
+            std::fs::write(&copy, std::fs::read(media("h264_frag_64.mp4")).unwrap().iter().chain(&[0u8; 8]).copied().collect::<Vec<u8>>()).unwrap();
+            assert!(Clip::open_known(path).is_err(), "{name}: a changed file was taken for the one counted");
+            std::fs::remove_file(&copy).unwrap();
+        }
+        // a file with its table opens either way
+        assert!(Clip::open_known(&media("h264_64.mp4")).is_ok());
+    }
+
+    /// a count that is told to stop ends with an error, and the file stays uncounted
+    #[test]
+    fn a_count_can_be_stopped() {
+        let copy = std::env::temp_dir().join(format!("eyepiece-stop-{}.mkv", std::process::id()));
+        std::fs::copy(media("h264_64.mkv"), &copy).unwrap();
+        let path = copy.to_str().unwrap();
+        assert!(Clip::open_counting(path, &AtomicUsize::new(0), &AtomicBool::new(true)).is_err());
+        assert!(Clip::open_known(path).is_err());
+        std::fs::remove_file(&copy).unwrap();
     }
 
     /// opening can run on a worker, which says how far the count has got
@@ -371,8 +451,13 @@ mod tests {
     fn a_clip_opens_on_a_worker_and_says_how_far_it_has_counted() {
         let counted = Arc::new(AtomicUsize::new(0));
         let theirs = counted.clone();
-        let clip = std::thread::spawn(move || Clip::open_counting(&media("h264_64.mkv"), &theirs)).join().unwrap().expect("open");
+        let copy = std::env::temp_dir().join(format!("eyepiece-worker-{}.mkv", std::process::id()));
+        std::fs::copy(media("h264_64.mkv"), &copy).unwrap();
+        let path = copy.to_str().unwrap().to_string();
+        let clip = std::thread::spawn(move || Clip::open_counting(&path, &theirs, &AtomicBool::new(false))).join().unwrap().expect("open");
         assert_eq!((clip.timeline.frames(), counted.load(std::sync::atomic::Ordering::Relaxed)), (12, 12));
+        drop(clip);
+        std::fs::remove_file(&copy).unwrap();
     }
 
     /// six frames a 30th of a second apart, then six a 15th, with b-frames: the clip opens with every frame

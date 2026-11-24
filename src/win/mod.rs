@@ -19,8 +19,9 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     // the header is read before the window exists, so the window has the clip's shape from the start and never
     // jumps. that takes a few milliseconds; the graphics device takes a few hundred, and meanwhile the first frame
     // is already being read
+    // a file that would have to be read through first (it lists no frames) is left for the window to open
     let first = first.map(|path| {
-        let clip = Clip::open(&path);
+        let clip = Clip::open_known(&path);
         (path, clip)
     });
     let client = match &first {

@@ -232,11 +232,14 @@ mod tests {
         spare.ask(Ask::Frame { path: "long".into(), frame: 5, playing: true });
         assert!(matches!(answer(&spare, Ask::Seam("long".into())), Answer::Seam(..)));
         assert!(matches!(frame("long", 5, false), Answer::Frame { frame: 5, .. }));
-        // forgotten, the clip is opened anew
+        // forgotten, the clip is opened anew, for a frame and for its seam: a file that changed on disk is
+        // forgotten before it is asked about again, so no answer is of the file that was
         let before = opened.load(Ordering::Relaxed);
         spare.ask(Ask::Forget);
         assert!(matches!(frame("long", 5, false), Answer::Frame { .. }));
-        assert_eq!(opened.load(Ordering::Relaxed), before + 1);
+        spare.ask(Ask::Forget);
+        assert!(matches!(answer(&spare, Ask::Seam("long".into())), Answer::Seam(..)));
+        assert_eq!(opened.load(Ordering::Relaxed), before + 2);
         drop(spare);
         worker.join().unwrap();
     }

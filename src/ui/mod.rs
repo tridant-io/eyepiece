@@ -118,6 +118,8 @@ pub struct Screen<'a> {
     pub clip: Option<Model<'a>>,
     /// why its file did not open, when it did not
     pub error: Option<&'a str>,
+    /// a file is on its way to a tab that shows nothing else: what to say meanwhile, which is nothing at first
+    pub opening: Option<&'a str>,
     /// the browser is up: in a tab with nothing in it, or laid over the clip
     pub browsing: bool,
     pub fullscreen: bool,
@@ -532,12 +534,17 @@ impl Ui {
             _ => {
                 (self.menu, self.shown, self.keys, self.commands) = (None, true, false, None);
                 let body = Rect::from_min_max(strip.left_bottom(), full.max);
-                match screen.error.filter(|_| !screen.browsing) {
-                    Some(why) => {
+                match (screen.error.filter(|_| !screen.browsing), screen.opening.filter(|_| !screen.browsing)) {
+                    (Some(why), _) => {
                         self.browser.away();
                         message(ui, body, screen.tabs[screen.current], why)
                     }
-                    None => match self.browser.draw(ui, body) {
+                    // a file on its way to a tab with nothing else in it: the tab waits, and says so once it is slow
+                    (None, Some(words)) => {
+                        self.browser.away();
+                        message(ui, body, words, "")
+                    }
+                    (None, None) => match self.browser.draw(ui, body) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
                         Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),
                         Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
@@ -1080,11 +1087,14 @@ impl Ui {
             painter.rect_filled(rect, 0.0, SOLID);
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
             let mut number = rect;
-            if let Some((_, picture)) = &self.time_picture {
+            if let Some((of, picture)) = &self.time_picture {
                 let place = Rect::from_min_size(rect.min + Vec2::splat(2.0), Vec2::new(160.0, 90.0));
                 painter.rect_filled(place, 0.0, Color32::BLACK);
                 let fitted = Rect::from_center_size(place.center(), picture.size_vec2() * (place.width() / picture.size_vec2().x).min(place.height() / picture.size_vec2().y));
-                painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                // a picture of another frame than the one named is the last one read, up while that frame is on
+                // its way (or is not read at all, as while a clip with long groups plays): it is drawn dim
+                let tint = if *of == frame { Color32::WHITE } else { Color32::from_gray(90) };
+                painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
                 number = Rect::from_min_max(Pos2::new(rect.left(), place.bottom()), rect.max);
             }
             painter.galley(Pos2::new(number.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), number.center().y)), galley, FG);
@@ -1343,7 +1353,7 @@ mod tests {
 
     /// drives the controls over that clip with the pointer, a pass for each step, and gathers what they asked for
     fn drive(ui: &mut Ui, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
-        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, browsing: false, fullscreen: false, toast: None };
+        let screen = Screen { tabs: vec!["clip"], current: 0, clip: Some(model()), error: None, opening: None, browsing: false, fullscreen: false, toast: None };
         let mut actions = Vec::new();
         for &(x, y, button) in steps {
             match button {

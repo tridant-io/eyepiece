@@ -1,14 +1,14 @@
 //! the facts the metadata panel shows. each comes from the file, or says the file does not carry it and shows the
 //! assumption in use (adr 0003). frames and rate are counted from the sample table the way the player counts them.
 
-use super::clip::{self, hap_variant};
+use super::clip::{self, hap_variant, Count};
 use super::color::Matrix;
 use super::ff::{self, Input, Sample};
 use super::hap::{self, Tex};
 use super::still::{self, Samples};
 use super::timeline::Timeline;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::UNIX_EPOCH;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,7 +37,18 @@ fn row(label: &'static str, value: impl Into<String>, tone: Tone) -> Row {
 }
 
 impl Meta {
+    /// the facts of a file that is open, or is being opened: a file that lists no frames is read through to count
+    /// them, if this run has not counted it yet.
     pub fn read(path: &str) -> Result<Meta, String> {
+        Meta::read_with(path, &Count::Read { counted: &AtomicUsize::new(0), stop: &AtomicBool::new(false) })
+    }
+
+    /// the facts of a file that is only looked at, in the browser: one that would have to be counted is refused.
+    pub fn read_known(path: &str) -> Result<Meta, String> {
+        Meta::read_with(path, &Count::Known)
+    }
+
+    fn read_with(path: &str, count: &Count) -> Result<Meta, String> {
         if still::is_still(path) {
             return still_facts(path);
         }
@@ -46,7 +57,7 @@ impl Meta {
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
         let tag = ff::fourcc(video.tag);
         // mkv, a fragmented mp4 and frames that vary are counted by reading the whole file (`clip::stored`)
-        let (stored, shown) = clip::stored(path, &input, &video, &AtomicUsize::new(0))?;
+        let (stored, shown) = clip::stored(path, &input, &video, count)?;
         let (count, hidden, all_key) = (stored.len(), stored.iter().filter(|s| s.hidden).count(), stored.iter().all(|s| s.key));
         let (samples, timeline, _) = clip::frames(&video, stored, shown);
         // before `probe`, which mixes in what the decoder finds or assumes

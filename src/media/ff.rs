@@ -2,6 +2,7 @@
 
 use ffmpeg_sys_next as ffi;
 use std::ffi::{c_int, c_void, CStr, CString};
+use std::sync::atomic::AtomicBool;
 use std::fs::File;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -197,8 +198,9 @@ impl Input {
     /// the packet pass: every stored sample of a stream, counted by reading the file's packets from where the reader
     /// is to the end, for a container that lists none up front or whose times do not say when frames are shown.
     /// nothing is decoded, but every packet of the stream is read whole. also gives the times the frames are shown,
-    /// in order, leaving out what an edit list hides. `counted` follows how many samples are counted so far.
-    pub fn count(&mut self, stream: usize, counted: &AtomicUsize) -> Result<(Vec<Sample>, Vec<i64>), String> {
+    /// in order, leaving out what an edit list hides. `counted` follows how many samples are counted so far, and
+    /// setting `stop` ends the pass at the next packet, with an error.
+    pub fn count(&mut self, stream: usize, counted: &AtomicUsize, stop: &AtomicBool) -> Result<(Vec<Sample>, Vec<i64>), String> {
         let (mut samples, mut shown) = (Vec::new(), Vec::new());
         unsafe {
             for i in 0..self.streams() {
@@ -221,6 +223,10 @@ impl Input {
                     counted.store(samples.len(), Ordering::Relaxed);
                 }
                 ffi::av_packet_unref(packet);
+                if stop.load(Ordering::Relaxed) {
+                    ffi::av_packet_free(&mut packet);
+                    return Err("the count was stopped".into());
+                }
             };
             ffi::av_packet_free(&mut packet);
             if end != ffi::AVERROR_EOF {
