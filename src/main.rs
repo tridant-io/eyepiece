@@ -11,10 +11,7 @@ mod folder;
 mod markup;
 mod media;
 mod play;
-// the player needs a system's half (`sys`): macos has its renderer so far, and not yet its window
-#[cfg(windows)]
 mod pictures;
-#[cfg(windows)]
 mod player;
 mod preview;
 mod settings;
@@ -27,20 +24,15 @@ mod mac;
 #[cfg(windows)]
 mod win;
 // the system's half of the player: its window, its device and its painters
+#[cfg(target_os = "macos")]
+use mac as sys;
 #[cfg(windows)]
 use win as sys;
 
 fn main() {
     let first = std::env::args().nth(1);
-    #[cfg(windows)]
-    if let Err(why) = win::run(first) {
+    if let Err(why) = sys::run(first) {
         eprintln!("eyepiece: {why}");
-        std::process::exit(1);
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = first;
-        eprintln!("eyepiece: this build runs on windows only so far");
         std::process::exit(1);
     }
 }

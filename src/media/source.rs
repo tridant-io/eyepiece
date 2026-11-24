@@ -92,8 +92,20 @@ fn ram() -> usize {
     (kilobytes * 1024) as usize
 }
 
-/// macos comes later: until then nothing is kept but the frames wanted.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn ram() -> usize {
+    extern "C" {
+        fn sysctlbyname(name: *const std::ffi::c_char, old: *mut std::ffi::c_void, old_len: *mut usize, new: *mut std::ffi::c_void, new_len: usize) -> i32;
+    }
+    let (mut bytes, mut len) = (0u64, std::mem::size_of::<u64>());
+    if unsafe { sysctlbyname(c"hw.memsize".as_ptr(), &mut bytes as *mut u64 as *mut _, &mut len, std::ptr::null_mut(), 0) } != 0 {
+        return 0;
+    }
+    bytes as usize
+}
+
+/// linux comes in phase 5: until then nothing is kept there but the frames wanted.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn ram() -> usize {
     0
 }
@@ -248,6 +260,13 @@ fn work<L: Loader>(shared: &Shared<L::Item>, mut loader: L) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// the machine says how much memory it has: a quarter of it is what decoded frames may take.
+    #[test]
+    fn the_budget_is_a_quarter_of_the_machines_memory() {
+        assert!(budget() >= 1 << 30, "{} bytes", budget());
+        assert_eq!(budget(), ram() / 4);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// a lane whose frames are just their own numbers, and which breaks on frame 3.

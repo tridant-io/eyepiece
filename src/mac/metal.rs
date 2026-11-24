@@ -98,8 +98,9 @@ fn text(e: Retained<objc2_foundation::NSError>) -> String {
 }
 
 impl Gpu {
-    /// the default device, drawing into `layer`, `w` x `h` pixels.
-    pub fn new(layer: Retained<CAMetalLayer>, w: u32, h: u32) -> Result<Gpu, String> {
+    /// the default device, drawing into the window's layer, `w` x `h` pixels.
+    pub fn new(window: super::window::Handle, w: u32, h: u32) -> Result<Gpu, String> {
+        let layer = unsafe { Retained::retain(window.0 as *mut CAMetalLayer) }.ok_or("the window has no layer")?;
         let mut gpu = Gpu::offscreen()?;
         layer.setDevice(Some(&gpu.device));
         layer.setPixelFormat(TARGETS[0]);
