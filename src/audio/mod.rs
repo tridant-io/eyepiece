@@ -293,7 +293,6 @@ mod tests {
         let (half, _) = sound("tone48_stereo.mkv", 0.5, 1.0, 48_000, 2);
         let off = |from: usize| half.iter().zip(&mov[from * 2..]).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
         let landed = (24_000 - 24..=24_000 + 24).min_by(|&a, &b| off(a).total_cmp(&off(b))).unwrap();
-        println!("{} {landed} {}", half.len() / 2, off(landed));
         assert!(off(landed) < 0.01, "{}", off(landed));
     }
 
