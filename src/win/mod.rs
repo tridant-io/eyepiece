@@ -1,6 +1,7 @@
 //! windows: the window, the direct3d renderer and the render thread.
 
 mod d3d;
+mod instance;
 mod render;
 mod ui_paint;
 mod window;
@@ -8,8 +9,12 @@ mod window;
 use crate::media::clip::Clip;
 use std::sync::mpsc;
 
-/// opens the window and runs until it closes. `first` is the file to open at once, if any.
+/// opens the window and runs until it closes. `first` is the file to open at once, if any. when a player is
+/// running already, it is handed `first` instead, and this returns with nothing made.
 pub fn run(first: Option<String>) -> Result<(), String> {
+    if instance::handed_over(first.as_deref()) {
+        return Ok(());
+    }
     // the header is read before the window exists, so the window has the clip's shape from the start and never
     // jumps. that takes a few milliseconds; the graphics device takes a few hundred, and meanwhile the first frame
     // is already being read

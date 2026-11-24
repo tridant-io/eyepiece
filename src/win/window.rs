@@ -4,14 +4,16 @@
 //! it owns the message loop on the main thread and turns messages into events for the render thread, which never
 //! waits on it. dragging or resizing the window therefore never stalls the picture.
 
+use super::instance;
 use crate::event::{Button, Event, Key, Mods};
 use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
-use windows::core::{w, Result, BOOL, PCWSTR};
+use windows::core::{w, Result, BOOL, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_RBUTTON};
@@ -110,10 +112,12 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let inst = GetModuleHandleW(None)?;
+        // a second launch finds this window by its class
+        let name = HSTRING::from(instance::name());
         let class = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: inst.into(),
-            lpszClassName: w!("eyepiece"),
+            lpszClassName: PCWSTR(name.as_ptr()),
             hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             ..Default::default()
@@ -123,7 +127,7 @@ pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
         // when the real pointer leaves, because it would say so at once
         let posted_pointer = std::env::var_os("EYEPIECE_POSTED_POINTER").is_some();
         let (x, y, w, h) = outer(client);
-        let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("eyepiece"), w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
+        let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), &name, w!("eyepiece"), STYLE, x, y, w, h, None, None, Some(inst.into()), None)?;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(Shared { events, wheel: 0, tracking: posted_pointer, posted: posted_pointer, grabbed: (POINT::default(), RECT::default()), moving: false, restore: None, pointer_hidden: false })) as isize);
         // square corners and no border line, so no pixel of the picture is covered (windows 11; ignored before it)
         let (square, no_color) = (1u32, 0xffff_fffeu32);
@@ -574,6 +578,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
+        // a second launch handing over its file, or asking only for the window (instance.rs)
+        WM_COPYDATA => match (lp.0 as *const COPYDATASTRUCT).as_ref().and_then(|data| instance::received(data)) {
+            Some(path) => {
+                if !path.is_empty() {
+                    send(Event::Open(path));
+                }
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                LRESULT(1)
+            }
+            None => DefWindowProcW(hwnd, msg, wp, lp),
+        },
         WM_TITLE => {
             if let Some(title) = TITLE.lock().unwrap().take() {
                 let wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();

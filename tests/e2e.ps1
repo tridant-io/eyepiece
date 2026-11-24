@@ -17,6 +17,7 @@ public static class EyepieceE2e {
   [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 '@
@@ -27,6 +28,9 @@ $env:EYEPIECE_POSTED_POINTER = '1'
 # the player keeps its settings under APPDATA. the tests give it a folder of their own, so every run starts from the
 # defaults and the owner's own settings are left alone
 $env:APPDATA = Join-Path $env:TEMP "eyepiece-e2e-$PID"
+# one player per user: a launch hands its file to a player already running. players started with the same
+# EYEPIECE_INSTANCE find each other and no other, so these never hand a file to one of the owner's
+$env:EYEPIECE_INSTANCE = "e2e-$PID"
 $script:failed = 0
 # the pointer, in the design's pixels. a negative place counts from the right or the bottom edge of the picture area
 function Get-Place([double]$x, [double]$y) {
@@ -301,6 +305,33 @@ Assert-Title 'a file that lists no frames up front says so' '^eyepiece . .*h264_
 Stop-Player
 Start-Player (Join-Path $media 'no such clip.mov')
 Assert-Title 'a missing file says so' '^eyepiece . .*no such clip\.mov'
+Stop-Player
+
+# ---- one player: a second launch hands its file to the window already open and exits, having made no window
+# the tests' own player windows, by the class the player names after EYEPIECE_INSTANCE, whatever their titles
+# (powershell would pass a plain $null as an empty title)
+function Get-Players { $n = 0; $w = [IntPtr]::Zero; while (($w = [EyepieceE2e]::FindWindowEx([IntPtr]::Zero, $w, "eyepiece-$env:EYEPIECE_INSTANCE", [NullString]::Value)) -ne [IntPtr]::Zero) { $n++ }; $n }
+# starts the program again: it must exit with 0 within a few seconds and leave one player window
+function Start-Again([string]$what, [hashtable]$how) {
+    $again = Start-Process $Exe -PassThru @how
+    # a process that ends this soon keeps its exit code only for a handle asked for before it ends
+    [void]$again.Handle
+    $exited = $again.WaitForExit(5000)
+    if (-not $exited) { $again.Kill() }
+    Confirm-That $what ($exited -and $again.ExitCode -eq 0 -and (Get-Players) -eq 1) "exited: $exited, exit code $(if ($exited) { $again.ExitCode }), $(Get-Players) player window(s)"
+}
+# the first player runs in the tests folder, where the relative path given below names nothing
+Push-Location $PSScriptRoot; Start-Player (Join-Path $media 'hapq_64.mov'); Pop-Location
+Assert-Frame 'the first player opens its clip' 0 3
+Start-Again 'a second launch with a file exits at once, and no second window opens' @{ ArgumentList = "`"$(Join-Path $media 'prores_64.mov')`"" }
+$script:name = 'prores_64.mov'; Assert-Frame 'the first window now shows the second launch''s file' 0 4 'software'
+Start-Again 'a launch with a path relative to its own folder exits at once too' @{ ArgumentList = 'hap_64.mov'; WorkingDirectory = $media }
+$script:name = 'hap_64.mov'; Assert-Frame 'and the first window opens that path, resolved from the launch''s folder' 0 3
+[void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 400
+$before = Get-Title
+Start-Again 'a launch with no file exits at once' @{}
+Start-Sleep -Milliseconds 400
+Confirm-That 'and brings the minimized window back, its clip as it was' ((-not [EyepieceE2e]::IsIconic($script:h)) -and (Get-Title) -eq $before) "minimized: $([EyepieceE2e]::IsIconic($script:h)), title '$(Get-Title)', was '$before'"
 Stop-Player
 
 # the tests' own settings: the file, then the two folders made for it, each named before it goes. nothing recursive
