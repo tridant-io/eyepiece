@@ -100,17 +100,19 @@ fn layer(kind: u8, body: &[u8]) -> Result<Layer<'_>, String> {
                 }
                 di = &di[used..];
             }
-            if comp.len() != sizes.len() || comp.is_empty() {
+            // the offset table is optional, but one that is there has to cover every chunk
+            if comp.len() != sizes.len() || comp.is_empty() || (!offsets.is_empty() && offsets.len() != sizes.len()) {
                 return Err("hap chunk tables disagree".into());
             }
             let mut at = 0;
             let mut out = Vec::with_capacity(sizes.len());
             for i in 0..sizes.len() {
                 let start = if offsets.is_empty() { at } else { offsets[i] };
-                let d = data.get(start..start + sizes[i]).ok_or("hap chunk outside its frame")?;
+                let end = start.checked_add(sizes[i]).ok_or("hap chunk outside its frame")?;
+                let d = data.get(start..end).ok_or("hap chunk outside its frame")?;
                 let snappy = comp[i] == 0x0b;
                 out.push(Chunk { data: d, snappy, out_len: if snappy { snappy_len(d)? } else { d.len() } });
-                at = start + sizes[i];
+                at = end;
             }
             out
         }
@@ -259,6 +261,38 @@ mod tests {
         lying[1] = 0xff;
         lying[2] = 0xff;
         assert!(parse(&lying).is_err());
+    }
+
+    /// a hap section: three bytes of length, one of type, then the body.
+    fn section(kind: u8, body: &[u8]) -> Vec<u8> {
+        let mut s = vec![body.len() as u8, (body.len() >> 8) as u8, (body.len() >> 16) as u8, kind];
+        s.extend_from_slice(body);
+        s
+    }
+
+    /// a frame of two stored chunks, with whatever offset table the test asks for.
+    fn two_chunks(offsets: &[u32]) -> Vec<u8> {
+        let le = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+        let mut tables = section(0x02, &[0x0a, 0x0a]);
+        tables.extend(section(0x03, &le(&[4, 4])));
+        if !offsets.is_empty() {
+            tables.extend(section(0x04, &le(offsets)));
+        }
+        let mut body = section(0x01, &tables);
+        body.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        section(0xcb, &body)
+    }
+
+    #[test]
+    fn chunk_tables_that_disagree_are_refused() {
+        // the same frame, well formed, parses: the refusals below are about the tables alone
+        assert_eq!(parse(&two_chunks(&[])).unwrap()[0].len, 8);
+        assert_eq!(parse(&two_chunks(&[0, 4])).unwrap()[0].len, 8);
+        // an offset table shorter than the size table
+        assert!(parse(&two_chunks(&[0])).is_err());
+        // offsets that point outside the frame, or wrap around
+        assert!(parse(&two_chunks(&[0, 6])).is_err());
+        assert!(parse(&two_chunks(&[0, u32::MAX])).is_err());
     }
 
     #[test]

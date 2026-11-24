@@ -58,11 +58,11 @@ impl HapSource {
         let first = samples.first().ok_or("no frames")?;
         let mut raw = vec![0u8; first.size];
         ff::read_at(&file, &mut raw, first.pos).map_err(|e| e.to_string())?;
-        let (tex, len) = {
+        let (tex, len) = guarded(|| {
             let layers = hap::parse(&raw)?;
             let l = picture(&layers)?;
-            (l.tex, l.len)
-        };
+            Ok((l.tex, l.len))
+        })?;
         let padded = hap::padded(width, height);
         let expect = padded.0 / 4 * (padded.1 / 4) * tex.block_bytes();
         if len != expect {
@@ -149,7 +149,7 @@ fn work(shared: &Shared, file: &File, samples: &[Sample], tex: Tex, expect: usiz
                 }
             }
         };
-        let result = load(file, &samples[frame], &mut raw, &mut blocks, tex, expect);
+        let result = guarded(|| load(file, &samples[frame], &mut raw, &mut blocks, tex, expect));
         let mut s = shared.state.lock().unwrap();
         match result {
             Ok(()) => s.ready.push((frame, Arc::new(blocks))),
@@ -157,6 +157,12 @@ fn work(shared: &Shared, file: &File, samples: &[Sample], tex: Tex, expect: usiz
         }
         shared.arrived.notify_all();
     }
+}
+
+/// runs a step that reads an untrusted file. if it stops on something the parser did not foresee, that is this
+/// frame's fault to report, not the end of the reader or of the program.
+fn guarded<T>(step: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)).unwrap_or_else(|_| Err("the reader stopped on this frame".into()))
 }
 
 /// one frame from the file into `blocks`. a frame that does not hold what frame 0 promised is refused, not shown.

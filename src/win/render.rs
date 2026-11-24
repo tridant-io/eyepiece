@@ -217,7 +217,7 @@ pub fn run(window: Handle, events: Receiver<Event>, first: Option<Result<Clip, S
             if let Some(v) = &view {
                 v.draw(&gpu);
             }
-            let missed = gpu.present(playing);
+            let missed = gpu.present(playing, Duration::from_secs_f64(1.0 / hz));
             if let Some(v) = &mut view {
                 if playing {
                     v.late += missed as u64 + v.waiting() as u64;

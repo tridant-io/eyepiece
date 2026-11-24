@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 use windows::core::{Interface, Result, PCSTR};
-use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -213,9 +213,13 @@ impl Gpu {
     /// shows the frame at the next display refresh and waits for it. returns how many refreshes went by without a new
     /// frame since the last present, by the system's own count, when `counting`; pass false for a lone redraw, so the
     /// time spent standing still is never counted as missed.
-    pub fn present(&mut self, counting: bool) -> u32 {
-        unsafe {
-            let _ = self.swap.Present(1, DXGI_PRESENT(0));
+    /// a window that cannot be seen (minimized, or fully covered) has no refresh to wait for: the wait is then
+    /// `refresh` of ordinary sleep, so a clip that is playing keeps its pace and the loop does not spin.
+    pub fn present(&mut self, counting: bool, refresh: std::time::Duration) -> u32 {
+        if unsafe { self.swap.Present(1, DXGI_PRESENT(0)) } == DXGI_STATUS_OCCLUDED {
+            std::thread::sleep(refresh);
+            (self.counting_from, self.counted) = (None, None);
+            return 0;
         }
         if !counting {
             (self.counting_from, self.counted) = (None, None);

@@ -2,7 +2,9 @@
 
 a review player for vfx and install content, by tridant. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.
 
-**status: phase 1, first slice, windows.** it plays hap in every variant (hap, alpha, q, q alpha, r, hdr) from the command line or a file dropped on the window. no controls yet: the title bar carries the readout. prores, h.264, hevc, the control row, zoom and the metadata panel are the rest of phase 1. macos comes after.
+**status: phase 1, first slice, windows.** it plays hap from the command line or a file dropped on the window. no controls yet: the title bar carries the readout. prores, h.264, hevc, the control row, zoom and the metadata panel are the rest of phase 1. macos comes after.
+
+what has been played on real files: hap, hap alpha, hap q, hap r and hap hdr at 4K and 60 frames a second, and hap q at 8K. hap q alpha and alpha-only follow the published spec, but no file of either was at hand. hap hdr goes to the screen as stored: values above 1.0 clip, with no tone map and no chip saying so yet. dropping a file on the window is written and not yet tested.
 
 ## what is here
 
@@ -28,6 +30,8 @@ cargo test
 cargo run --release -- some-clip.mov
 # end to end: drives the built program with real keys and checks what it says (a window opens for a few seconds)
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e.ps1
+# pacing on real clips of your own: plays each for 10 s and counts refreshes that went by without the frame due
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& tests\play.ps1 -Clips a.mov,b.mov"
 ```
 
 keys so far: space plays and pauses. F and G, or the left and right arrows, step one frame; shift with an arrow steps ten. shift+F and shift+G, or home and end, go to the first and last frame. the wheel scrubs, one frame a notch. drop a file on the window to open it.

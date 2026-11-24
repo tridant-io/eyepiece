@@ -1,22 +1,28 @@
-# end to end: starts the real program on a tiny clip, drives it with real key messages and checks what it says.
+# end to end: starts the real program on a tiny clip, drives it with real window messages and checks what it says.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e.ps1 [-Exe path\to\eyepiece.exe]
 # a window opens for a few seconds. exits 0 when every check holds. needs a desktop session.
+# not covered here: dropping a file on the window.
 param([string]$Exe = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target\release\eyepiece.exe'))
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class EyepieceE2e {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int how);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
 }
 '@
 $script:failed = 0
 function Get-Title { $s = New-Object Text.StringBuilder 512; [void][EyepieceE2e]::GetWindowText($script:h, $s, 512); $s.ToString() }
 function Send-Key([int]$vk) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]$vk, [IntPtr]0); Start-Sleep -Milliseconds 250 }
+function Confirm-That([string]$what, [bool]$holds, [string]$detail = '') {
+    if ($holds) { Write-Host "ok    $what" } else { Write-Host "FAIL  ${what}: $detail"; $script:failed++ }
+}
 # the title must come to match within two seconds; it is set by another thread
 function Assert-Title([string]$what, [string]$pattern) {
     foreach ($i in 1..20) { if ((Get-Title) -match $pattern) { Write-Host "ok    $what"; return }; Start-Sleep -Milliseconds 100 }
-    Write-Host "FAIL  ${what}: the title is '$(Get-Title)', wanted /$pattern/"; $script:failed++
+    Confirm-That $what $false "the title is '$(Get-Title)', wanted /$pattern/"
 }
 function Start-Player([string]$clip) {
     $script:p = Start-Process $Exe -ArgumentList "`"$clip`"" -PassThru
@@ -26,9 +32,10 @@ function Start-Player([string]$clip) {
 }
 function Stop-Player {
     [void]$script:p.CloseMainWindow()
-    if ($script:p.WaitForExit(3000)) { if ($script:p.ExitCode -ne 0) { Write-Host "FAIL  exit code $($script:p.ExitCode)"; $script:failed++ } else { Write-Host 'ok    closes cleanly' } }
-    else { Write-Host 'FAIL  did not close in 3 s'; $script:failed++; $script:p.Kill() }
+    if ($script:p.WaitForExit(3000)) { Confirm-That 'closes cleanly' ($script:p.ExitCode -eq 0) "exit code $($script:p.ExitCode)" }
+    else { Confirm-That 'closes cleanly' $false 'still running after 3 s'; $script:p.Kill() }
 }
+function Get-Cpu { $script:p.Refresh(); $script:p.TotalProcessorTime.TotalSeconds }
 
 $media = Join-Path $PSScriptRoot 'media'
 Start-Player (Join-Path $media 'hapq_64.mov')
@@ -39,8 +46,32 @@ Send-Key 0x47; Assert-Title 'a step past the end stays on the last frame' ' 2 / 
 Send-Key 0x46; Assert-Title 'F steps back' ' 1 / 3 '
 Send-Key 0x24; Assert-Title 'home goes to the first frame' ' 0 / 3 '
 Send-Key 0x23; Assert-Title 'end goes to the last frame' ' 2 / 3 '
-Send-Key 0x20; Start-Sleep -Milliseconds 1500; Send-Key 0x20
+
+# the wheel: one notch toward the user is one frame forward, away is one back
+Send-Key 0x24
+[void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536), [IntPtr]0); Assert-Title 'a wheel notch toward the user steps forward' ' 1 / 3 '
+[void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536), [IntPtr]0); Assert-Title 'a wheel notch away steps back' ' 0 / 3 '
+
+# the window changes size: the renderer has to follow and keep answering
+[void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
+Send-Key 0x47; Assert-Title 'still steps after the window is resized' ' 1 / 3 '
+[void][EyepieceE2e]::ShowWindow($script:h, 3); Start-Sleep -Milliseconds 400
+Send-Key 0x47; Assert-Title 'still steps when maximized' ' 2 / 3 '
+[void][EyepieceE2e]::ShowWindow($script:h, 9); Start-Sleep -Milliseconds 400
+Send-Key 0x46; Assert-Title 'still steps when restored' ' 1 / 3 '
+
+# playing while minimized: no display to wait for, so the loop must pace itself and not spin a core
+Send-Key 0x20
+[void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 500
+$before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
+Confirm-That 'playing while minimized does not spin a core' ($used -lt 0.5) "used $([math]::Round($used, 2)) s of cpu in 2 s"
+[void][EyepieceE2e]::ShowWindow($script:h, 9); Start-Sleep -Milliseconds 400
+Send-Key 0x20
 Assert-Title 'plays and pauses on a real frame, none unshowable' ' [0-2] / 3 . 64 . 64 . hap q . 60000/1001 fps( . \d+ late)?$'
+
+# standing still costs nothing
+$before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
+Confirm-That 'standing still uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 Stop-Player
 
 Start-Player (Join-Path $media 'no such clip.mov')
