@@ -105,12 +105,14 @@ pub struct Video {
     pub time_base: (i64, i64),
 }
 
-/// one stored sample of a stream: where it lies in the file, and its time in the stream's units.
+/// one stored sample of a stream: where it lies in the file, its decode time in the stream's units, and whether
+/// decoding can start at it.
 #[derive(Clone, Copy)]
 pub struct Sample {
     pub pos: u64,
     pub size: usize,
     pub time: i64,
+    pub key: bool,
 }
 
 pub struct Input {
@@ -169,7 +171,7 @@ impl Input {
             (0..n)
                 .filter_map(|i| {
                     let e = ffi::avformat_index_get_entry(st, i);
-                    (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp })
+                    (!e.is_null()).then(|| Sample { pos: (*e).pos as u64, size: (*e).size() as usize, time: (*e).timestamp, key: (*e).flags() & ffi::AVINDEX_KEYFRAME as i32 != 0 })
                 })
                 .collect()
         }

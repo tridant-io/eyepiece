@@ -74,6 +74,30 @@ $before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
 Confirm-That 'standing still uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 Stop-Player
 
+# a clip ffmpeg decodes, with key frames four apart and frames stored out of order: steps go back across key frames
+Start-Player (Join-Path $media 'h264_64.mp4')
+Assert-Title 'h.264 opens on frame 0 and says how it is decoded' 'h264_64\.mp4 . 0 / 12 . 64 . 64 . h\.264, (hardware|software) . 15360/512 fps$'
+Send-Key 0x23; Assert-Title 'h.264: end goes to the last frame' ' 11 / 12 '
+Send-Key 0x46; Assert-Title 'h.264: a step back' ' 10 / 12 '
+Send-Key 0x46; Send-Key 0x46; Send-Key 0x46; Assert-Title 'h.264: steps back across a key frame' ' 7 / 12 '
+Send-Key 0x47; Assert-Title 'h.264: and forward again' ' 8 / 12 '
+Send-Key 0x24; Assert-Title 'h.264: home goes to the first frame' ' 0 / 12 '
+Send-Key 0x20; Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'h.264 plays and pauses on a real frame, none unshowable' ' \d+ / 12 . 64 . 64 . h\.264, (hardware|software) . 15360/512 fps( . \d+ late)?$'
+Stop-Player
+
+Start-Player (Join-Path $media 'prores_64.mov')
+Assert-Title 'prores opens, decoded in software' 'prores_64\.mov . 0 / 4 . 64 . 64 . prores, software . '
+Send-Key 0x23; Assert-Title 'prores: end goes to the last frame' ' 3 / 4 '
+Send-Key 0x46; Assert-Title 'prores: a step back' ' 2 / 4 '
+Stop-Player
+
+Start-Player (Join-Path $media 'hevc10_64.mp4')
+Assert-Title 'hevc opens' 'hevc10_64\.mp4 . 0 / 12 . 64 . 64 . hevc, (hardware|software) . '
+Send-Key 0x23; Assert-Title 'hevc: end goes to the last frame' ' 11 / 12 '
+Send-Key 0x46; Send-Key 0x46; Assert-Title 'hevc: steps back' ' 9 / 12 '
+Stop-Player
+
 Start-Player (Join-Path $media 'no such clip.mov')
 Assert-Title 'a missing file says so and the window stays' '^eyepiece . .*no such clip\.mov'
 Stop-Player

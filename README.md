@@ -2,9 +2,15 @@
 
 a review player for vfx and install content, by tridant. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.
 
-**status: phase 1, first slice, windows.** it plays hap from the command line or a file dropped on the window. no controls yet: the title bar carries the readout. prores, h.264, hevc, the control row, zoom and the metadata panel are the rest of phase 1. macos comes after.
+**status: phase 1, in progress, windows.** it plays hap, prores, h.264 and hevc from the command line or a file dropped on the window. no controls yet: the title bar carries the readout. the control row, zoom and the pixel readout, the metadata panel and screenshots are the rest of phase 1. macos comes after.
 
-what has been played on real files: hap, hap alpha, hap q, hap r and hap hdr at 4K and 60 frames a second, and hap q at 8K. hap q alpha and alpha-only follow the published spec, but no file of either was at hand. hap hdr goes to the screen as stored: values above 1.0 clip, with no tone map and no chip saying so yet. dropping a file on the window is written and not yet tested.
+what has been played on real files, at 4K and 60 frames a second:
+
+- hap, hap alpha, hap q, hap r and hap hdr, and hap q at 8K: our own code, blocks to the gpu as stored. hap q alpha and alpha-only follow the published spec, but no file of either was at hand. hap hdr goes to the screen as stored: values above 1.0 clip, with no tone map and no chip saying so yet.
+- h.264 and 10-bit hevc: the system's hardware decoder, drawn from the decoder's own surface with no copy. when the gpu does not take a stream the same clip decodes in software.
+- prores 422 hq: ffmpeg in software, one frame at a time on every core. prores 4444 xq at 4K60 does not hold its rate in software on the dev machine (about 30 frames a second), as phase 0 measured. alpha in a prores file is not drawn: the picture is shown as stored, over black.
+
+known gaps: chroma is read at the nearest sample, not blended at the file's siting yet. a file that does not name its color matrix gets the usual assumption (bt.709 at 720 lines and up, bt.601 below), and nothing on screen says so until the metadata panel exists. variable frame rates do not play. stepping back past the frames kept ready costs a decode from the last key frame. dropping a file on the window is written and not yet tested.
 
 ## what is here
 

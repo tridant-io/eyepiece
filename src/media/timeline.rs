@@ -19,15 +19,17 @@ impl Timeline {
         self.times.len()
     }
 
-    /// the frame rate as the file writes it, when every frame lasts the same: time units a second over units a frame.
-    /// not reduced, so 60000/1001 stays 60000/1001 and a file written as 2997/100 shows 2997/100.
+    /// how long every frame lasts, in time units, when they all last the same.
     /// None when the durations vary, or when there are fewer than two frames to measure.
-    pub fn rate(&self) -> Option<(i64, i64)> {
+    pub fn step(&self) -> Option<i64> {
         let step = self.times.get(1)? - self.times[0];
-        if step <= 0 || self.times.windows(2).any(|p| p[1] - p[0] != step) {
-            return None;
-        }
-        Some((self.time_base.1, self.time_base.0 * step))
+        (step > 0 && self.times.windows(2).all(|p| p[1] - p[0] == step)).then_some(step)
+    }
+
+    /// the frame rate as the file writes it: time units a second over units a frame.
+    /// not reduced, so 60000/1001 stays 60000/1001 and a file written as 2997/100 shows 2997/100.
+    pub fn rate(&self) -> Option<(i64, i64)> {
+        self.step().map(|step| (self.time_base.1, self.time_base.0 * step))
     }
 
     /// frames a second, for pacing. a clip with no single rate is paced by its average.

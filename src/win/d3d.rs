@@ -1,11 +1,13 @@
 //! the direct3d 11 renderer: one device, one flip-model swapchain with a 10-bit back buffer, one triangle that covers
-//! whatever rectangle the picture is drawn into. everything here runs on the render thread.
+//! whatever rectangle the picture is drawn into. the device is shared with ffmpeg's hardware decoder, which writes
+//! its frames into surfaces on it from the decoding thread; both sides take the device's own lock around their calls.
 
+use crate::media::dec::Hardware;
 use std::ffi::c_void;
 use windows::core::{Interface, Result, PCSTR};
 use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
-use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST};
+use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D11_SRV_DIMENSION_TEXTURE2DARRAY, D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
@@ -14,30 +16,61 @@ const VS: &str = "
 struct O { float4 pos : SV_Position; };
 O main(uint id : SV_VertexID) { O o; float2 uv = float2((id << 1) & 2, id & 2); o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); return o; }";
 
-/// where the picture goes in the window, for the shader: the rectangle's corner in pixels, how many source texels one
-/// screen pixel covers, and the picture's size in texels.
+/// what every picture shader is told. first where the picture goes: the rectangle's corner in window pixels, how many
+/// source texels one window pixel covers, and the picture's size in texels. then, for y'cbcr pictures, the color
+/// numbers from `media::color` and how much smaller the chroma planes are.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct Placement {
+pub struct Constants {
     pub origin: [f32; 2],
     pub texels_per_pixel: [f32; 2],
     pub size: [f32; 2],
-    pub pad: [f32; 2],
+    pub chroma_per_luma: [f32; 2],
+    /// y scale, y offset, chroma scale, chroma offset
+    pub scale_offset: [f32; 4],
+    /// cr to r, cb to g, cr to g, cb to b
+    pub matrix: [f32; 4],
 }
+
+/// the hlsl for `Constants`, shared by every picture shader.
+pub const CONSTANTS_HLSL: &str = "cbuffer Constants : register(b0) { float2 origin; float2 texels_per_pixel; float2 size; float2 chroma_per_luma; float4 scale_offset; float4 matrix_; };";
 
 pub struct Gpu {
     pub device: ID3D11Device,
     pub ctx: ID3D11DeviceContext,
+    /// the device's own lock, recursive, which ffmpeg's decoder takes too
+    multithread: ID3D11Multithread,
     swap: IDXGISwapChain1,
     rtv: Option<ID3D11RenderTargetView>,
     vs: ID3D11VertexShader,
-    placement: ID3D11Buffer,
+    constants: ID3D11Buffer,
     pub w: u32,
     pub h: u32,
     /// while playing: the number of the first present counted, and the counters at the last look
     /// (presents, the refresh the last one was shown on)
     counting_from: Option<u32>,
     counted: Option<(u32, u32)>,
+}
+
+/// holds the device's lock until dropped.
+pub struct Locked<'a>(&'a ID3D11Multithread);
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        unsafe { self.0.Leave() };
+    }
+}
+
+unsafe extern "C" fn lock(multithread: *mut c_void) {
+    if let Some(m) = ID3D11Multithread::from_raw_borrowed(&multithread) {
+        m.Enter();
+    }
+}
+
+unsafe extern "C" fn unlock(multithread: *mut c_void) {
+    if let Some(m) = ID3D11Multithread::from_raw_borrowed(&multithread) {
+        m.Leave();
+    }
 }
 
 /// compiled shaders are kept in the os cache folder, in our own folder there, one small file each.
@@ -82,6 +115,9 @@ impl Gpu {
         unsafe {
             D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, Some(&levels), D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx))?;
             let (device, ctx): (ID3D11Device, ID3D11DeviceContext) = (device.unwrap(), ctx.unwrap());
+            // the decoder uses this device from its own thread
+            let multithread: ID3D11Multithread = ctx.cast()?;
+            let _ = multithread.SetMultithreadProtected(true);
             // one frame may wait for the display, not the default three. with three, a present returns at once until
             // the queue is full: play starts with a burst of frames the reader cannot have ready, a step shows
             // three refreshes late, and the queue stutters as it settles
@@ -103,13 +139,25 @@ impl Gpu {
             let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
             let mut vs = None;
             device.CreateVertexShader(&compile(VS, "vs_5_0")?, None, Some(&mut vs))?;
-            let buffer = D3D11_BUFFER_DESC { ByteWidth: std::mem::size_of::<Placement>() as u32, Usage: D3D11_USAGE_DEFAULT, BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32, ..Default::default() };
-            let mut placement = None;
-            device.CreateBuffer(&buffer, None, Some(&mut placement))?;
-            let mut gpu = Gpu { device, ctx, swap, rtv: None, vs: vs.unwrap(), placement: placement.unwrap(), w, h, counting_from: None, counted: None };
+            let buffer = D3D11_BUFFER_DESC { ByteWidth: std::mem::size_of::<Constants>() as u32, Usage: D3D11_USAGE_DEFAULT, BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32, ..Default::default() };
+            let mut constants = None;
+            device.CreateBuffer(&buffer, None, Some(&mut constants))?;
+            let mut gpu = Gpu { device, ctx, multithread, swap, rtv: None, vs: vs.unwrap(), constants: constants.unwrap(), w, h, counting_from: None, counted: None };
             gpu.target()?;
             Ok(gpu)
         }
+    }
+
+    /// what a hardware decoder needs to write its frames onto this device. the decoder must be gone before the device.
+    pub fn hardware(&self) -> Hardware {
+        Hardware { device: self.device.as_raw(), lock, unlock, lock_ctx: self.multithread.as_raw() }
+    }
+
+    /// takes the device's lock for a run of calls, so the decoder's calls do not land in the middle of them.
+    /// not to be held across a present: that waits for the display, and the decoder would wait with it.
+    pub fn locked(&self) -> Locked<'_> {
+        unsafe { self.multithread.Enter() };
+        Locked(&self.multithread)
     }
 
     fn target(&mut self) -> Result<()> {
@@ -163,24 +211,44 @@ impl Gpu {
         }
     }
 
-    /// rewrites a dynamic texture from ordinary memory: `rows` rows of `row_bytes` (rows of blocks for bc formats).
-    /// this is the hap lane's one copy.
-    pub fn fill(&self, tex: &ID3D11Texture2D, data: &[u8], rows: usize, row_bytes: usize) -> Result<()> {
+    /// rewrites a dynamic texture from ordinary memory: `rows` rows of `row_bytes` (rows of blocks for bc formats),
+    /// which lie `stride` bytes apart in `data`. this is the one copy a frame from ordinary memory costs.
+    pub fn fill(&self, tex: &ID3D11Texture2D, data: &[u8], rows: usize, row_bytes: usize, stride: usize) -> Result<()> {
         unsafe {
             let mut m = D3D11_MAPPED_SUBRESOURCE::default();
             self.ctx.Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m))?;
             let pitch = m.RowPitch as usize;
             let mem = std::slice::from_raw_parts_mut(m.pData as *mut u8, pitch * (rows - 1) + row_bytes);
-            if pitch == row_bytes {
+            if pitch == row_bytes && stride == row_bytes {
                 mem.copy_from_slice(&data[..rows * row_bytes]);
             } else {
                 for r in 0..rows {
-                    mem[r * pitch..r * pitch + row_bytes].copy_from_slice(&data[r * row_bytes..(r + 1) * row_bytes]);
+                    mem[r * pitch..r * pitch + row_bytes].copy_from_slice(&data[r * stride..r * stride + row_bytes]);
                 }
             }
             self.ctx.Unmap(tex, 0);
         }
         Ok(())
+    }
+
+    /// two views onto one slice of a hardware decoder's texture array, so a shader reads the frame where it was
+    /// decoded: the luma plane, and the plane that holds both chroma samples side by side. `texture` is the decoder's
+    /// ID3D11Texture2D, borrowed. `deep` is true for more than 8 bits a sample.
+    pub fn surface_views(&self, texture: *mut c_void, slice: u32, deep: bool) -> Result<(ID3D11ShaderResourceView, ID3D11ShaderResourceView)> {
+        let view = |format: DXGI_FORMAT| -> Result<ID3D11ShaderResourceView> {
+            let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                Format: format,
+                ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
+                Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 { Texture2DArray: D3D11_TEX2D_ARRAY_SRV { MostDetailedMip: 0, MipLevels: 1, FirstArraySlice: slice, ArraySize: 1 } },
+            };
+            let mut v = None;
+            unsafe {
+                let texture = ID3D11Texture2D::from_raw_borrowed(&texture).ok_or_else(windows::core::Error::empty)?;
+                self.device.CreateShaderResourceView(texture, Some(&desc), Some(&mut v))?;
+            }
+            Ok(v.unwrap())
+        };
+        Ok(if deep { (view(DXGI_FORMAT_R16_UNORM)?, view(DXGI_FORMAT_R16G16_UNORM)?) } else { (view(DXGI_FORMAT_R8_UNORM)?, view(DXGI_FORMAT_R8G8_UNORM)?) })
     }
 
     /// starts a frame: the whole window black.
@@ -194,19 +262,23 @@ impl Gpu {
         }
     }
 
-    /// draws `ps` over the rectangle (x, y, w, h) of the window, reading `srv`. `size` is the picture in texels.
-    pub fn draw(&self, ps: &ID3D11PixelShader, srv: &ID3D11ShaderResourceView, rect: (f32, f32, f32, f32), size: (f32, f32)) {
+    /// draws `ps` over the rectangle (x, y, w, h) of the window, reading `views`. the placement fields of `constants`
+    /// are filled in here; `size` is the picture in texels.
+    pub fn draw(&self, ps: &ID3D11PixelShader, views: &[Option<ID3D11ShaderResourceView>], rect: (f32, f32, f32, f32), size: (f32, f32), mut constants: Constants) {
         let (x, y, w, h) = rect;
-        let placement = Placement { origin: [x, y], texels_per_pixel: [size.0 / w, size.1 / h], size: [size.0, size.1], pad: [0.0; 2] };
+        (constants.origin, constants.texels_per_pixel, constants.size) = ([x, y], [size.0 / w, size.1 / h], [size.0, size.1]);
         unsafe {
-            self.ctx.UpdateSubresource(&self.placement, 0, None, &placement as *const Placement as *const c_void, 0, 0);
+            self.ctx.UpdateSubresource(&self.constants, 0, None, &constants as *const Constants as *const c_void, 0, 0);
             self.ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: x, TopLeftY: y, Width: w, Height: h, MinDepth: 0.0, MaxDepth: 1.0 }]));
             self.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             self.ctx.VSSetShader(&self.vs, None);
             self.ctx.PSSetShader(ps, None);
-            self.ctx.PSSetConstantBuffers(0, Some(&[Some(self.placement.clone())]));
-            self.ctx.PSSetShaderResources(0, Some(&[Some(srv.clone())]));
+            self.ctx.PSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
+            self.ctx.PSSetShaderResources(0, Some(views));
             self.ctx.Draw(3, 0);
+            // let go of the views: a decoder's surface that is still bound cannot be decoded into again
+            let none: Vec<Option<ID3D11ShaderResourceView>> = vec![None; views.len()];
+            self.ctx.PSSetShaderResources(0, Some(&none));
         }
     }
 
