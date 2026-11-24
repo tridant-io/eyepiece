@@ -238,9 +238,11 @@ fn read(file: &mut File) -> Option<Strip> {
     let u64_at = |at: usize| u64::from_le_bytes(head[at..at + 8].try_into().unwrap());
     let (width, height, count, packed) = (u32_at(12), u32_at(16), u32_at(28) as usize, u32_at(32) as usize);
     let len = pixel_len(width, height, count)?;
+    if head[..8] != MAGIC || u32_at(8) != VERSION || packed > snap::raw::max_compress_len(len) {
+        return None;
+    }
     let body = 8 * count + packed;
-    let fits = head[..8] == MAGIC && u32_at(8) == VERSION && packed <= snap::raw::max_compress_len(len);
-    if !fits || file.metadata().ok()?.len() != (HEAD + body) as u64 {
+    if file.metadata().ok()?.len() != (HEAD + body) as u64 {
         return None;
     }
     let mut rest = vec![0; body];
@@ -430,7 +432,7 @@ mod tests {
         let all = Cache::at(dir.clone(), u64::MAX).unwrap();
         let flat = |v: u8| strip(8, 8, 2, move || v);
         let keys = [key("a.mov"), key("b.mov"), key("c.mov"), key("d.mov")];
-        for (i, k) in keys.iter().enumerate() {
+        for (i, k) in keys[..3].iter().enumerate() {
             all.put(k, &flat(i as u8)).unwrap();
         }
         for (k, hours) in keys.iter().zip([3, 2, 1]) {
@@ -463,8 +465,10 @@ mod tests {
         let (left, writing) = (dir.join(format!("{hex}.tmp-4242000001")), dir.join(format!("{hex}.tmp-4242000002")));
         made(&left, 48);
         made(&writing, 0);
+        // room for two: storing the fourth makes it
         let len = |k: &Key| fs::metadata(all.file(k, "strip")).unwrap().len();
-        Cache::at(dir.clone(), len(&keys[2]) + len(&keys[3])).unwrap().evict().unwrap();
+        Cache::at(dir.clone(), 2 * len(&keys[2])).unwrap().put(&keys[3], &flat(3)).unwrap();
+        assert_eq!(len(&keys[3]), len(&keys[2]));
         let there = |k: &Key| all.file(k, "strip").exists();
         assert_eq!(keys.each_ref().map(there), [false, false, true, true]);
         assert!(!left.exists() && writing.exists());
