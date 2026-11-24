@@ -80,6 +80,13 @@ impl Drop for Work {
 
 /// reads a still file whole, through our own shared handle, and decodes it.
 pub fn decode(path: &str) -> Result<Image, String> {
+    decode_into(path, Vec::new())
+}
+
+/// `decode`, into a finished picture's memory (`spare`) when it is the size this one needs. memory in use is written
+/// over as it is, where fresh memory the system has to clear first: a 4K half float exr took 83 ms into a spare
+/// against 104 ms into fresh memory (medians of nine, dev machine, busy).
+pub fn decode_into(path: &str, spare: Vec<u8>) -> Result<Image, String> {
     let file = ff::open_shared(path)?;
     let len = file.metadata().map_err(|e| format!("{path}: {e}"))?.len();
     let len = i32::try_from(len).map_err(|_| format!("{path}: too big for one picture"))?;
@@ -124,7 +131,7 @@ pub fn decode(path: &str) -> Result<Image, String> {
         // exr states its rate as a ratio. dpx states it as a float, which ffmpeg turns into a near ratio: not used
         let r = (*w.ctx).framerate;
         let rate = (format.codec == ffi::AVCodecID::AV_CODEC_ID_EXR && r.num > 0 && r.den > 0).then_some((r.num as i64, r.den as i64));
-        let (samples, has_alpha, bits, data) = unpack(&*w.frame).map_err(|e| format!("{path}: {e}"))?;
+        let (samples, has_alpha, bits, data) = unpack(&*w.frame, spare).map_err(|e| format!("{path}: {e}"))?;
         let f = &*w.frame;
         Ok(Image { width: f.width as usize, height: f.height as usize, samples, has_alpha, bits, data, codec: format.name, rate })
     }
@@ -158,9 +165,10 @@ fn halves() -> &'static [f32; 1 << 16] {
     TABLE.get_or_init(|| (0..=u16::MAX).map(half).collect::<Box<[f32]>>().try_into().unwrap())
 }
 
-/// the decoded picture as packed rgba: (samples, has alpha, the file's bits, the bytes). any layout ffmpeg describes
-/// as whole bytes per number is read from its own description; the rest is refused by name.
-unsafe fn unpack(f: &ffi::AVFrame) -> Result<(Samples, bool, u32, Vec<u8>), String> {
+/// the decoded picture as packed rgba, in `spare` if it is the right size: (samples, has alpha, the file's bits, the
+/// bytes). any layout ffmpeg describes as whole bytes per number is read from its own description; the rest is
+/// refused by name.
+unsafe fn unpack(f: &ffi::AVFrame, spare: Vec<u8>) -> Result<(Samples, bool, u32, Vec<u8>), String> {
     let desc = ffi::av_pix_fmt_desc_get(std::mem::transmute::<i32, ffi::AVPixelFormat>(f.format));
     if desc.is_null() || f.width <= 0 || f.height <= 0 {
         return Err("the decoder gave no picture".into());
@@ -178,7 +186,7 @@ unsafe fn unpack(f: &ffi::AVFrame) -> Result<(Samples, bool, u32, Vec<u8>), Stri
     // the alpha is always the last number; one or two numbers are gray, or gray and alpha
     let alpha = has_alpha.then(|| comps[comps.len() - 1]);
     if comps.len() >= 3 && !flag(ffi::AV_PIX_FMT_FLAG_RGB) {
-        return if depth == 8 { Ok((Samples::U8, has_alpha, 8, from_ycbcr(f, desc, alpha))) } else { Err(refused()) };
+        return if depth == 8 { Ok((Samples::U8, has_alpha, 8, from_ycbcr(f, desc, alpha, spare))) } else { Err(refused()) };
     }
     let sources = if comps.len() >= 3 { [comps[0], comps[1], comps[2]] } else { [comps[0]; 3] };
     let sources = [Some(sources[0]), Some(sources[1]), Some(sources[2]), alpha];
@@ -188,28 +196,33 @@ unsafe fn unpack(f: &ffi::AVFrame) -> Result<(Samples, bool, u32, Vec<u8>), Stri
         if be { u16::from_be_bytes(b) } else { u16::from_le_bytes(b) }
     };
     Ok(match (flag(ffi::AV_PIX_FMT_FLAG_FLOAT), depth) {
-        (false, 8) => (Samples::U8, has_alpha, 8, pack(f, sources, [255], |p| [*p])),
-        (false, 9..=16) => (Samples::U16, has_alpha, depth, pack(f, sources, u16::MAX.to_ne_bytes(), |p| widen(u16_at(p), depth).to_ne_bytes())),
+        (false, 8) => (Samples::U8, has_alpha, 8, pack(f, sources, [255], |p| [*p], spare)),
+        (false, 9..=16) => (Samples::U16, has_alpha, depth, pack(f, sources, u16::MAX.to_ne_bytes(), |p| widen(u16_at(p), depth).to_ne_bytes(), spare)),
         (true, 16) => {
             let halves = halves();
-            (Samples::F32, has_alpha, 16, pack(f, sources, 1f32.to_ne_bytes(), |p| halves[u16_at(p) as usize].to_ne_bytes()))
+            (Samples::F32, has_alpha, 16, pack(f, sources, 1f32.to_ne_bytes(), |p| halves[u16_at(p) as usize].to_ne_bytes(), spare))
         }
         (true, 32) => {
             let read = |p: *const u8| {
                 let b = [*p, *p.add(1), *p.add(2), *p.add(3)];
                 (if be { f32::from_be_bytes(b) } else { f32::from_le_bytes(b) }).to_ne_bytes()
             };
-            (Samples::F32, has_alpha, 32, pack(f, sources, 1f32.to_ne_bytes(), read))
+            (Samples::F32, has_alpha, 32, pack(f, sources, 1f32.to_ne_bytes(), read, spare))
         }
         _ => return Err(refused()),
     })
 }
 
+/// `len` bytes, every one of which the caller sets: `spare` when it is that long, else fresh.
+fn bytes(spare: Vec<u8>, len: usize) -> Vec<u8> {
+    if spare.len() == len { spare } else { vec![0; len] }
+}
+
 /// packs rgba, `N` bytes a number, from where each of red, green, blue and alpha lies in the frame. `read` turns the
 /// stored number at a place into the bytes of the packed one; a number with nowhere to come from is `one`.
-unsafe fn pack<const N: usize>(f: &ffi::AVFrame, sources: [Option<ffi::AVComponentDescriptor>; 4], one: [u8; N], read: impl Fn(*const u8) -> [u8; N]) -> Vec<u8> {
+unsafe fn pack<const N: usize>(f: &ffi::AVFrame, sources: [Option<ffi::AVComponentDescriptor>; 4], one: [u8; N], read: impl Fn(*const u8) -> [u8; N], spare: Vec<u8>) -> Vec<u8> {
     let (width, height) = (f.width as usize, f.height as usize);
-    let mut out = vec![0u8; width * height * 4 * N];
+    let mut out = bytes(spare, width * height * 4 * N);
     for (y, row) in out.chunks_exact_mut(width * 4 * N).enumerate() {
         // one channel at a time, which measured quicker than one pixel at a time
         for (channel, source) in sources.iter().enumerate() {
@@ -228,7 +241,7 @@ unsafe fn pack<const N: usize>(f: &ffi::AVFrame, sources: [Option<ffi::AVCompone
 
 /// 8-bit y'cbcr, as jpeg stores it (jfif): full range and bt.601, whatever the frame is tagged. chroma is read at the
 /// nearest sample, as for video.
-unsafe fn from_ycbcr(f: &ffi::AVFrame, desc: &ffi::AVPixFmtDescriptor, alpha: Option<ffi::AVComponentDescriptor>) -> Vec<u8> {
+unsafe fn from_ycbcr(f: &ffi::AVFrame, desc: &ffi::AVPixFmtDescriptor, alpha: Option<ffi::AVComponentDescriptor>, spare: Vec<u8>) -> Vec<u8> {
     let c = color::conversion(Stored { bits: 8, texel_bits: 8, top_aligned: false, full_range: true }, Matrix::Bt601);
     let (width, height) = (f.width as usize, f.height as usize);
     let at = |comp: ffi::AVComponentDescriptor, x: usize, y: usize| {
@@ -236,7 +249,7 @@ unsafe fn from_ycbcr(f: &ffi::AVFrame, desc: &ffi::AVPixFmtDescriptor, alpha: Op
         *f.data[plane].offset(y as isize * f.linesize[plane] as isize + (comp.offset as usize + x * comp.step as usize) as isize)
     };
     let (sx, sy) = (desc.log2_chroma_w as u32, desc.log2_chroma_h as u32);
-    let mut out = vec![0u8; width * height * 4];
+    let mut out = bytes(spare, width * height * 4);
     for (y, row) in out.chunks_exact_mut(width * 4).enumerate() {
         for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let luma = at(desc.comp[0], x, y) as f32 / 255.0 * c.y_scale + c.y_offset;
@@ -307,6 +320,19 @@ mod tests {
             assert_eq!((image.width, image.height, image.codec, image.samples, image.has_alpha, image.bits), (16, 16, codec, samples, has_alpha, bits), "{name}");
             assert_eq!(image.data.len(), 16 * 16 * 4 * [1, 2, 4][samples as usize], "{name}");
             assert_eq!((px(&image, 3, 5), px(&image, 15, 0)), (at_3_5, at_15_0), "{name}");
+        }
+    }
+
+    /// a finished picture's memory of the right size is written over, every byte of it; any other size is let go.
+    #[test]
+    fn a_spare_of_the_right_size_is_used_whole() {
+        for name in ["still_half.exr", "still_10bit.dpx", "still.tga", "still.jpg"] {
+            let fresh = decode(&media(name)).unwrap();
+            let spare = vec![7u8; fresh.data.len()];
+            let at = spare.as_ptr();
+            let reused = decode_into(&media(name), spare).unwrap();
+            assert_eq!((reused.data.as_ptr(), &reused.data), (at, &fresh.data), "{name}");
+            assert_eq!(decode_into(&media(name), vec![7u8; 3]).unwrap().data, fresh.data, "{name}");
         }
     }
 

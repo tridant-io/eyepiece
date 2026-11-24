@@ -47,7 +47,7 @@ pub(super) struct Run {
     /// the frame of the file the run was found from
     pub(super) at: usize,
     pub(super) missing: Vec<usize>,
-    path_of: Box<dyn Fn(usize) -> String + Send>,
+    path_of: Box<dyn Fn(usize) -> String + Send + Sync>,
 }
 
 /// the file's name without its folder.

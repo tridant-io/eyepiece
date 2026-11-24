@@ -66,8 +66,9 @@ pub enum Show {
     Black,
 }
 
-/// frames a reader keeps ready past the one on screen
-const AHEAD: usize = 4;
+/// frames a reader may keep ready past the one on screen: a reader takes as many as its workers use, four for each,
+/// at most 32 (`media::source`)
+const AHEAD: usize = 32;
 /// how many refreshes ahead to look for them: enough for the slowest speed on the fastest display
 const AHEAD_REFRESHES: usize = 480;
 
@@ -726,11 +727,11 @@ mod tests {
         // playing: what comes next, round the end
         t.go(8);
         t.set_playing(true);
-        assert_eq!(t.ahead(), [8, 9, 0, 1, 2]);
+        assert_eq!(t.ahead(), [8, 9, 0, 1, 2, 3, 4, 5, 6, 7]);
         // backward
         t.go(1);
         t.shuttle(-1);
-        assert_eq!(t.ahead(), [1, 0, 9, 8, 7]);
+        assert_eq!(t.ahead(), [1, 0, 9, 8, 7, 6, 5, 4, 3, 2]);
         // twice as fast: only the frames that will be shown
         t.go(0);
         t.set_speed(2.0);
@@ -748,7 +749,7 @@ mod tests {
         t.step(4);
         assert_eq!((t.frame(), t.ahead()), (99, vec![99, 0, 98]));
         t.set_playing(true);
-        assert_eq!(t.ahead(), [99, 0, 1, 2, 3]);
+        assert_eq!(t.ahead(), [99, 0, 1, 2, 3, 4, 95, 96, 97, 98]);
         // a single frame has nothing next
         assert_eq!(Transport::new(1, 60.0, 60.0).ahead(), [0]);
     }
