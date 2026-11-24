@@ -1,7 +1,7 @@
 //! what the menus are made of, drawn to the design: a heading with its keys, a row of choices, a slider, a field, a
 //! switch. the accent color lives here and nowhere else: on sliders, switches and the field being typed into.
 
-use super::{font, ACCENT, DIM, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID, TRACK};
+use super::{font, text_top, ACCENT, DIM, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID, TRACK};
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, Pos2, Rect, Sense, Vec2};
 
@@ -43,7 +43,7 @@ pub fn key_cap(ui: &egui::Ui, at: Pos2, key: &str, from_left: bool, color: Color
     let size = Vec2::new(galley.size().x + 10.0, 16.0);
     let cap = Rect::from_min_size(Pos2::new(if from_left { at.x } else { at.x - size.x }, at.y - 8.0), size);
     painter.rect_stroke(cap, 3.0, (1.0, if color == DIM { LINE } else { color.gamma_multiply(0.4) }), egui::StrokeKind::Inside);
-    painter.galley(cap.center() - galley.size() / 2.0, galley, color);
+    painter.galley(Pos2::new(cap.center().x - galley.size().x / 2.0, text_top(painter, font(MONO_MEDIUM, 10.0), cap.center().y)), galley, color);
     cap
 }
 
@@ -53,7 +53,7 @@ pub fn heading(ui: &mut egui::Ui, text: &str, keys: &[&str]) {
     let mut job = LayoutJob::default();
     job.append(&text.to_uppercase(), 0.0, TextFormat { font_id: font(MONO_MEDIUM, 10.0), color: DIM, extra_letter_spacing: 1.6, ..Default::default() });
     let galley = ui.painter().layout_job(job);
-    ui.painter().galley(Pos2::new(rect.left(), rect.center().y - galley.size().y / 2.0), galley, DIM);
+    ui.painter().galley(Pos2::new(rect.left(), text_top(ui.painter(), font(MONO_MEDIUM, 10.0), rect.center().y)), galley, DIM);
     let mut right = rect.right();
     for key in keys.iter().rev() {
         right = key_cap(ui, Pos2::new(right, rect.center().y), key, false, DIM).left() - 5.0;
@@ -79,7 +79,9 @@ pub fn segments(ui: &mut egui::Ui, name: &str, labels: &[&str], on: Option<usize
         if i > 0 {
             painter.rect_filled(Rect::from_min_size(cell.min, Vec2::new(1.0, cell.height())), 0.0, LINE);
         }
-        painter.text(cell.center(), Align2::CENTER_CENTER, label, font(MONO_MEDIUM, 11.0), if on == Some(i) { ON_CHOSEN } else { DIM });
+        let color = if on == Some(i) { ON_CHOSEN } else { DIM };
+        let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), color);
+        painter.galley(Pos2::new(cell.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 11.0), cell.center().y)), galley, color);
         if response.clicked() {
             clicked = Some(i);
         }
@@ -105,7 +107,7 @@ pub fn buttons(ui: &mut egui::Ui, name: &str, items: &[(&str, &str, bool)]) -> O
             painter.rect_filled(button, 0.0, HOVER);
         }
         painter.rect_stroke(button, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-        let text_at = Pos2::new(button.left() + 9.0, button.center().y - galley.size().y / 2.0);
+        let text_at = Pos2::new(button.left() + 9.0, text_top(&painter, font(MONO_MEDIUM, 11.0), button.center().y));
         let text_right = text_at.x + galley.size().x;
         painter.galley(text_at, galley, color);
         if !key.is_empty() {
@@ -143,7 +145,9 @@ pub fn field(ui: &mut egui::Ui, name: &str, right: Pos2, shown: &str, unit: &str
     let gap = if unit.size().x > 0.0 { 4.0 } else { 0.0 };
     let size = Vec2::new(1.0 + pad + width + gap + unit.size().x + pad + 1.0, ROW);
     let rect = Rect::from_min_size(Pos2::new(right.x - size.x, right.y - size.y / 2.0), size);
-    let number = Rect::from_min_size(rect.min + Vec2::new(1.0 + pad, 1.0), Vec2::new(width, ROW - 2.0));
+    // the number is laid out by egui, which centers a line by its box: it is lifted by the difference
+    let lift = text_top(&painter, font(MONO_MEDIUM, 11.5), 0.0) + painter.layout_no_wrap("0".to_string(), font(MONO_MEDIUM, 11.5), FG).size().y / 2.0;
+    let number = Rect::from_min_size(rect.min + Vec2::new(1.0 + pad, 1.0 + lift), Vec2::new(width, ROW - 2.0));
 
     // what is being typed is kept between passes only while the field has the keyboard
     let id = ui.scope_id().with(name);
@@ -162,7 +166,7 @@ pub fn field(ui: &mut egui::Ui, name: &str, right: Pos2, shown: &str, unit: &str
         }
     });
     painter.rect_stroke(rect, 0.0, (1.0, if focused { ACCENT } else { LINE }), egui::StrokeKind::Inside);
-    painter.galley(Pos2::new(number.right() + gap, rect.center().y - unit.size().y / 2.0), unit, DIM);
+    painter.galley(Pos2::new(number.right() + gap, text_top(&painter, font(MONO_MEDIUM, 11.5), rect.center().y)), unit, DIM);
     (rect, entered)
 }
 
@@ -177,7 +181,7 @@ pub fn switch(ui: &mut egui::Ui, name: &str, rect: Rect, on: bool, label: &str, 
     painter.rect_filled(Rect::from_min_size(frame.min + Vec2::new(if on { 15.0 } else { 3.0 }, 3.0), Vec2::splat(8.0)), 0.0, color);
     let galley = painter.layout_no_wrap(label.to_string(), font(SANS, 12.0), FG);
     let after = frame.right() + 9.0 + galley.size().x + 9.0;
-    painter.galley(Pos2::new(frame.right() + 9.0, rect.center().y - galley.size().y / 2.0), galley, FG);
+    painter.galley(Pos2::new(frame.right() + 9.0, text_top(&painter, font(SANS, 12.0), rect.center().y)), galley, FG);
     if !key.is_empty() {
         key_cap(ui, Pos2::new(if key_right { rect.right() } else { after }, rect.center().y), key, !key_right, DIM);
     }

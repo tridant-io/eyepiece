@@ -71,6 +71,34 @@ fn font(family: &str, size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(family.into()))
 }
 
+/// the design's type: ibm plex mono and archivo, each weight under its own name.
+fn fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::empty();
+    let files: [(&str, &'static [u8]); 4] = [
+        (MONO, include_bytes!("../../assets/fonts/ibm-plex-mono-400.ttf")),
+        (MONO_MEDIUM, include_bytes!("../../assets/fonts/ibm-plex-mono-500.ttf")),
+        (SANS, include_bytes!("../../assets/fonts/archivo-400.ttf")),
+        ("sans-semibold", include_bytes!("../../assets/fonts/archivo-600.ttf")),
+    ];
+    for (name, bytes) in files {
+        fonts.font_data.insert(name.to_string(), Arc::new(egui::FontData::from_static(bytes)));
+        fonts.families.insert(FontFamily::Name(name.into()), vec![name.to_string()]);
+    }
+    // the two families every text falls back to
+    fonts.families.insert(FontFamily::Proportional, vec![SANS.to_string()]);
+    fonts.families.insert(FontFamily::Monospace, vec![MONO.to_string()]);
+    fonts
+}
+
+/// where the top of a line of this type goes for the line to look centered on `middle`: by eye, which takes the
+/// middle of the figures and capitals for the middle of the text. the line's own box has more room above the letters
+/// than below them, so centering the box leaves the text low.
+fn text_top(painter: &egui::Painter, font_id: FontId, middle: f32) -> f32 {
+    let figure = painter.layout_no_wrap("0".to_string(), font_id, Color32::WHITE);
+    let glyph = &figure.rows[0].row.glyphs[0];
+    middle - (glyph.pos.y + glyph.uv_rect.offset.y + glyph.uv_rect.size.y / 2.0)
+}
+
 /// what is on screen, read from the player each frame: the tabs, and the one that is up.
 pub struct Screen<'a> {
     /// every tab's name, and which one is up
@@ -213,21 +241,7 @@ impl Ui {
     /// `folder` is where the browser starts: the one it was last in.
     pub fn new(size: (u32, u32), scale: f32, timecode: bool, folder: Option<PathBuf>) -> Ui {
         let ctx = egui::Context::default();
-        let mut fonts = egui::FontDefinitions::empty();
-        let files: [(&str, &'static [u8]); 4] = [
-            (MONO, include_bytes!("../../assets/fonts/ibm-plex-mono-400.ttf")),
-            (MONO_MEDIUM, include_bytes!("../../assets/fonts/ibm-plex-mono-500.ttf")),
-            (SANS, include_bytes!("../../assets/fonts/archivo-400.ttf")),
-            ("sans-semibold", include_bytes!("../../assets/fonts/archivo-600.ttf")),
-        ];
-        for (name, bytes) in files {
-            fonts.font_data.insert(name.to_string(), Arc::new(egui::FontData::from_static(bytes)));
-            fonts.families.insert(FontFamily::Name(name.into()), vec![name.to_string()]);
-        }
-        // the two families every text falls back to
-        fonts.families.insert(FontFamily::Proportional, vec![SANS.to_string()]);
-        fonts.families.insert(FontFamily::Monospace, vec![MONO.to_string()]);
-        ctx.set_fonts(fonts);
+        ctx.set_fonts(fonts());
         let mut visuals = egui::Visuals::dark();
         // the one text field style: the design's
         visuals.selection.bg_fill = ACCENT.gamma_multiply(0.5);
@@ -610,7 +624,7 @@ impl Ui {
             clipped.rect_filled(Rect::from_min_size(Pos2::new(tab.right() - 1.0, tab.top()), Vec2::new(1.0, tab.height())), 0.0, LINE);
             let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
             let galley = cut_middle(&clipped, name, font(family, 11.5), color, width - TAB_PAD);
-            clipped.galley(Pos2::new(tab.left() + 12.0, tab.center().y - galley.size().y / 2.0), galley, color);
+            clipped.galley(Pos2::new(tab.left() + 12.0, text_top(&clipped, font(family, 11.5), tab.center().y)), galley, color);
             left = tab.right();
         }
         // the + that opens a new tab
@@ -748,7 +762,7 @@ impl Ui {
             let rect = Rect::from_min_size(Pos2::new(left, over - 7.0 - size.y), size);
             painter.rect_filled(rect, 0.0, SOLID);
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-            painter.galley(rect.center() - galley.size() / 2.0, galley, FG);
+            painter.galley(Pos2::new(rect.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), rect.center().y)), galley, FG);
         }
     }
 }
@@ -813,7 +827,7 @@ fn chip(ui: &egui::Ui, corner: Pos2, anchor: Align2, parts: &[(String, Color32)]
     let rect = anchor.anchor_size(corner, galley.size() + Vec2::new(16.0, 12.0));
     painter.rect_filled(rect, 0.0, CHIP.gamma_multiply(alpha));
     painter.rect_stroke(rect, 0.0, (1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
-    painter.galley(rect.min + Vec2::new(8.0, 6.0), galley, FG);
+    painter.galley(Pos2::new(rect.left() + 8.0, text_top(painter, font(MONO_MEDIUM, 11.0), rect.center().y)), galley, FG);
     rect
 }
 
@@ -848,7 +862,7 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, ga
         icons::draw(ui.painter(), Rect::from_min_size(Pos2::new(left, rect.center().y - 8.0), Vec2::splat(16.0)), icon, FG);
         left += 16.0 + 6.0;
     }
-    ui.painter().galley(Pos2::new(left, rect.center().y - galley.size().y / 2.0), galley, FG);
+    ui.painter().galley(Pos2::new(left, text_top(ui.painter(), font(MONO_MEDIUM, 11.5), rect.center().y)), galley, FG);
     response.clicked()
 }
 
@@ -891,6 +905,24 @@ mod tests {
 
     /// the row of controls sits in the middle of the bar as it is seen: as far under the line along the bar's top as
     /// it is over the timebar's track at rest.
+    /// text is centered by eye: the middle of its figures and capitals is on the line it is centered on, in every type
+    /// the controls use. (centered by its line's box, which has more room above the letters than below, it sits low.)
+    #[test]
+    fn text_is_centered_by_its_figures_not_by_its_lines_box() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for (family, size) in [(MONO_MEDIUM, 11.5), (MONO, 11.5), (MONO_MEDIUM, 11.0), (MONO_MEDIUM, 10.0), (SANS, 12.0)] {
+                let top = text_top(ui.painter(), font(family, size), 100.0);
+                let figure = ui.painter().layout_no_wrap("0".to_string(), font(family, size), Color32::WHITE);
+                let glyph = &figure.rows[0].row.glyphs[0];
+                let middle = top + glyph.pos.y + glyph.uv_rect.offset.y + glyph.uv_rect.size.y / 2.0;
+                assert!((middle - 100.0).abs() < 0.2, "{family} {size}: the middle of a figure is at {middle}, not at 100");
+            }
+        });
+        out.textures_delta.clear();
+    }
+
     #[test]
     fn the_bars_controls_are_centered_between_its_top_line_and_the_timebar() {
         let bar = Rect::from_min_size(Pos2::new(0.0, 309.0), Vec2::new(640.0, 1.0 + ROW + TIME));
