@@ -908,10 +908,11 @@ foreach ($made in @($nestCopies.Keys) + $inner, $dome, $wall, $nest) {
 # ---- the browser's keys act in one place at a time, as in finder's column view, and what is selected there is lit:
 # up and down move in the column the keys are in, right goes into a folder onto its first entry or into the grid on a
 # video, left goes back out, and in the grid left and right go card by card over the ends of the rows. enter opens what
-# is selected where the keys are, which the title names. the folders above the tree hold nothing else, so the columns
-# that fit show only what the test made
-$kwrap = Join-Path $env:APPDATA 'kwrap'; $kin = Join-Path $kwrap 'in'; $keys = Join-Path $kin 'keys'; $kshots = Join-Path $keys 'a_shots'; $kempty = Join-Path $keys 'b_empty'
-New-Item -ItemType Directory $kwrap, $kin, $keys, $kshots, $kempty | Out-Null
+# is selected where the keys are, which the title names. the folders above the tree hold nothing else, and are as many
+# as the columns that fit with the column alone showing, so those show only what the test made
+$kwrap = Join-Path $env:APPDATA 'kwrap'; $kin = Join-Path $kwrap 'in'; $ka = Join-Path $kin 'a'; $kb = Join-Path $ka 'b'
+$keys = Join-Path $kb 'keys'; $kshots = Join-Path $keys 'a_shots'; $kempty = Join-Path $keys 'b_empty'
+New-Item -ItemType Directory $kwrap, $kin, $ka, $kb, $keys, $kshots, $kempty | Out-Null
 $kcopies = [ordered]@{ (Join-Path $keys 'k1.mov') = 'hap_64.mov'; (Join-Path $keys 'k2.mov') = 'prores_64.mov' }
 foreach ($n in 1..5) { $kcopies[(Join-Path $kshots "c$n.mov")] = 'hap_64.mov' }
 foreach ($to in $kcopies.Keys) { Copy-Item -LiteralPath (Join-Path $media $kcopies[$to]) -Destination $to }
@@ -959,7 +960,7 @@ Open-Here 'k2.mov' 4 'with the cards alone, right from nothing selected goes int
 Send-Key 0x25; Send-Key 0x25; Send-Key 0x28; Start-Sleep -Milliseconds 500; Send-Key 0x27
 Open-Here 'c1.mov' 3 'and left out of them, down to a folder and right into its cards'
 Stop-Player
-foreach ($made in @($kcopies.Keys) + $kshots, $kempty, $keys, $kin, $kwrap) {
+foreach ($made in @($kcopies.Keys) + $kshots, $kempty, $keys, $kb, $ka, $kin, $kwrap) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 

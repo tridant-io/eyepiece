@@ -309,7 +309,7 @@ impl Nav {
     }
 
     /// the keys have come into the active column: onto what was selected in it before, else its first entry. with
-    /// the cards alone showing, into its cards, unless a folder was selected in it. once its listing is in.
+    /// the cards alone showing, into its cards when it has any, which its column does not list. once its listing is in.
     fn arrive(&mut self) {
         let at = self.active();
         let listed = self.listings.contains_key(&self.path[at].folder);
@@ -317,12 +317,10 @@ impl Nav {
         if !listed {
             return;
         }
-        let folder = self.selected(&self.path[at]).is_some_and(|e| e.kind == Kind::Folder);
-        let first = self.cards().next().map(|e| e.path.clone());
-        if let Some(first) = first.filter(|_| self.view == View::Gallery && !folder) {
-            if self.card().is_none() {
-                self.select(at, first, false);
-            }
+        let column = &self.path[at];
+        let card = self.selected(column).filter(|e| is_card(e)).or_else(|| self.entries(&column.folder).iter().find(|e| is_card(e)));
+        if let Some(card) = card.map(|e| e.path.clone()).filter(|_| self.view == View::Gallery) {
+            self.select(at, card, false);
             self.focus = Focus::Grid;
             return;
         }
@@ -991,7 +989,8 @@ mod tests {
         assert_eq!(after(&mut nav, &[Down, Right, Left, Down, Right]), "grid: z.mov");
         assert_eq!(after(&mut nav, &[Left]), "mixed: deep");
         assert_eq!(after(&mut nav, &[Left]), "r: mixed");
-        assert_eq!(after(&mut nav, &[Right]), "mixed: deep", "back in, onto the folder it came from");
+        assert_eq!(after(&mut nav, &[Right]), "grid: m1.mov", "back in, onto its cards: its folders are a left away");
+        assert_eq!(after(&mut nav, &[Left, Down]), "mixed: deep");
     }
 
     #[test]

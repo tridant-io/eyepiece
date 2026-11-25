@@ -2119,13 +2119,13 @@ mod tests {
         let listings = || [(place.clone(), vec![entry(&place, "r", Kind::Folder)]), (r.clone(), vec![entry(&r, "shots", Kind::Folder), entry(&r, "a.mov", Kind::Clip)]), (shots.clone(), vec![entry(&shots, "c.mov", Kind::Clip), entry(&shots, "d.mov", Kind::Clip)])];
         let ctx = egui::Context::default();
         ctx.set_fonts(super::super::fonts());
-        // a pass over fig. 28's window, the folders listed as above: the fill of the row each name is on, the
-        // outlines of the selected cards, and whether a column or the grid is outlined
-        let seen = |state: &mut State| {
+        // a pass over a window this wide (fig. 28's is 1240), the folders listed as above: the fill of the row each
+        // name is on, the outlines of the selected cards, and whether a column or the grid is outlined
+        let seen_at = |state: &mut State, wide: f32| {
             for (folder, entries) in listings() {
                 state.nav.listings.insert(folder, Ok(entries));
             }
-            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), ..Default::default() };
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(wide, 700.0))), ..Default::default() };
             let mut out = ctx.run_ui(raw, |ui| {
                 state.draw(ui, ui.max_rect());
             });
@@ -2139,6 +2139,7 @@ mod tests {
             let cards: Vec<Color32> = rects.iter().filter(|r| r.stroke.width == 2.0).map(|r| r.stroke.color).collect();
             (fills, cards, rects.iter().any(|r| r.stroke.color == RING))
         };
+        let seen = |state: &mut State| seen_at(state, 1240.0);
         let press = |state: &mut State, key| {
             state.nav.key(key, Mods::default(), 2);
             state.nav.settle();
@@ -2148,6 +2149,8 @@ mod tests {
         assert_eq!(seen(&mut state), ([path, None, None, None, None], vec![], true));
         press(&mut state, Key::Down);
         assert_eq!(seen(&mut state), ([path, on, None, None, None], vec![], false));
+        // where one column fits, it is the one the keys act in, not the one it shows the folder in
+        assert_eq!(seen_at(&mut state, 800.0), ([None, on, None, None, None], vec![], false));
         press(&mut state, Key::Right);
         assert_eq!(seen(&mut state), ([None, path, None, on, None], vec![CARD_PATH], false), "the place's column has given way");
         press(&mut state, Key::Right);
