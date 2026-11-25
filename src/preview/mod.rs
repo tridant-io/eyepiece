@@ -174,7 +174,7 @@ fn ours(name: &str, old: bool) -> bool {
 /// whether the cache may live in and evict from `root`: an absolute path at least three folders deep, so never a
 /// drive or share root, not the home folder or a folder above it, and ending in `tail`. it is judged as written,
 /// without asking the file system, and a `..` anywhere refuses it.
-fn safe_root(root: &Path, home: Option<&Path>, tail: &[&str]) -> bool {
+pub(crate) fn safe_root(root: &Path, home: Option<&Path>, tail: &[&str]) -> bool {
     let (Some(root), Some(home)) = (parts(root), home.and_then(parts)) else { return false };
     let tail: Vec<String> = tail.iter().map(|t| t.to_string()).collect();
     // root[0] is the drive or share
@@ -203,7 +203,7 @@ fn parts(path: &Path) -> Option<Vec<String>> {
 }
 
 /// the user's home folder: the cache never runs in it or in a folder above it
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 

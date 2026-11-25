@@ -68,6 +68,14 @@ _Avoid_: toolbar, controls overlay, transport
 the row of tabs and window buttons at the top of the window, shown on hover. it is also the drag handle for the window.
 _Avoid_: title bar, tab bar, header
 
+**release manifest**:
+`eyepiece-release.txt`, the plain `key = value` file every release carries beside its files: the version, the date, a line for each change, and each file with its size and sha-256. the update learns what a release is from it and nothing else (adr 0007).
+_Avoid_: manifest alone (cargo's is Cargo.toml), checksums, SHA256SUMS
+
+**set aside**:
+what an update does with an installed file it replaces: renamed `<name>.old-<version>` beside it, since a running program's files cannot be written over, and removed by its exact name at the next start. a download that failed is set aside too, as `<name>.failed` in the update's folder, and never removed.
+_Avoid_: backup, deleted, moved to trash
+
 ## Flagged ambiguities
 
 - **read-only** means the app never writes to media. **look-only** means the app does not even open files on a network folder. a local folder is read-only but not look-only.
