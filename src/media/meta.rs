@@ -141,13 +141,22 @@ impl Meta {
             let codec = if video.tag == 0 { codec } else { format!("{codec} · {tag}") };
             (row("codec", codec, Tone::Plain), depth, row("alpha", "not read for this codec yet. shown as opaque", Tone::Assumed), vec![color_row(tags, video.height), range])
         };
-        let mut picture = vec![codec, row("size", format!("{} × {}", video.width, video.height), Tone::Plain), rate_row(&timeline), row("frames", frames, Tone::Plain), duration_row(&timeline), depth, alpha];
-        picture.extend(color);
-
         let length = timeline.step().map(|step| {
             let frame = step as f64 * timeline.time_base.0 as f64 / timeline.time_base.1 as f64;
             (n as f64 * frame, frame)
         });
+        // worked out, not read from the file's own summary: the bytes the file stores for the frames shown, and all
+        // of the file's bytes, over the picture's length
+        let rate = match length {
+            Some((seconds, _)) if n > 0 => {
+                let stored: u64 = samples.iter().filter(|s| !s.hidden).map(|s| s.size as u64).sum();
+                row("bit rate", format!("{} · the picture alone · {} with all else in the file", bit_rate(stored, seconds), bit_rate(file.len(), seconds)), Tone::Plain)
+            }
+            _ => row("bit rate", "not worked out: the picture has no one length to take it over", Tone::Assumed),
+        };
+        let mut picture = vec![codec, row("size", format!("{} × {}", video.width, video.height), Tone::Plain), rate_row(&timeline), row("frames", frames, Tone::Plain), duration_row(&timeline), rate, depth, alpha];
+        picture.extend(color);
+
         let mut sound: Vec<Row> = audio
             .iter()
             .map(|a| {
@@ -396,6 +405,18 @@ fn grouped(n: u64) -> String {
     out
 }
 
+/// so many bytes over so many seconds, in bits a second to three figures, in decimal units.
+fn bit_rate(bytes: u64, seconds: f64) -> String {
+    let mut v = bytes as f64 * 8.0 / seconds;
+    let mut unit = 0;
+    while v >= 999.5 && unit < 3 {
+        v /= 1000.0;
+        unit += 1;
+    }
+    let places = if v < 9.995 { 2 } else if v < 99.95 { 1 } else { 0 };
+    format!("{v:.places$} {}", ["b/s", "kb/s", "Mb/s", "Gb/s"][unit])
+}
+
 /// a file size in decimal units to three figures, and in bytes.
 fn size(bytes: u64) -> String {
     let mut v = bytes as f64;
@@ -444,6 +465,17 @@ mod tests {
     fn get<'a>(m: &'a Meta, label: &str) -> (&'a str, Tone) {
         let r = m.groups.iter().flatten().find(|r| r.label == label).unwrap_or_else(|| panic!("no {label} row"));
         (r.value.as_str(), r.tone)
+    }
+
+    /// the bit rate is worked out from what the file stores, to three figures. a clip whose frames have no one
+    /// length has none to take it over, and says so.
+    #[test]
+    fn the_bit_rate_is_the_stored_bytes_over_the_length() {
+        assert_eq!([bit_rate(125_000, 1.0), bit_rate(1_250_000, 0.5), bit_rate(999, 8.0), bit_rate(23_000_000_000, 10.0)], ["1.00 Mb/s", "20.0 Mb/s", "999 b/s", "18.4 Gb/s"]);
+        let m = read("hap_64.mov");
+        let (said, tone) = get(&m, "bit rate");
+        assert!(tone == Tone::Plain && said.contains("b/s · the picture alone · "), "{said}");
+        assert_eq!(get(&read("h264_vfr_64.mp4"), "bit rate").1, Tone::Assumed);
     }
 
     #[test]

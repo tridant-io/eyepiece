@@ -1,0 +1,988 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eyepiece Settings and Updates</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600&family=Michroma&display=swap">
+<style>
+/* section 11 of docs/design/plan.html, kept as its own page: the same paper, plates, registers and type. no script. */
+:root{
+  --ground:#f0eadb; --ground-deep:#e6deca; --surface:#f7f3e6; --border:#c2b99d; --rule:#d6cdb3;
+  --ink:#1a1812; --muted:#4d483b; --dim:#6f6855;
+  --accent:#c93818; --accent-ink:#f7f2e2; --blue:#0b3d91;
+  --ok:#1e6e54; --warn:#8a6410;
+  --plate:#0a0e1a; --plate-ink:#c9d3e6;
+  /* inside the app window: neutral on purpose, same in both themes */
+  --pl-bar:rgba(18,18,18,.9); --pl-solid:#161616; --pl-line:rgba(255,255,255,.13);
+  --pl-fg:#ededed; --pl-dim:#9c9c9c; --pl-accent:#ff5a36; --pl-amber:#ffc46b;
+  --sans:"Archivo",ui-sans-serif,system-ui,sans-serif;
+  --wide:"Michroma","Archivo",ui-sans-serif,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --ground:#0d1220; --ground-deep:#0a0e1a; --surface:#131a2c; --border:#3a4663; --rule:#242e48;
+  --ink:#e2e8f4; --muted:#aab5cd; --dim:#7e8aa8;
+  --accent:#e65a33; --accent-ink:#1a0c06; --blue:#6b97ec;
+  --ok:#37a583; --warn:#d9a83a; --plate:#06080f; --plate-ink:#c9d3e6; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --ground:#0d1220; --ground-deep:#0a0e1a; --surface:#131a2c; --border:#3a4663; --rule:#242e48;
+  --ink:#e2e8f4; --muted:#aab5cd; --dim:#7e8aa8;
+  --accent:#e65a33; --accent-ink:#1a0c06; --blue:#6b97ec;
+  --ok:#37a583; --warn:#d9a83a; --plate:#06080f; --plate-ink:#c9d3e6; color-scheme:dark }
+
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:400 16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+.doc{max-width:1152px;margin:0 auto;padding-block:26px 96px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:76px}
+a{color:var(--blue);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+p{margin:0;max-width:66ch;color:var(--muted)}
+p b,li b,td b{color:var(--ink);font-weight:600}
+h1,h2,h3{margin:0;text-wrap:balance}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font:500 11.5px/1.3 var(--mono);letter-spacing:.15em;text-transform:uppercase;color:var(--dim)}
+.eyebrow b{color:var(--accent);font-weight:600}
+kbd{font:500 12px/1 var(--mono);display:inline-block;min-width:22px;text-align:center;padding:4px 6px;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;background:var(--surface);color:var(--ink);white-space:nowrap}
+.mast{display:flex;flex-direction:column;gap:22px;border-top:2px solid var(--ink);padding-top:14px}
+.mast-line{display:flex;flex-wrap:wrap;gap:6px 22px;justify-content:space-between}
+
+/* sections */
+section{display:flex;flex-direction:column;gap:26px;min-width:0}
+.sh{display:flex;align-items:flex-end;gap:16px;border-top:2px solid var(--ink)}
+.sh .tab{font:400 12px/1 var(--wide);letter-spacing:.14em;background:var(--accent);color:var(--accent-ink);padding:9px 11px 8px;flex:none}
+h2{font:900 clamp(24px,3.6vw,40px)/1 var(--sans);font-stretch:125%;letter-spacing:-.012em;text-transform:uppercase;padding-top:14px}
+h3{font:700 17px/1.25 var(--sans);letter-spacing:0}
+.lede{font-size:17.5px;color:var(--muted);max-width:64ch}
+.stack{display:flex;flex-direction:column;gap:14px;min-width:0}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:26px 34px}
+ul.plain{margin:0;padding-left:18px;color:var(--muted);display:flex;flex-direction:column;gap:7px;max-width:68ch}
+
+/* figures */
+.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));gap:30px 24px;align-items:start}
+figure{margin:0;display:flex;flex-direction:column;gap:10px;min-width:0}
+figure.wide{grid-column:1/-1}
+.plate{position:relative;background:var(--plate);padding:16px}
+.plate::before,.plate::after{content:"";position:absolute;inset:5px;pointer-events:none;
+  background:
+   linear-gradient(var(--plate-ink),var(--plate-ink)) 0 0/9px 1px no-repeat, linear-gradient(var(--plate-ink),var(--plate-ink)) 0 0/1px 9px no-repeat,
+   linear-gradient(var(--plate-ink),var(--plate-ink)) 100% 0/9px 1px no-repeat, linear-gradient(var(--plate-ink),var(--plate-ink)) 100% 0/1px 9px no-repeat;opacity:.55}
+.plate::after{transform:scaleY(-1)}
+figcaption{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:baseline;font-size:14px;color:var(--muted);line-height:1.45}
+figcaption .fn{font:500 11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink);flex:none}
+figcaption span{flex:1 1 260px;min-width:0}
+.hint{font:400 12.5px/1.5 var(--mono);color:var(--dim);max-width:92ch}
+
+/* registers and tables */
+.scroll{overflow-x:auto;min-width:0}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th{font:500 11px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);text-align:left;padding:8px 14px 8px 0;border-bottom:1px solid var(--ink);white-space:nowrap}
+td{padding:9px 14px 9px 0;border-bottom:1px solid var(--rule);vertical-align:top;color:var(--muted)}
+td:first-child{color:var(--ink);font-weight:600}
+td.k{font:500 13px/1.9 var(--mono);white-space:nowrap}
+td .mono,td.mono{font-size:13px}
+td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:500}
+.pill{display:inline-block;font:600 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 6px 3px;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
+.pill.ok{color:var(--ok)} .pill.later{color:var(--dim)} .pill.no{color:var(--dim);text-decoration:line-through} .pill.warn{color:var(--warn)} .pill.you{color:var(--accent)}
+.dec{counter-reset:d;display:flex;flex-direction:column;gap:0;border-top:1px solid var(--ink)}
+.dec>div{counter-increment:d;display:grid;grid-template-columns:44px minmax(0,1fr);gap:4px 10px;padding:16px 0;border-bottom:1px solid var(--rule)}
+.dec>div::before{content:counter(d,decimal-leading-zero);font:400 12px/1.9 var(--wide);color:var(--accent);letter-spacing:.1em}
+.dec h3{grid-column:2}
+.dec p{grid-column:2;max-width:76ch}
+.dec .rec{grid-column:2;font-size:14.5px;color:var(--ink)}
+.dec .rec::before{content:"recommend";font:500 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-right:10px}
+
+/* ---------- the mocks: drawn at the design's px, no script. a frame scrolls sideways when the page is narrower ---------- */
+.mx{overflow-x:auto;min-width:0}
+.m{position:relative;color:var(--pl-fg);font:400 12.5px/1.3 var(--sans);user-select:none;-webkit-user-select:none;flex:none}
+.m svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:square;display:block;flex:none}
+.m b{font-weight:inherit}
+.m kbd{font:500 10px/1 var(--mono);padding:2px 4px;min-width:0;background:none;border:1px solid var(--pl-line);border-radius:3px;color:var(--pl-dim)}
+.stage{background:#050505;box-shadow:0 0 0 1px rgba(255,255,255,.16);padding:24px;display:flex;flex-direction:column;gap:20px;width:max-content}
+.lab{font:500 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#8a8a8a;margin-bottom:8px}
+/* a player window */
+.win{background:#000;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.16)}
+.win>.pic{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+.win>.dim{position:absolute;inset:0;background:rgba(0,0,0,.6)}
+.win>.mid{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+/* the strip, as plan.html draws it */
+.strip{height:32px;display:flex;align-items:stretch;background:var(--pl-bar);border-bottom:1px solid var(--pl-line)}
+.win>.strip{position:absolute;left:0;right:0;top:0;z-index:2}
+.ptab{display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;max-width:310px;min-width:0;border-right:1px solid var(--pl-line);color:#7d7d7d;font:400 11.5px/1 var(--mono);white-space:nowrap}
+.ptab.on{color:#fff;background:#2e2e2e;font-weight:500}
+.ptab>span{overflow:hidden;text-overflow:ellipsis;line-height:1.7}
+.ptab em{font-style:normal;color:var(--pl-dim)}
+.ptab .nv{padding:4px 5px;color:var(--pl-dim)}
+.ptab .cnt{color:var(--pl-fg);text-decoration:underline dotted;text-underline-offset:3px}
+.ptab .x{opacity:.7;display:flex} .ptab:not(.on) .x{visibility:hidden} .ptab .x svg.i{width:12px;height:12px}
+.plus{width:32px;display:flex;align-items:center;justify-content:center;font:400 16px/1 var(--mono);color:var(--pl-dim)}
+.grow{flex:1 1 auto}
+.wb{display:flex;align-items:stretch}
+.wb i{width:40px;position:relative;display:block}
+.wb i::before{content:"";position:absolute;left:15px;top:11px;width:10px;height:10px}
+.wb .w1::before{border-bottom:1px solid var(--pl-dim);height:5px}
+.wb .w2::before{border:1px solid var(--pl-dim)}
+.wb .w3::before{background:linear-gradient(45deg,transparent 46%,var(--pl-dim) 46% 54%,transparent 54%),linear-gradient(-45deg,transparent 46%,var(--pl-dim) 46% 54%,transparent 54%)}
+/* new on the strip: the gear, and the update button beside it */
+.gear{width:32px;display:flex;align-items:center;justify-content:center;color:var(--pl-fg)}
+.gear.on,.upd.on{background:rgba(255,255,255,.1)}
+.upd{align-self:center;height:22px;display:flex;align-items:center;padding:0 9px;margin-right:4px;border:1px solid var(--pl-line);font:500 11px/1 var(--mono);color:var(--pl-fg)}
+/* macos: the system's own buttons over the strip's left 78 */
+.lights{width:78px;flex:none;display:flex;align-items:center;gap:8px;padding-left:12px}
+.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.3)}
+.lights i:nth-child(2){background:#febc2e} .lights i:nth-child(3){background:#28c840}
+.chip{position:absolute;font:500 11px/1 var(--mono);background:rgba(0,0,0,.72);color:var(--pl-fg);padding:6px 8px;border:1px solid var(--pl-line);white-space:nowrap}
+.chip em{font-style:normal;color:var(--pl-dim)}
+/* new on the strip: help, and the tridant mark with its card */
+.qb{width:32px;display:flex;align-items:center;justify-content:center;color:var(--pl-fg)}
+.qb.on{background:rgba(255,255,255,.1)}
+.mark{width:32px;display:flex;align-items:center;justify-content:center;color:var(--pl-dim)}
+.mark.on{color:var(--pl-fg)}
+.m svg.st{width:14px;height:14px;display:block;fill:currentColor;stroke:currentColor;stroke-width:4;stroke-linejoin:miter;stroke-miterlimit:8}
+.tcard{position:absolute;display:flex;flex-direction:column;gap:8px;padding:9px 11px;background:rgba(0,0,0,.72);border:1px solid var(--pl-line);font:500 11px/1 var(--mono);color:var(--pl-fg);white-space:nowrap}
+.tcard em{font-style:normal;color:var(--pl-dim)}
+
+/* the settings panel: 760 x 500, a sidebar of pages and the page */
+.set{width:760px;height:500px;display:grid;grid-template-columns:176px minmax(0,1fr);background:var(--pl-solid);border:1px solid var(--pl-line);box-shadow:0 10px 28px rgba(0,0,0,.5);overflow:hidden;position:relative;z-index:3}
+.side{background:#121212;border-right:1px solid var(--pl-line);padding:14px 0 12px;display:flex;flex-direction:column;gap:1px;min-height:0}
+.side h6{margin:0 14px 8px;font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#777}
+.side span{padding:6px 14px;color:var(--pl-dim);font-size:12.5px;white-space:nowrap}
+.side span.on{color:var(--pl-fg);background:rgba(255,255,255,.08)}
+.side .ver{margin-top:auto;padding:0 14px;font:400 10.5px/1.4 var(--mono);color:var(--pl-dim);background:none}
+.page{display:flex;flex-direction:column;min-width:0;min-height:0}
+.ph{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 20px;border-bottom:1px solid var(--pl-line)}
+.ph>b{font:600 14px/1 var(--sans);color:var(--pl-fg);margin-right:auto}
+.xb{width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--pl-dim)}
+.pb{flex:1 1 auto;min-height:0;overflow:hidden;padding:2px 20px 8px;display:flex;flex-direction:column;position:relative}
+.pf{height:40px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-top:1px solid var(--pl-line);font:400 10.5px/1 var(--mono);color:#777}
+.pf .quiet{margin-right:auto}
+.quiet{font:500 11px/1 var(--mono);color:var(--pl-dim);text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.28)}
+.gl{margin:14px 0 2px;font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#777}
+.r{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:3px 16px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+.r:last-child{border-bottom:0}
+.r .l{grid-column:1;font-size:12.5px;line-height:1.3;color:var(--pl-fg)}
+.r .n{grid-column:1;font-size:11px;line-height:1.4;color:var(--pl-dim)}
+.r .n.p{font:400 11px/1.4 var(--mono)}
+.r .c{grid-column:2;grid-row:1 / span 2;display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.r.fact .l{color:var(--pl-dim)}
+/* controls, as the bar's menus draw them */
+.sw{width:26px;height:14px;border:1px solid var(--pl-dim);position:relative;display:block;flex:none}
+.sw::after{content:"";position:absolute;left:2px;top:2px;width:8px;height:8px;background:var(--pl-dim)}
+.sw.on{border-color:var(--pl-accent)} .sw.on::after{left:14px;background:var(--pl-accent)}
+.seg{display:flex;border:1px solid var(--pl-line)}
+.seg span{height:26px;display:flex;align-items:center;padding:0 11px;font:500 11px/1 var(--mono);border-right:1px solid var(--pl-line);color:var(--pl-dim);white-space:nowrap}
+.seg span:last-child{border-right:0}
+.seg span.on{background:#ececec;color:#111}
+.fld{display:flex;align-items:center;gap:4px;border:1px solid var(--pl-line);padding:0 7px;height:26px;font:500 11.5px/1 var(--mono);color:var(--pl-dim);white-space:nowrap}
+.fld b{color:var(--pl-fg)}
+.fld.f{border-color:var(--pl-accent)}
+.fld.f b::after{content:"";display:inline-block;width:1px;height:13px;background:var(--pl-fg);margin-left:1px;vertical-align:-2px}
+.fld.off{opacity:.45}
+.bt{height:26px;display:flex;align-items:center;gap:7px;padding:0 9px;border:1px solid var(--pl-line);font:500 11px/1 var(--mono);color:var(--pl-fg);white-space:nowrap}
+.bt.fill{background:#ececec;border-color:#ececec;color:#111}
+.bt.off{color:#5f5f5f}
+.tag{font:500 9px/1 var(--mono);letter-spacing:.1em;border:1px solid #555;color:#888;padding:3px 4px;text-transform:uppercase}
+.swatch{width:14px;height:14px;display:block;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.35)}
+.rng{width:132px;height:14px;position:relative;display:block}
+.rng::before{content:"";position:absolute;left:0;right:0;top:5px;height:4px;border-radius:2px;background:rgba(255,255,255,.2)}
+.rng i{position:absolute;left:0;top:5px;height:4px;border-radius:2px;background:var(--pl-accent)}
+.rng u{position:absolute;top:0;width:14px;height:14px;border-radius:50%;background:var(--pl-accent);margin-left:-7px}
+.meter{width:120px;height:4px;background:rgba(255,255,255,.2);position:relative;display:block}
+.meter i{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.55)}
+.lnk{color:var(--pl-fg);text-decoration:underline dotted;text-underline-offset:3px;font:500 11px/1 var(--mono)}
+.scrollbar{position:absolute;right:3px;width:4px;background:rgba(255,255,255,.22);border-radius:2px}
+
+/* about */
+.who{display:grid;grid-template-columns:64px minmax(0,1fr);gap:16px;align-items:center;padding:16px 0 14px}
+.who img{display:block;width:64px;height:64px;background:#1a1a1a;border-radius:14px}
+.who .nm{font:600 22px/1 var(--sans);color:var(--pl-fg);letter-spacing:-.005em}
+.who .vr{font:500 12px/1 var(--mono);color:var(--pl-fg);margin-top:9px}
+.who .vr i{font-style:normal;color:var(--pl-dim)}
+.who .bd{font:400 11px/1 var(--mono);color:var(--pl-dim);margin-top:6px}
+.sys{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--pl-dim);margin-top:9px}
+.sys b{color:var(--pl-fg)}
+.m svg.star{width:11px;height:11px;display:block;fill:var(--pl-dim);stroke:var(--pl-dim);stroke-width:4;stroke-linejoin:miter;stroke-miterlimit:8}
+.m svg.wm{width:69px;height:12px;display:block;fill:#e2e8f4;stroke:none;overflow:visible}
+.ub{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:center;border:1px solid var(--pl-line);padding:11px 12px}
+.ub .l{font-size:12.5px;color:var(--pl-fg)}
+.ub .n{grid-column:1;font:400 11px/1.3 var(--mono);color:var(--pl-dim)}
+.ub .c{grid-column:2;grid-row:1 / span 2;display:flex;gap:6px}
+.links{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.foot{margin-top:auto;display:flex;align-items:flex-end;justify-content:space-between;padding-top:12px;font:400 10.5px/1 var(--mono);color:var(--pl-dim)}
+
+/* the update modal */
+.mod{width:440px;background:var(--pl-solid);border:1px solid var(--pl-line);box-shadow:0 10px 28px rgba(0,0,0,.5);display:flex;flex-direction:column;position:relative;z-index:3}
+.mod .mh{padding:18px 20px 0;display:flex;flex-direction:column;gap:7px}
+.mod .mh b{font:600 15px/1.25 var(--sans);color:var(--pl-fg)}
+.mod .mh span{font:400 11px/1.4 var(--mono);color:var(--pl-dim)}
+.mod .mb{padding:14px 20px 0;display:flex;flex-direction:column;gap:10px}
+.mod h6{margin:0;font:500 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--pl-dim);display:flex;justify-content:space-between;align-items:center}
+.mod h6 .lnk{letter-spacing:0;text-transform:none}
+.notes{display:grid;grid-template-columns:58px minmax(0,1fr);gap:6px 8px;margin:0}
+.notes dt{font:500 10px/1.45 var(--mono);letter-spacing:.04em;color:var(--pl-dim)}
+.notes dd{margin:0;font-size:12px;line-height:1.35;color:var(--pl-fg)}
+.mod .note{font:400 11px/1.45 var(--mono);color:var(--pl-dim)}
+.mod .note b{color:var(--pl-fg);font-weight:500}
+.mod .mf{padding:16px 20px 18px;display:flex;gap:8px;align-items:center;justify-content:flex-end}
+.mod .mf .note{margin-right:auto}
+.prog{height:4px;background:rgba(255,255,255,.2);position:relative}
+.prog i{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.55)}
+.steps{display:grid;grid-template-columns:96px minmax(0,1fr);gap:6px 10px;margin:0;font:400 11px/1.35 var(--mono)}
+.steps dt{color:var(--pl-dim)} .steps dd{margin:0;color:#6d6d6d}
+.steps .now{color:var(--pl-fg)} .steps dd.done{color:var(--pl-dim)}
+.fail{border:1px solid var(--pl-line);border-left:2px solid var(--pl-dim);padding:9px 11px;font:400 11.5px/1.5 var(--mono);color:var(--pl-dim)}
+.fail b{color:var(--pl-fg);font-weight:500}
+.mods{display:grid;grid-template-columns:440px 440px;gap:24px;align-items:start}
+
+/* notices */
+.find{display:flex;align-items:center;gap:8px;padding:12px 0 10px}
+.find .fld{flex:1}
+.find .fld b{flex:1}
+.txt{flex:1 1 auto;min-height:0;position:relative;border:1px solid var(--pl-line);background:#0f0f0f;padding:9px 14px 9px 11px;overflow:hidden;font:400 10px/1.55 var(--mono);color:var(--pl-dim);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+.txt b{color:var(--pl-fg);font-weight:500}
+.txt mark{background:rgba(255,255,255,.22);color:var(--pl-fg)}
+.txt mark.cur{background:#ececec;color:#111}
+
+/* keys */
+.kcols{display:grid;grid-template-columns:1fr 1fr;gap:0 26px;padding-top:4px}
+.kcols h6{margin:12px 0 4px;font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#777}
+.kr{display:grid;grid-template-columns:104px minmax(0,1fr);font:400 11px/17px var(--mono);color:var(--pl-dim);white-space:nowrap}
+.kr b{font-weight:500;color:var(--pl-fg)}
+
+/* display: what the background choices look like */
+.bgs{display:flex;gap:14px;flex-wrap:nowrap}
+.bgs figure{gap:6px}
+.mini{width:160px;height:120px;position:relative;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(255,255,255,.16)}
+.mini svg{width:160px;height:90px;display:block}
+.mini .chip{top:6px;left:6px;font-size:9.5px;padding:4px 5px}
+.bgs .cap{font:400 10px/1.3 var(--mono);color:#8a8a8a}
+.checker{background:repeating-conic-gradient(#5a5a5a 0 25%,#8c8c8c 0 50%) 0 0/16px 16px}
+.find .n{font:400 11px/1 var(--mono);color:var(--pl-dim);white-space:nowrap}
+.txt .rule{display:block;height:1px;background:rgba(255,255,255,.14);margin:2px 0}
+.lic{margin-top:12px;font:400 11px/1.45 var(--mono);color:var(--pl-dim)}
+.intro{padding-top:14px;font-size:12.5px;line-height:1.45;color:var(--pl-fg);max-width:500px}
+.feat{display:grid;grid-template-columns:1fr 1fr;gap:12px 22px;margin-top:16px}
+.feat b{display:block;font:600 12px/1.3 var(--sans);color:var(--pl-fg);margin-bottom:3px}
+.feat span{display:block;font-size:11px;line-height:1.4;color:var(--pl-dim)}
+.kcols{grid-template-columns:274px 250px;gap:0 20px}
+.kcols>div:first-child .kr{grid-template-columns:120px minmax(0,1fr)}
+p,li{overflow-wrap:break-word}
+.hint,ul.plain .mono{overflow-wrap:anywhere}
+.kcols>div:last-child .kr{grid-template-columns:100px minmax(0,1fr)}
+.kr{font-size:10.5px}
+.kcols h6{margin-top:10px}
+.knote{padding:12px 0 2px;font-size:11px;line-height:1.4;color:var(--pl-dim)}
+@media (prefers-reduced-motion: reduce){ *{transition:none!important} }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="ramp" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <radialGradient id="soft"><stop offset="0" stop-color="#fff" stop-opacity="1"/><stop offset=".55" stop-color="#c58bff" stop-opacity=".8"/><stop offset="1" stop-color="#c58bff" stop-opacity="0"/></radialGradient>
+    <!-- the stand-in footage of plan.html (its mapping chart, frame 742 of wall_main_v012.mov), drawn once -->
+    <symbol id="chart" viewBox="0 0 1920 1080">
+      <rect width="1920" height="1080" fill="#1c1c1c"/>
+      <path d="M120 0V1080M240 0V1080M360 0V1080M480 0V1080M600 0V1080M720 0V1080M840 0V1080M960 0V1080M1080 0V1080M1200 0V1080M1320 0V1080M1440 0V1080M1560 0V1080M1680 0V1080M1800 0V1080M0 120H1920M0 240H1920M0 360H1920M0 480H1920M0 600H1920M0 720H1920M0 840H1920M0 960H1920" stroke="rgba(255,255,255,.17)" stroke-width="2"/>
+      <rect x="660" y="227" width="75" height="108" fill="#fff"/><rect x="735" y="227" width="75" height="108" fill="#ff0"/><rect x="810" y="227" width="75" height="108" fill="#0ff"/><rect x="885" y="227" width="75" height="108" fill="#0f0"/>
+      <rect x="960" y="227" width="75" height="108" fill="#f0f"/><rect x="1035" y="227" width="75" height="108" fill="#f00"/><rect x="1110" y="227" width="75" height="108" fill="#00f"/><rect x="1185" y="227" width="75" height="108" fill="#000"/>
+      <rect x="660" y="745" width="600" height="108" fill="url(#ramp)"/>
+      <path d="M0 0L1920 1080M1920 0L0 1080" stroke="rgba(255,255,255,.4)" stroke-width="2"/>
+      <g fill="none" stroke="rgba(255,255,255,.9)" stroke-width="4"><circle cx="960" cy="540" r="538"/><circle cx="960" cy="540" r="269"/><path d="M0 540H1920M960 0V1080"/></g>
+      <rect x="791" width="6" height="1080" fill="#c58bff"/>
+      <path d="M960 540L760 686" stroke="#c58bff" stroke-width="13.5"/>
+      <rect x="1" y="1" width="1918" height="1078" fill="none" stroke="#fff" stroke-width="2"/>
+      <rect x="961" y="980" width="935" height="76" fill="rgba(0,0,0,.78)"/>
+      <text x="975" y="1033" fill="#fff" font-family="IBM Plex Mono, ui-monospace, Menlo, Consolas, monospace" font-weight="600" font-size="54">wall_main_v012.mov  F 000742</text>
+    </symbol>
+    <!-- new icon, in the design's hand: 16 x 16, stroke 1.4, square ends, no fill -->
+    <symbol id="gear" viewBox="0 0 16 16"><path d="M12.52 7.12L14.25 7.23L14.25 8.77L12.52 8.88L11.81 10.57L12.96 11.88L11.88 12.96L10.57 11.81L8.88 12.52L8.77 14.25L7.23 14.25L7.12 12.52L5.43 11.81L4.12 12.96L3.04 11.88L4.19 10.57L3.48 8.88L1.75 8.77L1.75 7.23L3.48 7.12L4.19 5.43L3.04 4.12L4.12 3.04L5.43 4.19L7.12 3.48L7.23 1.75L8.77 1.75L8.88 3.48L10.57 4.19L11.88 3.04L12.96 4.12L11.81 5.43Z"/><circle cx="8" cy="8" r="2.1"/></symbol>
+    <symbol id="xm" viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></symbol>
+    <symbol id="qm" viewBox="0 0 16 16"><path d="M5.7 6.2A2.3 2.3 0 1 1 9.2 8.1C8.5 8.5 8 9 8 9.9V10.4M8 12.6V12.9"/></symbol>
+    <!-- tridant brand kit (tridant.io/dist/brand): the wordmark in night ink, and the small star, medium cut -->
+    <symbol id="wordmark" viewBox="0 0 1756 304">
+      <path d="M363.094 82.5H475.635C489.054 82.5 494.625 92.2 494.625 101C494.625 111.5 489.054 117.899 475.635 117.899H377.625L490.125 304H573L495.125 180.5C526.125 180.5 570.125 153.8 570.125 101C570.125 35 523.125 0 475.635 0H290V304H363.094V82.5Z"/>
+      <path d="M1376.5 1.5C1429 1.5 1464.38 25.4779 1485.11 55.8916C1504.17 83.8727 1510.03 115.851 1509.46 136.509V302H1436.46V135.312L1436.48 134.664C1436.75 127.198 1434.07 110.634 1424.78 96.998C1416.91 85.4552 1403.57 74.5 1376.5 74.5C1349.54 74.5 1337.29 85.3074 1330.38 96.1152C1321.94 109.309 1319.97 125.519 1320.6 132.858L1320.73 134.406V302H1247.73V137.307C1246.35 116.492 1250.99 84.7396 1268.88 56.7754C1288.81 25.6265 1323.9 1.50002 1376.5 1.5Z"/>
+      <path d="M658.5 3.19093e-06L658.5 304L585.5 304L585.5 0L658.5 3.19093e-06Z"/>
+      <path d="M1093.5 1.5C1146 1.50014 1181.38 25.478 1202.11 55.8916C1221.17 83.8726 1227.03 115.851 1226.46 136.509V302H1153.46V135.312L1153.48 134.664C1153.75 127.198 1151.07 110.634 1141.78 96.998C1133.91 85.4553 1120.57 74.5001 1093.5 74.5C1066.54 74.5 1054.29 85.3075 1047.38 96.1152C1038.94 109.309 1036.97 125.519 1037.6 132.858L1037.73 134.406V153.5H1138V226.5H1037.73V302H964.733V137.307C963.35 116.492 967.995 84.7396 985.884 56.7754C1005.81 25.6266 1040.9 1.50002 1093.5 1.5Z"/>
+      <path d="M1755.5 1.5V74.5H1656V302H1583V74.5H1520C1507 27 1459 1.5 1459 1.5H1755.5Z"/>
+      <path d="M275 1.5V74.5H175.498V302H102.498V74.5H0V1.5H275Z"/>
+      <path d="M878.5 152.045C878.5 124.815 869.423 107.412 855.423 95.9873C840.338 83.6775 814.794 74.5 775.627 74.5H761.5V304H688.5V1.5H775.627C824.958 1.5 869.1 12.9265 901.577 39.4297C935.139 66.8178 951.5 106.438 951.5 152.045C951.5 195.038 939.54 235.006 907.124 263.283C875.743 290.657 831.548 301.383 779.67 301.383V228.383C823.246 228.383 846.716 219.107 859.137 208.272C870.522 198.34 878.5 181.889 878.5 152.045Z"/>
+    </symbol>
+    <symbol id="star" viewBox="16.9 8.9 80.1 82.2">
+      <path d="M94.00 50.00 L73.35 49.59 L70.71 49.28 L69.16 49.00 L68.05 48.74 L67.20 48.50 L66.51 48.27 L65.93 48.04 L65.42 47.83 L64.99 47.63 L64.60 47.43 L64.24 47.23 L63.92 47.04 L63.63 46.85 L63.36 46.67 L63.11 46.49 L62.87 46.31 L62.65 46.13 L62.45 45.96 L62.25 45.78 L62.07 45.61 L61.89 45.44 L61.72 45.26 L61.56 45.09 L61.40 44.92 L61.25 44.75 L61.11 44.58 L60.97 44.41 L60.84 44.24 L60.71 44.06 L60.59 43.89 L60.47 43.71 L60.35 43.53 L60.24 43.35 L60.13 43.17 L60.02 42.98 L59.92 42.80 L59.82 42.60 L59.72 42.41 L59.62 42.21 L59.53 42.00 L59.45 41.79 L59.36 41.57 L59.28 41.35 L59.20 41.11 L59.13 40.87 L59.06 40.62 L59.00 40.35 L58.94 40.07 L58.89 39.77 L58.85 39.46 L58.81 39.12 L58.79 38.74 L58.79 38.34 L58.81 37.88 L58.85 37.36 L58.94 36.74 L59.10 35.99 L59.38 34.99 L59.95 33.43 L65.03 23.97 L59.37 33.10 L58.31 34.37 L57.58 35.12 L57.01 35.63 L56.52 36.01 L56.09 36.31 L55.71 36.56 L55.35 36.76 L55.02 36.93 L54.71 37.07 L54.41 37.19 L54.13 37.29 L53.86 37.38 L53.60 37.46 L53.34 37.53 L53.09 37.59 L52.85 37.64 L52.62 37.68 L52.39 37.71 L52.16 37.74 L51.94 37.77 L51.72 37.79 L51.50 37.80 L51.28 37.81 L51.07 37.81 L50.85 37.81 L50.64 37.81 L50.43 37.80 L50.21 37.79 L50.00 37.77 L49.79 37.75 L49.57 37.73 L49.36 37.70 L49.14 37.67 L48.92 37.63 L48.70 37.59 L48.47 37.54 L48.24 37.48 L48.01 37.42 L47.77 37.36 L47.53 37.28 L47.28 37.20 L47.02 37.11 L46.76 37.00 L46.49 36.89 L46.20 36.76 L45.91 36.62 L45.60 36.46 L45.28 36.28 L44.93 36.07 L44.56 35.83 L44.16 35.56 L43.73 35.23 L43.25 34.84 L42.70 34.35 L42.07 33.74 L41.29 32.91 L40.27 31.70 L38.68 29.57 L28.00 11.90 L37.97 29.98 L39.02 32.42 L39.55 33.91 L39.88 35.00 L40.10 35.86 L40.24 36.57 L40.34 37.19 L40.41 37.73 L40.45 38.21 L40.47 38.65 L40.48 39.05 L40.47 39.42 L40.46 39.77 L40.43 40.09 L40.40 40.40 L40.37 40.70 L40.32 40.98 L40.27 41.24 L40.22 41.50 L40.16 41.75 L40.10 41.99 L40.04 42.22 L39.97 42.44 L39.90 42.66 L39.83 42.88 L39.75 43.09 L39.67 43.29 L39.59 43.49 L39.50 43.69 L39.41 43.89 L39.32 44.08 L39.22 44.27 L39.12 44.46 L39.02 44.65 L38.91 44.83 L38.80 45.01 L38.69 45.20 L38.56 45.38 L38.44 45.56 L38.31 45.74 L38.17 45.93 L38.02 46.11 L37.87 46.29 L37.70 46.47 L37.53 46.66 L37.34 46.84 L37.15 47.03 L36.93 47.22 L36.70 47.41 L36.45 47.61 L36.17 47.81 L35.86 48.01 L35.50 48.22 L35.10 48.43 L34.63 48.65 L34.05 48.88 L33.32 49.13 L32.31 49.38 L30.67 49.66 L19.95 50.00 L30.67 50.34 L32.31 50.62 L33.32 50.87 L34.05 51.12 L34.63 51.35 L35.10 51.57 L35.50 51.78 L35.86 51.99 L36.17 52.19 L36.45 52.39 L36.70 52.59 L36.93 52.78 L37.15 52.97 L37.34 53.16 L37.53 53.34 L37.70 53.53 L37.87 53.71 L38.02 53.89 L38.17 54.07 L38.31 54.26 L38.44 54.44 L38.56 54.62 L38.69 54.80 L38.80 54.99 L38.91 55.17 L39.02 55.35 L39.12 55.54 L39.22 55.73 L39.32 55.92 L39.41 56.11 L39.50 56.31 L39.59 56.51 L39.67 56.71 L39.75 56.91 L39.83 57.12 L39.90 57.34 L39.97 57.56 L40.04 57.78 L40.10 58.01 L40.16 58.25 L40.22 58.50 L40.27 58.76 L40.32 59.02 L40.37 59.30 L40.40 59.60 L40.43 59.91 L40.46 60.23 L40.47 60.58 L40.48 60.95 L40.47 61.35 L40.45 61.79 L40.41 62.27 L40.34 62.81 L40.24 63.43 L40.10 64.14 L39.88 65.00 L39.55 66.09 L39.02 67.58 L37.97 70.02 L28.00 88.10 L38.68 70.43 L40.27 68.30 L41.29 67.09 L42.07 66.26 L42.70 65.65 L43.25 65.16 L43.73 64.77 L44.16 64.44 L44.56 64.17 L44.93 63.93 L45.28 63.72 L45.60 63.54 L45.91 63.38 L46.20 63.24 L46.49 63.11 L46.76 63.00 L47.02 62.89 L47.28 62.80 L47.53 62.72 L47.77 62.64 L48.01 62.58 L48.24 62.52 L48.47 62.46 L48.70 62.41 L48.92 62.37 L49.14 62.33 L49.36 62.30 L49.57 62.27 L49.79 62.25 L50.00 62.23 L50.21 62.21 L50.43 62.20 L50.64 62.19 L50.85 62.19 L51.07 62.19 L51.28 62.19 L51.50 62.20 L51.72 62.21 L51.94 62.23 L52.16 62.26 L52.39 62.29 L52.62 62.32 L52.85 62.36 L53.09 62.41 L53.34 62.47 L53.60 62.54 L53.86 62.62 L54.13 62.71 L54.41 62.81 L54.71 62.93 L55.02 63.07 L55.35 63.24 L55.71 63.44 L56.09 63.69 L56.52 63.99 L57.01 64.37 L57.58 64.88 L58.31 65.63 L59.37 66.90 L65.03 76.03 L59.95 66.57 L59.38 65.01 L59.10 64.01 L58.94 63.26 L58.85 62.64 L58.81 62.12 L58.79 61.66 L58.79 61.26 L58.81 60.88 L58.85 60.54 L58.89 60.23 L58.94 59.93 L59.00 59.65 L59.06 59.38 L59.13 59.13 L59.20 58.89 L59.28 58.65 L59.36 58.43 L59.45 58.21 L59.53 58.00 L59.62 57.79 L59.72 57.59 L59.82 57.40 L59.92 57.20 L60.02 57.02 L60.13 56.83 L60.24 56.65 L60.35 56.47 L60.47 56.29 L60.59 56.11 L60.71 55.94 L60.84 55.76 L60.97 55.59 L61.11 55.42 L61.25 55.25 L61.40 55.08 L61.56 54.91 L61.72 54.74 L61.89 54.56 L62.07 54.39 L62.25 54.22 L62.45 54.04 L62.65 53.87 L62.87 53.69 L63.11 53.51 L63.36 53.33 L63.63 53.15 L63.92 52.96 L64.24 52.77 L64.60 52.57 L64.99 52.37 L65.42 52.17 L65.93 51.96 L66.51 51.73 L67.20 51.50 L68.05 51.26 L69.16 51.00 L70.71 50.72 L73.35 50.41 L94.00 50.00 Z"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="doc">
+
+<header class="mast">
+  <div class="mast-line">
+    <span class="eyebrow"><b>tridant</b> · eyepiece · design for approval</span>
+    <span class="eyebrow">section 11 of the plan · draft 2026-11-24 · nothing here is built</span>
+  </div>
+</header>
+
+<section id="settings">
+  <div class="sh"><span class="tab">11</span><h2>Settings, about and updates</h2></div>
+  <p class="lede">your ask, 2026-11-24: a gear for the app's settings, at the top right on a mac and beside minimize on windows. a sidebar of pages, general and about first, the open-source notices the law asks for, and "a tridant system" on the about page. and, once the repo is public, a check for new releases at launch that never asks by itself: an <b>update</b> button beside the gear, a modal with the new version, and update or cancel. this section draws all of it before any of it is coded, so you can check the features first.</p>
+  <p>everything below follows the plan's rules: no accent on the strip, orange only on switches, sliders and the focused field, amber only for a fault in a file, a chip for anything that changes the picture, and your keys where they are. figures go on from section 05's fig. 31, so this section starts at <b>fig. 32</b>. the mocks are drawn at the design's own pixels; on a narrow screen each frame scrolls sideways on its own.</p>
+
+  <div class="stack">
+    <h3>decided for this draft, each yours to overrule</h3>
+    <div class="scroll"><table>
+      <tr><th>what</th><th>as drawn</th><th>fig.</th></tr>
+      <tr><td>where settings live</td><td>a panel drawn inside the player's window, over whatever is up, as the table of keys is. not a second os window. about 760 × 500 at the design's scale: pages at the left, the page at the right. esc, its close mark or a press outside it closes it; it scrolls when the window is smaller.</td><td class="mono">33</td></tr>
+      <tr><td>how it opens</td><td>the gear, and <kbd>ctrl</kbd> + <kbd>,</kbd> (<kbd>cmd</kbd> + <kbd>,</kbd> on a mac). a new key; none of yours moves.</td><td class="mono">32</td></tr>
+      <tr><td>the strip's right end</td><td>left to right: <b>update</b> (only when there is one), <b>?</b>, the gear, the tridant mark; then on windows minimize, maximize and close. on macos, where the system's buttons hold the left end, the mark is the last thing at the right.</td><td class="mono">32</td></tr>
+      <tr><td>an update is out</td><td>a quiet <b>update</b> text button, first in that row: a 1 px outline in the line color, the foreground's ink, no accent. nothing else says so: no dialog, no toast, no badge.</td><td class="mono">32</td></tr>
+      <tr><td>the tridant mark</td><td>the brand's small star, in the strip's dim ink, brighter under the pointer. resting on it shows a card that stays while the pointer is on the mark or the card: "a tridant system", the version and short commit, and tridant.io as a link. a press on the mark opens about.</td><td class="mono">32</td></tr>
+      <tr><td>help</td><td>the <b>?</b> button and the <kbd>?</kbd> key open a help panel, built as settings is: "keys", the table of keys that <kbd>?</kbd> brings up over the clip today, and "what eyepiece does": what it is, its basic features, the links and the license.</td><td class="mono">39, 40</td></tr>
+      <tr><td>settings pages, in order</td><td>general, about, playback, display, browser, screenshots, open-source notices. keys moved to help. the version stands at the foot of the sidebar and on about.</td><td class="mono">33–38</td></tr>
+      <tr><td>saving</td><td>a change takes effect at once and goes into settings.txt. no save button. each page has a quiet "reset this page" at its foot.</td><td class="mono">33</td></tr>
+      <tr><td>the update check</td><td>at launch, off the drawing thread, after the first frame. one unauthenticated GET of the repo's latest release, at most once a launch and once a day. no account, no telemetry; nothing sent but the request, as <span class="mono">eyepiece/&lt;version&gt;</span>. offline or refused: silent, tried at the next launch. a switch turns it off; about has "check now".</td><td class="mono">33, 34</td></tr>
+      <tr><td>the modal</td><td>the version pair, the release date, at most three short lines of what changed and a link to the full notes; then update or cancel. update downloads, checks, puts the new build in place and restarts on the same tabs. any failure leaves the installed version as it was and says why.</td><td class="mono">35</td></tr>
+      <tr><td>what it is checked against</td><td>windows: the sha-256 the release lists, and tridant's code signature on the program. macos: the same sha-256, and the app's signature and notarization.</td><td class="mono">35</td></tr>
+      <tr><td>no new packages</td><td>the request and the download use each system's own http stack; the archive is unpacked by each system's own tool.</td><td>—</td></tr>
+      <tr><td>the notices</td><td>the same text as the THIRD-PARTY-NOTICES.txt that ships beside the program, searchable, with "reveal the file".</td><td class="mono">36</td></tr>
+    </table></div>
+  </div>
+
+  <div class="figs">
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m stage" style="gap:14px">
+        <div>
+          <div class="lab">windows · the pointer on the mark</div>
+          <div class="m" style="width:860px;height:120px;background:#0b0b0b;box-shadow:0 0 0 1px rgba(255,255,255,.16)">
+            <div class="strip">
+              <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <span class="plus">+</span><span class="grow"></span>
+              <span class="qb"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+              <span class="gear"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+              <span class="mark on"><svg class="st"><use href="#star"/></svg></span>
+              <div class="wb"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div>
+            </div>
+            <div class="tcard" style="top:38px;right:120px"><span><em>a</em> tridant <em>system</em></span><span><em>eyepiece</em> 0.1.0 <em>· 308cb2be</em></span><span class="lnk">tridant.io</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="lab">windows · a newer release is out · the pointer on the gear</div>
+          <div class="m" style="width:860px;height:76px;background:#0b0b0b;box-shadow:0 0 0 1px rgba(255,255,255,.16)">
+            <div class="strip">
+              <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <span class="plus">+</span><span class="grow"></span>
+              <span class="upd">update</span>
+              <span class="qb"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+              <span class="gear on"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+              <span class="mark"><svg class="st"><use href="#star"/></svg></span>
+              <div class="wb"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div>
+            </div>
+            <span class="chip" style="top:40px;right:152px">settings <em>ctrl ,</em></span>
+          </div>
+        </div>
+        <div>
+          <div class="lab">macos · the pointer on ?</div>
+          <div class="m" style="width:860px;height:76px;background:#0b0b0b;box-shadow:0 0 0 1px rgba(255,255,255,.16)">
+            <div class="strip">
+              <div class="lights"><i></i><i></i><i></i></div>
+              <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <span class="plus">+</span><span class="grow"></span>
+              <span class="qb on"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+              <span class="gear"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+              <span class="mark"><svg class="st"><use href="#star"/></svg></span>
+            </div>
+            <span class="chip" style="top:40px;right:64px">help <em>?</em></span>
+          </div>
+        </div>
+        <div>
+          <div class="lab">macos · a newer release is out</div>
+          <div class="m" style="width:860px;height:32px;background:#0b0b0b;box-shadow:0 0 0 1px rgba(255,255,255,.16)">
+            <div class="strip">
+              <div class="lights"><i></i><i></i><i></i></div>
+              <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+              <span class="plus">+</span><span class="grow"></span>
+              <span class="upd">update</span>
+              <span class="qb"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+              <span class="gear"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+              <span class="mark"><svg class="st"><use href="#star"/></svg></span>
+            </div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 32 · the strip's right end</span><span>left to right: <b>update</b> when a newer release is out, <b>?</b> for help, the gear for settings, and the tridant mark; on windows the system's three buttons follow. on macos the system's buttons hold the strip's left 78 (as built, 2026-11-24), so the mark is the last thing at the right. update is outlined in the line color with the foreground's ink, and the mark is in the strip's dim ink, brighter under the pointer: no accent anywhere, as the strip's rule asks. nothing else says there is an update. resting on ? or the gear names it and its key in a chip, as every strip button does; resting on the mark brings up its card, which stays while the pointer is on the mark or on the card, so its link can be pressed. a press on the mark opens about. none of the four scrolls with the tabs. <b>the mark's cut:</b> the brand kit's small star, medium cut (star-medium.svg, "for small sizes"), drawn 14 × 14 in a 32 box. the kit keeps the wordmark for nav, footer and document sizes and never locks it to the star below display sizes; in a 32-high strip the wordmark would stand under 10 px tall and take a tab's room, so the star stands for it here and the wordmark appears alone on about (fig. 34). versions and the commit are examples.</span></figcaption>
+    </figure>
+  </div>
+
+  <div class="scroll"><table>
+    <tr><th>part</th><th>size, in the design's px</th><th>type</th><th>ink</th></tr>
+    <tr><td>update</td><td>22 high, centered on the strip, 9 in at each side, 4 left of ?.</td><td>ibm plex mono 500, 11</td><td>text <span class="mono">#ededed</span>, outline 1 px <span class="mono">rgba(255,255,255,.13)</span>, no fill. hover and open: white at 10%.</td></tr>
+    <tr><td>?</td><td>32 × 32, the same box as <b>+</b>. a 16 × 16 question mark, stroke 1.4, square ends, its dot drawn as the info icon's.</td><td>—</td><td><span class="mono">#ededed</span>. pressed, or while help is open: white at 10% behind it.</td></tr>
+    <tr><td>gear</td><td>32 × 32. the icon 16 × 16, stroke 1.4, square ends, eight teeth and a hub: drawn new in the hand of the design's icons.</td><td>—</td><td><span class="mono">#ededed</span>. pressed, or while settings is open: white at 10%.</td></tr>
+    <tr><td>tridant mark</td><td>32 × 32; the star 14 × 14 in its middle, fill and stroke together as the kit asks.</td><td>—</td><td><span class="mono">#9c9c9c</span>, the strip's dim ink; <span class="mono">#ededed</span> under the pointer. never the brand's colors here.</td></tr>
+    <tr><td>its card</td><td>under the strip, its right edge on the mark's, 6 below the strip. three lines 8 apart, 9 in at the top and bottom, 11 at the sides.</td><td>mono 500, 11</td><td>as a chip: black at 72%, 1 px line. dim words, bright values, the link underlined dotted as the folder count on a tab is.</td></tr>
+    <tr><td>windows</td><td>minimize, maximize and close stay 40 each at the right edge. the three new boxes take 96, and update about 64 more, from the tabs' room.</td><td>—</td><td>—</td></tr>
+    <tr><td>macos</td><td>the mark flush right, its star 9 in from the edge, about as far in as the first system button is from the left.</td><td>—</td><td>the system's buttons keep the system's own colors; nothing of ours is colored.</td></tr>
+    <tr><td>hints</td><td>half a second after the pointer comes onto a button, a chip under the strip, right-aligned to it: "help ?", "settings ctrl ," ("cmd ," on a mac). update's says "eyepiece 0.3.0 is out".</td><td>mono 500, 11</td><td>as every chip</td></tr>
+  </table></div>
+
+  <div class="figs">
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m win" style="width:1088px;height:612px">
+        <svg class="pic" viewBox="0 0 1920 1080"><use href="#chart"/></svg>
+        <div class="dim"></div>
+        <div class="strip">
+          <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+          <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+          <span class="plus">+</span><span class="grow"></span>
+          <span class="qb"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+          <span class="gear on"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+          <span class="mark"><svg class="st"><use href="#star"/></svg></span>
+          <div class="wb"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div>
+        </div>
+        <div class="mid">
+          <div class="set">
+            <div class="side">
+              <h6>settings</h6>
+              <span class="on">general</span><span>about</span><span>playback</span><span>display</span><span>browser</span><span>screenshots</span><span>open-source notices</span>
+              <span class="ver">eyepiece 0.1.0</span>
+            </div>
+            <div class="page">
+              <div class="ph"><b>general</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+              <div class="pb">
+                <div class="r"><span class="l">play a file when it opens</span><span class="n">off: a file opens paused on its first frame</span><span class="c"><i class="sw on"></i></span></div>
+                <div class="r"><span class="l">open a file from the browser in</span><span class="c"><span class="seg"><span class="on">this tab</span><span>a new tab</span></span></span></div>
+                <div class="r"><span class="l">one window</span><span class="n">a second launch opens its file in a tab here</span><span class="c"><i class="sw on"></i></span></div>
+                <div class="r"><span class="l">keep the controls up</span><span class="n">the pin at the bar's left does the same</span><span class="c"><i class="sw"></i></span></div>
+                <div class="r"><span class="l">controls go after</span><span class="n">once the pointer rests off them</span><span class="c"><span class="fld f"><b>2.4</b>s</span></span></div>
+                <div class="r"><span class="l">remember the window's size</span><span class="c"><i class="sw on"></i></span></div>
+                <div class="r"><span class="l">check for updates when eyepiece starts</span><span class="n">one request to github, at most once a day. nothing else is sent.</span><span class="c"><i class="sw on"></i></span></div>
+                <div class="r"><span class="l">the settings file</span><span class="n p">%APPDATA%\eyepiece\settings.txt</span><span class="c"><span class="bt">reveal</span></span></div>
+              </div>
+              <div class="pf"><span class="quiet">reset this page</span><span>changes take effect at once</span></div>
+            </div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 33 · settings, general</span><span>the panel over whatever is up, 760 × 500, in the middle of the window. the picture behind is darkened to 60% and the bar steps aside; the strip stays, with the gear lit, so the gear closes what it opened. a change takes effect at once and is written to settings.txt. esc, the close mark, the gear or a press outside the panel closes it, and that press does nothing else. in a window smaller than the panel (the player's least is 640 × 360) it takes the window less 16 at each side and the page scrolls. while it is up, tab moves from control to control, up and down move through the pages, and the player's keys wait. the field is drawn with the focus, which is where orange goes. on a mac the file is ~/Library/Application Support/eyepiece/settings.txt.</span></figcaption>
+    </figure>
+  </div>
+  <div class="figs">
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m stage">
+        <div class="set">
+          <div class="side">
+            <h6>settings</h6>
+            <span>general</span><span class="on">about</span><span>playback</span><span>display</span><span>browser</span><span>screenshots</span><span>open-source notices</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>about</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="who">
+                <img src="../../assets/icon/eyepiece.png" width="64" height="64" alt="the eyepiece app icon">
+                <div>
+                  <div class="nm">eyepiece</div>
+                  <div class="vr">0.1.0 <i>· 308cb2be</i></div>
+                  <div class="bd">built 2026-11-24 · windows x64</div>
+                  <div class="bd">a review player for vfx and install content</div>
+                  <div class="sys"><span>a <b>tridant</b> system</span><svg class="star"><use href="#star"/></svg></div>
+                </div>
+              </div>
+              <div class="ub"><span class="l">up to date</span><span class="n">checked today at 09:14</span><span class="c"><span class="bt">check now</span></span></div>
+              <div class="links"><span class="bt">tridant.io</span><span class="bt">source on github</span><span class="bt">report a problem</span><span class="bt">release notes</span></div>
+              <div class="lic">eyepiece is under the common public attribution license 1.0. <span class="lnk">read it</span> · its parts' own licenses are under open-source notices.</div>
+              <div class="foot"><svg class="wm" viewBox="0 0 1756 304" role="img" aria-label="tridant"><use href="#wordmark"/></svg><span>© 2026 Tridant, Inc.</span></div>
+            </div>
+            <div class="pf"><span>nothing to reset here</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="lab">the update line, in its other states</div>
+          <div style="display:flex;flex-direction:column;gap:8px;width:544px">
+            <div class="ub"><span class="l">checking for updates</span><span class="n">asking github for the latest release</span><span class="c"><span class="bt off">check now</span></span></div>
+            <div class="ub"><span class="l">eyepiece 0.3.0 is out</span><span class="n">you have 0.2.1 · released 2026-12-08</span><span class="c"><span class="bt">see the update</span></span></div>
+            <div class="ub"><span class="l">could not check</span><span class="n">github did not answer at 09:14. it is asked again at the next start.</span><span class="c"><span class="bt">check now</span></span></div>
+            <div class="ub"><span class="l">checks at start are off</span><span class="n">turned off in general. check now still asks, once.</span><span class="c"><span class="bt">check now</span></span></div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 34 · about</span><span>the program's icon (assets/icon/eyepiece.png), its name in archivo semibold, lowercase, as the mark's notes ask, then the version and short commit, when and for what it was built, and one line on what it is. "a tridant system" is the brand's line, all lowercase, with "tridant" brighter and the small star after it, as on tridant.io; a press on it opens tridant.io. the wordmark stands alone at the foot, apart from that line: the kit never locks the two together below display sizes. it is the kit's night ink (<span class="mono">#e2e8f4</span>), the one place in the window where a brand color appears. the update line says what the last check found and offers check now; under the panel, its other states. a failed check at launch shows only here, and only if you look. the license named is the recommendation in "for you to decide"; legal names keep their capitals. versions, the commit and times are examples.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m" style="width:1088px;display:flex;flex-direction:column;gap:20px">
+        <div class="m win" style="width:1088px;height:612px">
+          <svg class="pic" viewBox="0 0 1920 1080"><use href="#chart"/></svg>
+          <div class="dim"></div>
+          <div class="strip">
+            <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+            <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+            <span class="plus">+</span><span class="grow"></span>
+            <span class="upd on">update</span>
+            <span class="qb"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+            <span class="gear"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+            <span class="mark"><svg class="st"><use href="#star"/></svg></span>
+            <div class="wb"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div>
+          </div>
+          <div class="mid">
+            <div class="mod">
+              <div class="mh"><b>eyepiece 0.3.0 is available</b><span>you have 0.2.1 · released 2026-12-08 · 41 MB to download</span></div>
+              <div class="mb">
+                <h6>what changed<span class="lnk">release notes</span></h6>
+                <dl class="notes"><dt>added</dt><dd>settings, with a page for each part of the player</dd><dt>changed</dt><dd>a file starts playing as it opens; general turns it off</dd><dt>fixed</dt><dd>the timebar's picture lagged on long h.264 clips</dd></dl>
+                <div class="note">and 4 more in the release notes.</div>
+                <div class="note">update downloads it from github, checks it is <b>Tridant, Inc.</b>'s, puts it in place of 0.2.1 and restarts on these tabs. marks on <b>2 frames</b> go with the restart: save them first with <b>S</b>.</div>
+              </div>
+              <div class="mf"><span class="bt">cancel</span><span class="bt fill">update</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="background:#050505;box-shadow:0 0 0 1px rgba(255,255,255,.16);padding:24px">
+          <div class="lab">after update: downloading, checking, restarting, and a failure</div>
+          <div class="mods">
+            <div class="mod">
+              <div class="mh"><b>updating to 0.3.0</b><span>from 0.2.1 · the player behind keeps playing</span></div>
+              <div class="mb">
+                <div class="prog"><i style="width:56%"></i></div>
+                <dl class="steps"><dt class="now">download</dt><dd class="now">23.0 of 41.0 MB</dd><dt>check</dt><dd>the sha-256, and tridant's signature</dd><dt>put in place</dt><dd>0.2.1 is kept until 0.3.0 is up</dd><dt>restart</dt><dd>on these 3 tabs</dd></dl>
+              </div>
+              <div class="mf"><span class="bt">cancel</span></div>
+            </div>
+            <div class="mod">
+              <div class="mh"><b>checking 0.3.0</b><span>from 0.2.1 · nothing installed has changed yet</span></div>
+              <div class="mb">
+                <div class="prog"><i style="width:100%"></i></div>
+                <dl class="steps"><dt>download</dt><dd class="done">41.0 MB</dd><dt class="now">check</dt><dd class="now">sha-256 matches the release's list. signature: Tridant, Inc., checking</dd><dt>put in place</dt><dd>0.2.1 is kept until 0.3.0 is up</dd><dt>restart</dt><dd>on these 3 tabs</dd></dl>
+              </div>
+              <div class="mf"><span class="bt">cancel</span></div>
+            </div>
+            <div class="mod">
+              <div class="mh"><b>restarting into 0.3.0</b><span>0.2.1 stays beside it until 0.3.0 shows its first frame</span></div>
+              <div class="mb">
+                <div class="prog"><i style="width:100%"></i></div>
+                <dl class="steps"><dt>download</dt><dd class="done">41.0 MB</dd><dt>check</dt><dd class="done">sha-256 and signature good</dd><dt>put in place</dt><dd class="done">2 files changed, 7 the same</dd><dt class="now">restart</dt><dd class="now">3 tabs reopen on the frames they show now</dd></dl>
+              </div>
+              <div class="mf"><span class="note">a moment. nothing to press.</span></div>
+            </div>
+            <div class="mod">
+              <div class="mh"><b>the update did not finish</b><span>0.2.1 is still installed. nothing of it was changed.</span></div>
+              <div class="mb">
+                <div class="fail"><b>github stopped answering at 23.0 of 41.0 MB.</b> what had come was removed.</div>
+                <div class="note">the update button stays on the strip. try again now, or any time.</div>
+              </div>
+              <div class="mf"><span class="bt">close</span><span class="bt fill">try again</span></div>
+            </div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 35 · the update</span><span>update on the strip, or see the update on about, opens this over whatever is up. it says the version you would get and the one you have, the release date and the size, at most three short lines of what changed, as the release notes word them (one line a change, under added, changed and fixed), and release notes, which opens the full notes in the browser. then update or cancel: cancel closes it, and the button stays on the strip for this run. when a tab holds marks, the modal says they will go, since marks are kept nowhere but a screenshot. below: the states after update. cancel stops a download or a check and removes what came; once the new build goes into place there is nothing to cancel. a failure leaves the installed version as it was and says why in one line, with a gray edge: amber is kept for faults in a file. the six states: available, downloading, checking, restarting and failed here, and up to date on about (fig. 34). versions, sizes, dates and counts are examples.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m stage">
+        <div class="set">
+          <div class="side">
+            <h6>settings</h6>
+            <span>general</span><span>about</span><span>playback</span><span>display</span><span>browser</span><span>screenshots</span><span class="on">open-source notices</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>open-source notices</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="find"><span class="fld f"><b>lgpl</b></span><span class="n">2 of 9</span><span class="bt">reveal the file</span></div>
+              <div class="txt"><b>third-party notices: eyepiece 0.1.0 for windows x64</b>
+
+eyepiece contains open source software made by others. each part is under its own license:
+
+  1. ffmpeg, the separate av*.dll and sw*.dll files beside eyepiece.exe: <mark>LGPL</mark> version 3 or later
+  2. 78 rust crates built into eyepiece.exe: MIT 72, Apache-2.0 3, BSD-3-Clause 1, Unicode-3.0 1, WTFPL 1, Zlib 1
+  3. two typefaces built into eyepiece.exe: OFL-1.1
+
+section 4 gives each license text once, worded as the parts ship it, with the copyright lines of every part it covers.
+<i class="rule"></i><b>1. ffmpeg</b>
+
+eyepiece reads and decodes video with ffmpeg (https://ffmpeg.org). Copyright (C) 2000-2026 FFmpeg Project.
+license: <mark class="cur">LGPL</mark> version 3 or later, as the build itself says. the text is ffmpeg-LICENSE.txt beside this file.
+version: n9.0.2-62-gac1c6e003f-20261123, the windows build made by https://github.com/BtbN/FFmpeg-Builds, downloaded from https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-<mark>lgpl</mark>-shared-9.0.zip
+source: https://git.ffmpeg.org/ffmpeg.git at commit ac1c6e003f. the scripts that made the build are at https://github.com/BtbN/FFmpeg-Builds.
+
+ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll beside it, which eyepiece loads from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build release 9.0, or a later one whose libraries keep the same major versions (the number in each file name), as shared libraries and put your files in place of these. eyepiece needs nothing else to use them.<i class="scrollbar" style="top:6px;height:14px"></i></div>
+            </div>
+            <div class="pf"><span>THIRD-PARTY-NOTICES.txt, then ffmpeg-LICENSE.txt, as installed beside the program</span></div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 36 · open-source notices</span><span>the text of the THIRD-PARTY-NOTICES.txt that ships beside the program, followed by ffmpeg-LICENSE.txt, which holds the lgpl's own words: read from those files when the page opens, so it is always what was installed, never a copy built in. it covers ffmpeg under the lgpl with the note that its libraries are separate files you may replace, every crate built in with its license, and the two typefaces under the open font license. the field finds as you type: the current match in white, the others lit. reveal the file shows it selected in explorer or finder. a build run from the source tree has no such file beside it, and the page says so. shown: the real start of the 0.1.0 windows file, its hard-wrapped lines reflowed to the panel and its rules of = drawn as a line; the match count is an example.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m stage">
+        <div class="set">
+          <div class="side">
+            <h6>settings</h6>
+            <span>general</span><span>about</span><span class="on">playback</span><span>display</span><span>browser</span><span>screenshots</span><span>open-source notices</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>playback</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="gl">loop</div>
+              <div class="r"><span class="l">loop for a file</span><span class="c"><span class="seg"><span>off</span><span class="on">one</span></span></span></div>
+              <div class="r"><span class="l">loop for a played folder</span><span class="c"><span class="seg"><span>off</span><span>one</span><span class="on">all</span></span></span></div>
+              <div class="r"><span class="l">loop analysis</span><span class="n">seconds each side of the seam, 0.5 to 10</span><span class="c"><span class="fld"><b>3.0</b>s</span></span></div>
+              <div class="gl">readout</div>
+              <div class="r"><span class="l">count in</span><span class="n">T, or a click on the readout, switches it in a tab</span><span class="c"><span class="seg"><span class="on">frames</span><span>timecode</span></span></span></div>
+              <div class="r"><span class="l">frame numbers start at</span><span class="n">the readout, the title, captions and screenshot names</span><span class="c"><span class="seg"><span class="on">0</span><span>1</span></span></span></div>
+              <div class="gl">sound</div>
+              <div class="r"><span class="l">volume</span><span class="c"><i class="rng"><i style="width:80%"></i><u style="left:80%"></u></i><span class="fld"><b>80</b>%</span></span></div>
+              <div class="r"><span class="l">mute</span><span class="c"><i class="sw"></i></span></div>
+            </div>
+            <div class="pf"><span class="quiet">reset this page</span><span>space, and a click on the picture, play and pause: fixed</span></div>
+          </div>
+        </div>
+        <div class="set">
+          <div class="side">
+            <h6>settings</h6>
+            <span>general</span><span>about</span><span>playback</span><span class="on">display</span><span>browser</span><span>screenshots</span><span>open-source notices</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>display</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="gl">around and under the picture</div>
+              <div class="r"><span class="l">behind the picture</span><span class="n">the bars round a picture of another shape</span><span class="c"><span class="seg"><span class="on">black</span><span>dark gray</span><span>mid gray</span><span>custom</span></span></span></div>
+              <div class="r"><span class="l">transparent parts</span><span class="n">over checker leaves a chip on the picture</span><span class="c"><span class="seg"><span class="on">as stored</span><span>over checker</span></span></span></div>
+              <div class="r"><span class="l">chroma for 4:2:0 and 4:2:2</span><span class="n">blended at the file's siting, or the nearest sample</span><span class="c"><span class="seg"><span class="on">blended</span><span>nearest</span></span></span></div>
+              <div class="gl">guides</div>
+              <div class="r"><span class="l">grid</span><span class="n">a tile's size in the clip's pixels</span><span class="c"><span class="fld"><b>240</b></span><span class="n" style="font:400 11px/1 var(--mono)">×</span><span class="fld"><b>240</b>px</span><kbd>D</kbd><i class="sw"></i></span></div>
+              <div class="r"><span class="l">center lines and circle</span><span class="c"><kbd>C</kbd><i class="sw"></i></span></div>
+              <div class="r"><span class="l">guide color</span><span class="c"><i class="swatch" style="background:#3df0ff"></i><span class="fld"><b>#3df0ff</b></span></span></div>
+            </div>
+            <div class="pf"><span class="quiet">reset this page</span><span>past 100% a pixel is a square, never smoothed: fixed</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="lab">behind the picture, and transparent parts, in a 4:3 window</div>
+          <div class="bgs">
+            <figure><div class="mini" style="background:#000"><svg viewBox="0 0 1920 1080"><use href="#chart"/></svg></div><span class="cap">black · #000000</span></figure>
+            <figure><div class="mini" style="background:#262626"><svg viewBox="0 0 1920 1080"><use href="#chart"/></svg></div><span class="cap">dark gray · #262626</span></figure>
+            <figure><div class="mini" style="background:#808080"><svg viewBox="0 0 1920 1080"><use href="#chart"/></svg></div><span class="cap">mid gray · #808080</span></figure>
+            <figure><div class="mini" style="background:#1e2833"><svg viewBox="0 0 1920 1080"><use href="#chart"/></svg></div><span class="cap">custom · #1e2833</span></figure>
+            <figure><div class="mini" style="background:#000"><div class="checker" style="width:160px;height:90px"><svg viewBox="0 0 1920 1080"><circle cx="960" cy="540" r="430" fill="url(#soft)"/></svg></div><span class="chip">over checker</span></div><span class="cap">transparent parts over checker</span></figure>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 37 · playback and display</span><span><b>playback</b> holds what is kept between runs today, with a control for each: the two loop modes, loop analysis's seconds, frames or timecode, the first frame's number (today in the file only), and the bar's volume and mute. what space and a click do is fixed and said so at the foot, not offered. <b>display:</b> behind the picture colors the bars round a picture of another shape; no pixel of the picture changes, so it leaves no chip. the grays are proposals. transparent parts: as stored is what the player does today (color shown as stored, alpha not applied; the view menu shows alpha alone). over checker is the design's v1 extra from section 07, not built yet, and like every change to the picture it leaves a chip. chroma, the guides' tile, their color and the two guide switches are today's settings, the color and chroma until now in the file only. smoothing past 100% is not offered: the plan's exact rule draws a pixel as a square from 100% up (paint.rs), and the foot says so.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m stage">
+        <div class="set">
+          <div class="side">
+            <h6>settings</h6>
+            <span>general</span><span>about</span><span>playback</span><span>display</span><span class="on">browser</span><span>screenshots</span><span>open-source notices</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>browser</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="gl">start</div>
+              <div class="r"><span class="l">start in</span><span class="n">the first run opens on downloads</span><span class="c"><span class="seg"><span class="on">where it was last</span><span>a fixed folder</span></span></span></div>
+              <div class="r"><span class="l">the fixed folder</span><span class="c"><span class="fld off"><b>D:\renders_out</b></span><span class="bt off">choose</span></span></div>
+              <div class="r"><span class="l">recent folders</span><span class="n">the last 5 the browser opened files from</span><span class="c"><span class="bt">clear recent folders</span></span></div>
+              <div class="gl">network folders</div>
+              <div class="r fact"><span class="l">look-only</span><span class="n">nothing but the listing is read until you open a file or ask for previews</span><span class="c"><span class="tag">fixed</span></span></div>
+              <div class="gl">preview cache</div>
+              <div class="r"><span class="l">posters and previews</span><span class="n p">%LOCALAPPDATA%\eyepiece\cache\previews</span><span class="c"><i class="meter"><i style="width:65%"></i></i><span class="n p" style="grid-column:auto">1.31 of 2 GB</span></span></div>
+              <div class="r"><span class="l">limit</span><span class="n">oldest out first. clearing takes its files one by one</span><span class="c"><span class="fld"><b>2</b>GB</span><span class="bt">clear the cache</span></span></div>
+            </div>
+            <div class="pf"><span class="quiet">reset this page</span><span>reset keeps the recent folders and the cache</span></div>
+          </div>
+        </div>
+        <div class="set">
+          <div class="side">
+            <h6>settings</h6>
+            <span>general</span><span>about</span><span>playback</span><span>display</span><span>browser</span><span class="on">screenshots</span><span>open-source notices</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>screenshots</b><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="r" style="margin-top:6px"><span class="l">folder</span><span class="n p">%USERPROFILE%\Pictures\eyepiece</span><span class="c"><span class="bt">change</span><span class="bt">reveal</span></span></div>
+              <div class="gl">a saved picture carries</div>
+              <div class="r"><span class="l">a caption: name, frame, timecode</span><span class="n">under the picture, so it covers no pixel</span><span class="c"><i class="sw"></i></span></div>
+              <div class="r"><span class="l">the guides, when they are showing</span><span class="c"><i class="sw"></i></span></div>
+              <div class="r"><span class="l">the markup</span><span class="c"><i class="sw on"></i></span></div>
+              <div class="gl">always</div>
+              <div class="r fact"><span class="l">never beside the media, never over an earlier one</span><span class="n">clip.f000742.png, then clip.f000742 (2).png</span><span class="c"><span class="tag">fixed</span></span></div>
+              <div class="r fact"><span class="l">16 bits a channel when the file is deeper than 8</span><span class="n">a copy to the clipboard is the frame alone, 8 bits</span><span class="c"><span class="tag">fixed</span></span></div>
+            </div>
+            <div class="pf"><span class="quiet">reset this page</span><span>the screenshot menu has the same three switches</span></div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 38 · browser and screenshots</span><span><b>browser:</b> where a new tab's browser starts, today always where it was last, with a fixed folder as the new choice (dimmed until chosen). recent folders are today's five, and clearing them is new. look-only on a network volume is the project's rule (adr 0004) and is stated, not offered. the cache's place is a fact, not a field: the os cache folder, in its own eyepiece folder. its limit is today's 2 GB budget (src/preview), now a field; clear the cache is new and removes only the cache's own files, one at a time, never a directory, and refuses if its root resolves to nothing, a drive root or a home folder, as eviction does. the amount in use is an example. <b>screenshots:</b> the folder (today the pictures folder, or settings.txt's screenshot_folder in the file only) and the screenshot menu's three switches, shown here too. naming and depth are fixed and stated. on a mac the folders read ~/Library/Caches/eyepiece and ~/Pictures/eyepiece.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m win" style="width:1088px;height:612px">
+        <svg class="pic" viewBox="0 0 1920 1080"><use href="#chart"/></svg>
+        <div class="dim"></div>
+        <div class="strip">
+          <div class="ptab on"><span><em>wall /</em><i class="nv">‹</i><b class="cnt">1 of 3</b><i class="nv">›</i> wall_main_v012.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+          <div class="ptab"><span>wall_main_v011.mov</span><i class="x"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></i></div>
+          <span class="plus">+</span><span class="grow"></span>
+          <span class="qb on"><svg class="i" viewBox="0 0 16 16"><use href="#qm"/></svg></span>
+          <span class="gear"><svg class="i" viewBox="0 0 16 16"><use href="#gear"/></svg></span>
+          <span class="mark"><svg class="st"><use href="#star"/></svg></span>
+          <div class="wb"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div>
+        </div>
+        <div class="mid">
+          <div class="set">
+            <div class="side">
+              <h6>help</h6>
+              <span class="on">keys</span><span>what eyepiece does</span>
+              <span class="ver">eyepiece 0.1.0</span>
+            </div>
+            <div class="page">
+              <div class="ph"><b>keys</b><kbd>?</kbd><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+              <div class="pb">
+                <div class="knote">fixed in this version: none can be changed. on a mac, cmd stands for ctrl.</div>
+                <div class="kcols">
+                  <div>
+                    <h6>play</h6>
+                    <div class="kr"><b>space</b>play / pause</div><div class="kr"><b>F G left right</b>previous / next frame</div><div class="kr"><b>shift F G home end</b>first / last frame</div><div class="kr"><b>J K L</b>reverse · stop · forward</div><div class="kr"><b>wheel</b>scrub</div>
+                    <h6>zoom</h6>
+                    <div class="kr"><b>shift wheel</b>zoom at the pointer</div><div class="kr"><b>0 1 2</b>fit · 1:1 · 2×</div><div class="kr"><b>- =</b>zoom out / in</div><div class="kr"><b>double-click</b>fullscreen</div><div class="kr"><b>alt arrows</b>pan</div>
+                    <h6>tabs</h6>
+                    <div class="kr"><b>O</b>open</div><div class="kr"><b>N</b>new tab</div><div class="kr"><b>[ ]</b>switch tabs</div><div class="kr"><b>page up down</b>previous / next clip</div>
+                    <h6>sound</h6>
+                    <div class="kr"><b>M ↑ ↓</b>mute · volume</div>
+                  </div>
+                  <div>
+                    <h6>loop and speed</h6>
+                    <div class="kr"><b>R</b>loop off · one · all</div><div class="kr"><b>A</b>loop analysis</div><div class="kr"><b>shift - =</b>slower / faster</div>
+                    <h6>view</h6>
+                    <div class="kr"><b>T</b>frames / timecode</div><div class="kr"><b>I</b>pin metadata</div><div class="kr"><b>D C</b>grid · center lines</div><div class="kr"><b>H V Q</b>mirror · flip · rotate</div>
+                    <h6>screenshot</h6>
+                    <div class="kr"><b>S shift S</b>screenshot</div><div class="kr"><b>E</b>markup</div>
+                    <h6>window</h6>
+                    <div class="kr"><b>P shift P</b>fullscreen</div><div class="kr"><b>right-click</b>every command</div><div class="kr"><b>?</b>help, on this page</div><div class="kr"><b>ctrl ,</b>settings</div><div class="kr"><b>esc</b>leave fullscreen, close</div>
+                  </div>
+                </div>
+              </div>
+              <div class="pf"><span>the same list fills the right-click menu and the buttons' hints</span></div>
+            </div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 39 · help, keys</span><span>? on the strip, or the <kbd>?</kbd> key, opens help on this page. it is today's table of keys (src/ui/keys.rs, read from the same list as the right-click menu and the hints) set as a page of a panel built as settings is. one line is new: <kbd>ctrl</kbd> + <kbd>,</kbd> for settings. the table's own rule stays: esc or ? closes it, a press outside closes it and does nothing else, and any other key closes it and then does what it does, so a key read here can be pressed at once. pages change by a press on the sidebar. no key can be rebound in this version, yours least of all.</span></figcaption>
+    </figure>
+
+    <figure class="wide">
+      <div class="plate"><div class="mx"><div class="m stage">
+        <div class="set">
+          <div class="side">
+            <h6>help</h6>
+            <span>keys</span><span class="on">what eyepiece does</span>
+            <span class="ver">eyepiece 0.1.0</span>
+          </div>
+          <div class="page">
+            <div class="ph"><b>what eyepiece does</b><kbd>?</kbd><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
+            <div class="pb">
+              <div class="intro">a review player for vfx and install content. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.</div>
+              <div class="feat">
+                <div><b>opens what review needs</b><span>hap, notchlc, prores, h.264, hevc and vp9, and numbered stills as one clip</span></div>
+                <div><b>one true frame at a time</b><span>steps, a timebar with pictures, frames or the file's own timecode</span></div>
+                <div><b>true pixels</b><span>1:1 and up drawn square, with the pixel and its values under the pointer</span></div>
+                <div><b>what the file is</b><span>a metadata panel read from the file; what it cannot say is labeled</span></div>
+                <div><b>loops</b><span>loop analysis plays the end into the start and measures the seam</span></div>
+                <div><b>folders</b><span>a browser with scrubbing previews; a folder played in order</span></div>
+                <div><b>review</b><span>guides, mirror and rotate, markup, and screenshots with a caption</span></div>
+                <div><b>versions side by side</b><span>two tabs of one size flip on the same frame, zoom and pan</span></div>
+              </div>
+              <div class="links"><span class="bt">source on github</span><span class="bt">report a problem</span><span class="bt">release notes</span><span class="bt">tridant.io</span></div>
+              <div class="lic">eyepiece is under the common public attribution license 1.0. <span class="lnk">read it</span></div>
+            </div>
+            <div class="pf"><span>the readme on github says the same at length</span></div>
+          </div>
+        </div>
+      </div></div></div>
+      <figcaption><span class="fn">fig. 40 · help, what eyepiece does</span><span>what it is in two sentences, the readme's own, then its basic features in eight short lines, the links (github for the source, issues for a problem, the releases page for the notes, and tridant.io), and one line naming the license with a link to its text. about keeps its own github link and license line (fig. 34). every link opens the system's browser; the player itself sends nothing. the features are what the readme says is built today, worded short, and change with it.</span></figcaption>
+    </figure>
+  </div>
+  <div class="stack">
+    <h3>every setting</h3>
+    <div class="scroll"><table>
+      <tr><th>label</th><th>choices</th><th>default</th><th>in settings.txt</th><th>today</th></tr>
+      <tr><td class="g" colspan="5">general</td></tr>
+      <tr><td>play a file when it opens</td><td>on · off</td><td>on</td><td class="mono">autoplay</td><td><span class="pill you">new</span> today a file opens paused on frame 0 (play.rs). your ask.</td></tr>
+      <tr><td>open a file from the browser in</td><td>this tab · a new tab</td><td>this tab</td><td class="mono">browser_opens_in</td><td><span class="pill later">behavior</span> this tab, always; the metadata column's "new tab" does the other.</td></tr>
+      <tr><td>one window</td><td>on · off</td><td>on</td><td class="mono">one_window</td><td><span class="pill later">behavior</span> a second launch hands its file to the open window. the switch is new.</td></tr>
+      <tr><td>keep the controls up</td><td>on · off</td><td>off</td><td class="mono">pin_controls</td><td><span class="pill ok">exists</span> the pin at the bar's left.</td></tr>
+      <tr><td>controls go after</td><td>1 to 10 s, a proposal</td><td>2.4 s</td><td class="mono">controls_after</td><td><span class="pill later">behavior</span> 2.4 s, fixed in src/ui/mod.rs.</td></tr>
+      <tr><td>remember the window's size</td><td>on · off</td><td>on</td><td class="mono">remember_size</td><td><span class="pill later">behavior</span> window_size is kept and used today; the switch is new.</td></tr>
+      <tr><td>check for updates when eyepiece starts</td><td>on · off</td><td>on</td><td class="mono">update_check, update_checked</td><td><span class="pill you">new</span> the second key holds the time of the last good check, for the once-a-day rule.</td></tr>
+      <tr><td>the settings file</td><td>reveal</td><td>—</td><td>—</td><td><span class="pill you">new</span> the button. the file is today's, editable by hand.</td></tr>
+      <tr><td class="g" colspan="5">about</td></tr>
+      <tr><td>check now</td><td>a button</td><td>—</td><td class="mono">update_checked</td><td><span class="pill you">new</span> asks once, whatever the switch says.</td></tr>
+      <tr><td class="g" colspan="5">playback</td></tr>
+      <tr><td>loop for a file</td><td>off · one</td><td>one</td><td class="mono">loop_file</td><td><span class="pill ok">exists</span> the loop menu, R.</td></tr>
+      <tr><td>loop for a played folder</td><td>off · one · all</td><td>all</td><td class="mono">loop_folder</td><td><span class="pill ok">exists</span></td></tr>
+      <tr><td>loop analysis</td><td>0.5 to 10 s each side of the seam</td><td>3.0 s</td><td class="mono">loop_analysis_seconds</td><td><span class="pill ok">exists</span> the loop menu.</td></tr>
+      <tr><td>count in</td><td>frames · timecode</td><td>frames</td><td class="mono">readout</td><td><span class="pill ok">exists</span> T, or a click on the readout.</td></tr>
+      <tr><td>frame numbers start at</td><td>0 · 1</td><td>0</td><td class="mono">first_frame</td><td><span class="pill later">file only</span> no control until now.</td></tr>
+      <tr><td>volume</td><td>0 to 100%</td><td>80%</td><td class="mono">volume</td><td><span class="pill ok">exists</span> the bar's slider, ↑ ↓. kept as last left.</td></tr>
+      <tr><td>mute</td><td>on · off</td><td>off</td><td class="mono">mute</td><td><span class="pill ok">exists</span> M.</td></tr>
+      <tr><td class="g" colspan="5">display</td></tr>
+      <tr><td>behind the picture</td><td>black · dark gray · mid gray · custom</td><td>black</td><td class="mono">background</td><td><span class="pill you">new</span> black today (the renderer clears to black). #262626 and #808080 are proposals.</td></tr>
+      <tr><td>transparent parts</td><td>as stored · over checker</td><td>as stored</td><td class="mono">alpha_view</td><td><span class="pill you">new</span> as stored is today's. over checker is section 07's, not built, and leaves a chip.</td></tr>
+      <tr><td>chroma for 4:2:0 and 4:2:2</td><td>blended · nearest</td><td>blended</td><td class="mono">chroma</td><td><span class="pill later">file only</span> the metadata panel says which.</td></tr>
+      <tr><td>grid, and its tile</td><td>on · off; width × height px</td><td>off; 240 × 240</td><td class="mono">grid, tile</td><td><span class="pill ok">exists</span> D, the view menu.</td></tr>
+      <tr><td>center lines and circle</td><td>on · off</td><td>off</td><td class="mono">center</td><td><span class="pill ok">exists</span> C.</td></tr>
+      <tr><td>guide color</td><td>any #rrggbb</td><td>#3df0ff</td><td class="mono">guide_color</td><td><span class="pill later">file only</span></td></tr>
+      <tr><td class="g" colspan="5">browser</td></tr>
+      <tr><td>start in</td><td>where it was last · a fixed folder</td><td>where it was last; downloads on the first run</td><td class="mono">browser_folder, browser_start</td><td><span class="pill ok">exists</span> as where it was last. the fixed folder is new.</td></tr>
+      <tr><td>recent folders</td><td>clear</td><td>the last 5</td><td class="mono">browser_recent</td><td><span class="pill ok">exists</span> clearing them is new.</td></tr>
+      <tr><td>preview cache limit</td><td>1 to 64 GB, a proposal</td><td>2 GB</td><td class="mono">cache_limit</td><td><span class="pill later">behavior</span> a 2 GB budget fixed in src/preview.</td></tr>
+      <tr><td>clear the cache</td><td>a button</td><td>—</td><td>—</td><td><span class="pill you">new</span> one cache file at a time, under eviction's guard.</td></tr>
+      <tr><td class="g" colspan="5">screenshots</td></tr>
+      <tr><td>folder</td><td>any folder</td><td>Pictures\eyepiece</td><td class="mono">screenshot_folder</td><td><span class="pill later">file only</span></td></tr>
+      <tr><td>a caption</td><td>on · off</td><td>off</td><td class="mono">screenshot_caption</td><td><span class="pill ok">exists</span> the screenshot menu.</td></tr>
+      <tr><td>the guides, when showing</td><td>on · off</td><td>off</td><td class="mono">screenshot_guides</td><td><span class="pill ok">exists</span></td></tr>
+      <tr><td>the markup</td><td>on · off</td><td>on</td><td class="mono">screenshot_markup</td><td><span class="pill ok">exists</span></td></tr>
+    </table></div>
+    <p class="hint">exists: in settings.txt with a control today. file only: in settings.txt, no control yet. behavior: what the player does today with no key in the file. new key names are proposals. an older build keeps keys it does not know as written (settings.rs), so going back a version loses nothing.</p>
+    <ul class="plain">
+      <li><b>stated, not offered:</b> space and a click on the picture play and pause; a double-click fills the display; past 100% a pixel is a square; network folders are look-only; the cache lives in the os cache folder; screenshots are never written beside the media or over an earlier one; a folder or several files dropped on the window open as one tab and play in name order. none of these is a switch anywhere.</li>
+      <li><b>still not saved, on purpose</b> (section 09): speed, zoom, pan, mirror, flip, rotate and markup start fresh in every tab.</li>
+      <li><b>dropped from the brief's list:</b> a smooth filter past 1:1, since it would break the exact rule the plan is built on; it is named as fixed instead. "keys" left settings for help, as you asked.</li>
+    </ul>
+  </div>
+
+  <div class="cols">
+    <div class="stack">
+      <h3>the update check</h3>
+      <ul class="plain">
+        <li><b>when:</b> once the first frame is up, or the browser when no file was given, on a thread of its own. never on the drawing thread, never before the first frame.</li>
+        <li><b>how often:</b> once a launch at most, and not when the last good check is under a day old. check now ignores both. a second launch that hands its file to the open window never checks: it ends before.</li>
+        <li><b>the request:</b> <span class="mono">GET https://api.github.com/repos/tridant-io/eyepiece/releases/latest</span>, with <span class="mono">User-Agent: eyepiece/0.1.0</span> and <span class="mono">Accept: application/vnd.github+json</span>. no token, no cookie.</li>
+        <li><b>the answer:</b> only the tag, the date, the notes' first lines, the release's page and its assets' names, sizes and links are read, by a small reader of our own, not a json crate.</li>
+        <li><b>newer means strictly greater:</b> tags are vX.Y.Z, compared number by number. github's "latest" is the newest release by date, so an older version released later is never offered, and an equal one shows nothing.</li>
+        <li><b>no answer</b>, a refusal, a rate limit or a 404 (the repo is private until it goes public, so every build before that gets one) shows nothing and is not retried in this run. the time is not written, so the next start asks again.</li>
+        <li><b>github's own rules:</b> a request without a user agent is refused; 60 an hour per address are allowed without an account. one a day is far inside that.</li>
+        <li><b>no new package:</b> winhttp on windows, one more feature of the windows crate already in Cargo.toml; nsurlsession on macos, through objc2-foundation, already in use. tls and proxies are the system's.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <h3>what the player sends over the network</h3>
+      <div class="scroll"><table>
+        <tr><th>when</th><th>what goes out</th><th>carrying</th></tr>
+        <tr><td>today</td><td>nothing. the player makes no request to any server. reading a file on a share is the file system, bounded by adr 0004.</td><td>—</td></tr>
+        <tr><td>a start, with the switch on and the last good check over a day old</td><td>one GET to api.github.com</td><td>the request line and the two headers. like any connection, this machine's public address and the time. no account, id, file name or setting.</td></tr>
+        <tr><td>check now</td><td>the same GET</td><td>the same</td></tr>
+        <tr><td>update pressed</td><td>two downloads: the build for this system and the release's SHA256SUMS.txt, from github, which hands them to its file host</td><td>the same two headers</td></tr>
+        <tr><td>restart, clean up</td><td>nothing</td><td>—</td></tr>
+        <tr><td>a link on about, help or the mark's card</td><td>nothing from the player: the system's browser opens the page</td><td>—</td></tr>
+      </table></div>
+      <p class="hint">kept afterwards: the time of the last good check, in settings.txt. nothing about the machine, ever.</p>
+    </div>
+  </div>
+
+  <div class="stack">
+    <h3>how an update is applied</h3>
+    <div class="scroll"><table>
+      <tr><th>step</th><th>windows</th><th>macos</th></tr>
+      <tr><td>what is installed</td><td>nine files in <span class="mono">%LOCALAPPDATA%\Programs\eyepiece</span> (scripts\package.ps1 -Install): eyepiece.exe, signed by Tridant, Inc.; avformat-63.dll, avcodec-63.dll, avutil-61.dll and swresample-7.dll, unsigned today; ffmpeg-LICENSE.txt, the two fonts-*.txt and THIRD-PARTY-NOTICES.txt.</td><td>eyepiece.app, one signed and notarized bundle in /Applications. <b>not built yet:</b> there is no bundle, no mac signing in the package step and no notarization today.</td></tr>
+      <tr><td>1 · find</td><td>from the release's assets, by name: eyepiece-0.3.0-windows-x64.zip and SHA256SUMS.txt.</td><td>eyepiece-0.3.0-macos.zip and SHA256SUMS.txt.</td></tr>
+      <tr><td>2 · download</td><td>into <span class="mono">%LOCALAPPDATA%\eyepiece\cache\update\</span>, the cache folder, off the drawing thread. cancel or a failure removes the partial file, by name.</td><td>into <span class="mono">~/Library/Caches/eyepiece/update/</span>, the same way.</td></tr>
+      <tr><td>3 · check</td><td>the zip's sha-256 must match its line in SHA256SUMS.txt. it is unpacked with the system's own tar.exe (in windows 10 and 11) into update\0.3.0\. the new eyepiece.exe must carry a valid, timestamped authenticode signature whose signer is Tridant, Inc. (WinVerifyTrust, one more feature of the windows crate), and say the version the release named.</td><td>the zip's sha-256; unpacked with the system's ditto. the bundle must pass the system's code check against tridant's developer id, with its notarization ticket stapled (the Security framework, called directly). its signature covers the ffmpeg libraries inside it.</td></tr>
+      <tr><td>4 · put in place</td><td>in the install folder, for each file of the new build whose bytes differ from the installed one: the installed file is renamed <span class="mono">name.0.2.1.old</span>, then the new one is moved in, a rename on the same volume. a running program's files cannot be written over or deleted, but they can be renamed: that is what lets this happen while the player runs. ffmpeg's dlls are left as they are when the release names the same ffmpeg build the installed version shipped with, ours or your own (the lgpl lets you replace them, and the notices say so). a failed rename undoes those made, newest first, and the modal names the file. no admin prompt: the folder is the user's own.</td><td>the new bundle is moved into /Applications as "eyepiece 0.3.0.app", the running one renamed "eyepiece 0.2.1.app", then the new one renamed eyepiece.app. a running bundle can be renamed. a failed rename puts the first one back.</td></tr>
+      <tr><td>5 · restart</td><td>the running player writes a one-time hand-over file into update\: each tab's file or folder, frame, zoom, pan, speed, loop mode and look. it gives up its one-window name, starts the new eyepiece.exe with --resume and that file, and ends. the new one opens the tabs, then removes the hand-over file. marks are not carried, and the modal said so.</td><td>the same, the new bundle started through launch services.</td></tr>
+      <tr><td>6 · clean up</td><td>once the new version's first frame is up, it removes each .old file by its exact name, from the list the update wrote, one at a time; then the zip, SHA256SUMS.txt and what is left of the unpacked files, one at a time by name. never a folder, never a wildcard, never recursive. it refuses if the install folder or the update folder resolves to nothing, a drive root or a home folder, as the cache's eviction does. a file still held is tried at the next start; the empty folders stay.</td><td>the old bundle is a folder, so the player never deletes it: it is moved to the trash. the zip and SHA256SUMS.txt are removed one at a time.</td></tr>
+      <tr><td>if 0.3.0 never shows a frame</td><td>its .old files are still there, and renaming them back is 0.2.1 again. this version does not do that by itself.</td><td>0.2.1 is in the trash, to put back.</td></tr>
+    </table></div>
+    <p class="hint">the sha-256 comes from the same release as the build, so it catches a broken download, not a hostile one; the signature is what proves the build is tridant's. on windows only the program carries one today, which is why signing the four dlls is in the table below.</p>
+  </div>
+
+  <div class="stack">
+    <h3>what can go wrong, and what the modal says</h3>
+    <div class="scroll"><table>
+      <tr><th>what went wrong</th><th>the line in the modal</th><th>what is left</th></tr>
+      <tr><td>github stops answering, or the network goes</td><td>"github stopped answering at 23.0 of 41.0 MB." with try again.</td><td>the installed version as it was; the partial file removed</td></tr>
+      <tr><td>the download does not match its checksum</td><td>"the download does not match the release's checksum. it was removed."</td><td>the same</td></tr>
+      <tr><td>the program is not signed by Tridant, Inc.</td><td>"this build is not signed by Tridant, Inc. it was removed." with report a problem in place of try again.</td><td>the same</td></tr>
+      <tr><td>the disk is full</td><td>"the disk eyepiece is on needs 113 MB free for this and has 12." (113 MB is today's installed size; 12 is an example)</td><td>the same</td></tr>
+      <tr><td>eyepiece cannot write its own folder</td><td>"eyepiece cannot write to its folder:" and the folder.</td><td>the same</td></tr>
+      <tr><td>a file is held by another program</td><td>"avcodec-63.dll is in use by another program. everything was put back."</td><td>the same; every rename undone</td></tr>
+      <tr><td>macos: run from a disk image, or from where the system moved it on first open</td><td>"move eyepiece to applications, then update."</td><td>the same</td></tr>
+      <tr><td>the release has no build for this system</td><td>no modal: the update button does not appear.</td><td>nothing changes</td></tr>
+    </table></div>
+  </div>
+
+  <div class="stack">
+    <h3>what this changes in earlier sections</h3>
+    <ul class="plain">
+      <li><b>a file opens playing</b>, as you asked. figs 02 to 26 and the readme have it open paused on its first frame; general turns that back.</li>
+      <li><b>section 09</b> says which tabs were open is not saved, on purpose. still true, but for the one hand-over file at an update, removed as soon as it is read.</li>
+      <li><b><kbd>?</kbd></b> laid the table of keys over the clip (fig. 21). it now opens help on its keys page, with the table's rule kept.</li>
+      <li><b>the strip</b> gains four things at its right end. the tabs lose 96 of their room, and about 64 more while update shows.</li>
+      <li><b>settings.txt</b> gains eleven keys: autoplay, browser_opens_in, one_window, controls_after, remember_size, update_check, update_checked, background, alpha_view, browser_start, cache_limit.</li>
+      <li><b>ctrl + ,</b> is new. no key of yours moves.</li>
+      <li><b>legal names</b> (Tridant, Inc.) keep their capitals on about and in the modal; every other word stays lowercase.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="decide-11">
+  <div class="sh"><span class="tab">11a</span><h2>For you to decide</h2></div>
+  <div class="dec">
+    <div><h3>the license for the public repo <span class="pill warn">to confirm with counsel</span></h3>
+      <p>you asked for one where people can use it but not redistribute it under their own name, and it must stay credited to tridant. four candidates, as far as i understand them:</p>
+      <div class="scroll" style="grid-column:2"><table>
+        <tr><th>license</th><th>what it does</th><th>what it does not do</th></tr>
+        <tr><td>common public attribution license 1.0 (CPAL-1.0, osi-approved)</td><td>anyone may use, change and redistribute, and every copy and every changed version must show the original developer's attribution (name, phrase, link and logo) in its own interface. it is built on the mozilla public license 1.1, so changed files stay under it.</td><td>a fork may still carry another product name beside that credit.</td></tr>
+        <tr><td>apache-2.0 plus a trademark notice</td><td>anyone may use, change and redistribute, keeping the copyright and NOTICE text. the names and logos "eyepiece" and "tridant" are not licensed, so a fork must rename itself.</td><td>the credit survives only in the notices file, not on screen.</td></tr>
+        <tr><td>functional source license 1.1 (FSL-1.1-Apache-2.0), which another tridant app already uses</td><td>free to use, change and redistribute for anything but a competing product. becomes apache-2.0 after two years.</td><td>says nothing special about credit.</td></tr>
+        <tr><td>a source-available license for unchanged copies only</td><td>allows use and redistribution of unchanged copies only: the only kind that truly forbids redistribution under another name.</td><td>not open source, and github and the package indexes will label it so.</td></tr>
+      </table></div>
+      <p>whichever is chosen, ffmpeg's lgpl libraries stay separate files under their own license, as today.</p>
+      <p class="rec">CPAL-1.0. it is the one that keeps "a tridant system" and the mark on screen in every copy, which is the credit you described. the about page (fig. 34) is where its attribution would stand.</p></div>
+    <div><h3>the legal name</h3><p>written "Tridant Inc." in two LICENSE files of other tridant repos, and "Tridant, Inc." on the code-signing certificate and in the id service.</p><p class="rec">"Tridant, Inc.", as the certificate has it, everywhere.</p></div>
+    <div><h3>the mac bundle, signing and notarization</h3><p>the mac updater depends on all three and none exists yet. the readme says mac builds will be signed with a personal developer id for now; the updater pins the identity it checks, so changing it later means one release that both identities can accept.</p><p class="rec">tridant's own developer id from the first public mac build. mac updates wait for the bundle; windows can ship first.</p></div>
+    <div><h3>how windows installs</h3><p>today the package step copies the files into %LOCALAPPDATA%\Programs\eyepiece. an installer could do the same into the same folder with a start menu entry and an uninstall entry; one that installs into program files would need an admin prompt for every update.</p><p class="rec">keep the per-user folder. a zip for the first install, or a small installer into that same folder later.</p></div>
+    <div><h3>sign the ffmpeg dlls</h3><p>only eyepiece.exe is signed today, so on windows the update can prove only the program is tridant's.</p><p class="rec">sign all four with the same certificate at package time. the player never checks them when it loads them, so a user's own ffmpeg still runs, as the lgpl wants.</p></div>
+    <div><h3>who cuts a release, and from where</h3><p>a script on the dev machine using the github cli, where the signing setup already is, or ci, which would need the signing secrets in github and a windows runner.</p><p class="rec">a script here: tests, build, sign, zip, SHA256SUMS.txt, then <span class="mono">gh release create</span> with the notes; the mac leg on the mac build machine over ssh. ci later, if ever.</p></div>
+    <div><h3>version numbering</h3><p>Cargo.toml says 0.1.0. tags would be vX.Y.Z, compared number by number. the first build that can update itself has to be installed by hand: nothing before it ever hears of an update.</p><p class="rec">keep 0.1.0 for the private builds; the first public one is 0.2.0 and carries the updater.</p></div>
+    <div><h3>about: second, or last</h3><p>you said general and about first. most apps put about last.</p><p class="rec">keep it second, as you asked.</p></div>
+    <div><h3>the release notes in the modal</h3><p>drawn: the version pair, the date, at most three lines and a link to the full notes. the alternative is the full notes inside the modal. the other tridant apps keep their update dialogs to a decision and a link.</p><p class="rec">three lines and the link.</p></div>
+    <div><h3>a file opens playing</h3><p>your ask, and the default drawn. it applies to every way a file opens: the command line, a drop, a second launch, the browser. a reload on change keeps playing or paused as it was.</p><p class="rec">on, with the switch in general.</p></div>
+    <div><h3>a chip for the letterbox color</h3><p>no pixel of the picture changes, so the rule does not call for one. a gray surround does change how a picture reads.</p><p class="rec">no chip. say if you want one.</p></div>
+    <div><h3>ffmpeg's source with public downloads</h3><p>the notices point at ffmpeg's source by commit and at the build scripts. attaching the exact source archive to each release that changes ffmpeg is the safer reading of the lgpl.</p><p class="rec">attach it, and put the question to counsel with the license.</p></div>
+  </div>
+</section>
+
+<section id="public">
+  <div class="sh"><span class="tab">11b</span><h2>Before the repo goes public</h2></div>
+  <p class="lede">from a read of the repository as it stands. each is a finding, with what it asks for.</p>
+  <div class="scroll"><table>
+    <tr><th>finding</th><th>what it asks for</th></tr>
+    <tr><td>there is no LICENSE file, and Cargo.toml names none</td><td>the license from 11a, as LICENSE and in Cargo.toml.</td></tr>
+    <tr><td>the phase 0 working notes and the plan's sections 09 and 10 describe your machines and private setup</td><td>edit them, or leave them out of the public repo.</td></tr>
+    <tr><td>the readme is written for this project's own work, not for an outside reader</td><td>a rewrite, self-contained, with screenshots and every feature explained, as you asked separately.</td></tr>
+    <tr><td>the commit history carries the author's personal email, private machine names in commit subjects and session links in commit trailers</td><td>start the public repo from a fresh history in a new repository; the present one stays private.</td></tr>
+    <tr><td>the update check names the public repo by its path</td><td>if the private repo keeps the name tridant-io/eyepiece, one of the two is renamed first, and builds name the public one.</td></tr>
+    <tr><td>the plan's own gate, a trademark search on the name, is still owed</td><td>run it before the name is public.</td></tr>
+    <tr><td>adr 0005: the unofficial prores and notchlc decoders, and the h.264 and hevc patent position, must be settled before any public download of binaries. public source is not blocked by it.</td><td>settle it before the first public release. the update flow needs public downloads, so it waits on this too.</td></tr>
+    <tr><td>the ffmpeg download in scripts\setup.ps1 is not pinned to a dated build or checked against a hash</td><td>pin the build and check its sha-256.</td></tr>
+    <tr><td>the bundled typefaces are subsets that keep their original names, which ibm plex's reserved font name may not allow</td><td>ship the full files, rename the subsets, or record their source.</td></tr>
+    <tr><td>the third-party notices cover windows only so far</td><td>the mac's own, from its own crates, before a mac release.</td></tr>
+    <tr><td>21 crates used only on other platforms have licenses no one has checked</td><td>the license check, run for each target.</td></tr>
+    <tr><td>scripts\notices.ps1 -Check still names ffmpeg-sys-next (wtfpl) as off its allow list (readme)</td><td>add wtfpl to the list, or accept it in writing.</td></tr>
+  </table></div>
+  <p class="hint">the app icon is linked from the repo (../../assets/icon/eyepiece.png) and shows only when the page sits in docs/design.</p>
+</section>
+
+</div>

@@ -1039,11 +1039,21 @@ impl Tabs {
         tab.coming.insert(Coming::start(0, path, Why::Opened, gpu.hardware(), wake.clone()))
     }
 
+    /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player.
+    /// one that had to be asked about is kept in `asking` for a few seconds, and plays when it is asked for again
+    /// in that time.
+    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>, replace: bool, asking: &mut Option<(std::path::PathBuf, Instant)>) -> Option<String> {
+        let asked = asking.take().is_some_and(|(of, until)| of == folder && Instant::now() < until);
+        let said = self.play_folder(gpu, folder, wake, replace, asked)?;
+        *asking = (!asked).then(|| (folder.to_path_buf(), Instant::now() + Duration::from_secs(8)));
+        Some(said)
+    }
+
     /// plays a folder in the tab that is up: its clips one after another in name order, from the first, with the
     /// folder's loop mode. on a network volume it first asks, once, with the count of clips it will open (`asked`
     /// says that has just been done); there each clip is opened only when it is played. returns what there is to
     /// say about it.
-    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>, asked: bool) -> Option<String> {
+    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>, replace: bool, asked: bool) -> Option<String> {
         let listed = browse::list(folder).map_err(|e| e.to_string().to_lowercase());
         let (items, left_out) = match listed {
             Ok(entries) => folder::items(&entries),
@@ -1055,7 +1065,7 @@ impl Tabs {
             return Some(ask);
         }
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
-        let coming = self.open(gpu, first, wake, true);
+        let coming = self.open(gpu, first, wake, replace);
         (coming.played, coming.play) = (Some(Played::new(title, items, wake, !network)), true);
         (left_out > 0).then(|| format!("{left_out} file{} not on this disk left out", if left_out == 1 { " is" } else { "s are" }))
     }
@@ -1446,7 +1456,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // when the controls want another look with nothing new from the window: they are due to fade
     let mut ui_due: Option<Instant> = None;
     // the file given at launch is open already, unless its frames have to be counted: that is done from here
+    // a folder given at launch is no clip: it plays as a played folder once the tabs are there
+    let folder = first.as_ref().map(|(path, _)| std::path::PathBuf::from(path)).filter(|path| path.is_dir());
     let (first, to_count) = match first {
+        Some(_) if folder.is_some() => (Tab::empty(), None),
         Some((path, Err(why))) if why.ends_with(crate::media::clip::UNCOUNTED) => (Tab::empty(), Some(path)),
         Some((path, clip)) => (Tab::open(&gpu, path, clip, hz, settings, &wake), None),
         None => (Tab::empty(), None),
@@ -1457,6 +1470,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new() };
     if let Some(path) = to_count {
         tabs.open(&gpu, path, &wake, true);
+    }
+    if let Some(said) = folder.and_then(|folder| tabs.play_folder_or_ask(&gpu, &folder, &wake, true, &mut asked_folder)) {
+        toast = say(said);
     }
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
@@ -1523,6 +1539,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::PointerLeave => {
                     pointer = None;
                     ui.pointer_leave();
+                }
+                // a folder dropped on the window or handed over by another launch plays as a played folder, in a tab
+                // of its own as a file gets one (the owner's ask, 2026-11-24)
+                Event::Open(path) if Path::new(&path).is_dir() => {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, Path::new(&path), &wake, false, &mut asked_folder) {
+                        toast = say(said);
+                    }
                 }
                 Event::Open(path) => {
                     tabs.open(&gpu, path, &wake, false);
@@ -1818,11 +1841,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
                 Action::PlayFolder(folder) => {
-                    // a folder that had to be asked about is played when it is asked for again within a few seconds
-                    let asked = asked_folder.take().is_some_and(|(of, until): (std::path::PathBuf, Instant)| &of == folder && Instant::now() < until);
-                    if let Some(said) = tabs.play_folder(&gpu, folder, &wake, asked) {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, &wake, true, &mut asked_folder) {
                         toast = say(said);
-                        asked_folder = (!asked).then(|| (folder.clone(), Instant::now() + Duration::from_secs(8)));
                     }
                 }
                 Action::Loop(mode) => tabs.tab().set_mode(*mode, settings),

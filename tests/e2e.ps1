@@ -769,6 +769,11 @@ Assert-Title 'which play then stays in' '^x_roll\.mov . \d / 3 . .* . loop one .
 Send-Key 0x52
 Wait-Title 'and R again is all: nothing about the loop in the title' { param($t) $t -match ' . clip 3 of 4' -and $t -notmatch ' loop ' } 'clip 3 of 4 and no loop mode'
 Stop-Player
+# a folder given to the player at launch plays as a played folder too
+Start-Player $tree
+Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'a folder given at launch plays as a played folder' ' . clip [123] of 4( . \d+ held at cuts)?$'
+Stop-Player
 # what the section made, file by file, then its folders, each named before it goes. nothing recursive
 foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), (Join-Path $tree 'y_broken.mov'), $shots, $tree, $above, $wrap) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
@@ -900,6 +905,11 @@ public static class EyepieceDrop {
 [void][EyepieceE2e]::PostMessage($script:h, 0x233, [EyepieceDrop]::Files((Join-Path $media 'h264_64.mp4')), [IntPtr]::Zero)
 $script:name = 'h264_64.mp4'; Assert-Frame 'a file dropped on the window opens' 0 12
 Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: what was open is still there, on its frame' 2 3
+# a folder dropped on the window plays as a played folder, in a tab of its own: here the tests' own clips
+[void][EyepieceE2e]::PostMessage($script:h, 0x233, [EyepieceDrop]::Files($media), [IntPtr]::Zero)
+Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'a folder dropped on the window plays as a played folder' ' . clip \d+ of \d+'
+Send-Key 0xDB; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: the clip that was up is still there, on its frame' 2 3
 [void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 400
 $before = Get-Title
 Start-Again 'a launch with no file exits at once' @{}
