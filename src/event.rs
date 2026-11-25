@@ -30,6 +30,7 @@ pub enum Key {
     Equals,
     BracketLeft,
     BracketRight,
+    Comma,
     Slash,
     A,
     C,

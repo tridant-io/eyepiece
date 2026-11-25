@@ -1,9 +1,9 @@
-//! every command that has a key, in one table. the table of keys (`?`, fig. 21), the right-click menu and the tooltips
+//! every command that has a key, in one table. help's keys page (`?`, fig. 39), the right-click menu and the tooltips
 //! on the strip's and the bar's buttons are all read from it, so they say the same. it holds only keys that work.
 
-use super::{font, text_top, widgets, DIM, FG, HOVER, MONO_MEDIUM, SANS};
+use super::{font, text_top, widgets, DIM, FG, HOVER, SANS};
 use crate::event::{Key, Mods};
-use egui::{Align2, Color32, Pos2, Rect, Sense, Vec2};
+use egui::{Align2, Pos2, Rect, Sense};
 
 pub const NONE: Mods = Mods { shift: false, alt: false, ctrl: false };
 pub const SHIFT: Mods = Mods { shift: true, alt: false, ctrl: false };
@@ -146,19 +146,13 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("fullscreen", "fullscreen", "P", Key::P, NONE),
             both("fullscreen", "fullscreen on the next display", "shift P", Key::P, SHIFT),
             table_only("every command", "right-click"),
-            both("this table", "the keys", "?", Key::Slash, SHIFT),
+            both("help, on this page", "help", "?", Key::Slash, SHIFT),
+            both("settings", "settings", "ctrl ,", Key::Comma, CTRL),
             also("leave fullscreen, close", "esc", Key::Escape, NONE),
         ],
     ),
 ];
 
-// the table of keys, as the design draws it: black at 86% over the picture, two columns filled row by row, 34 apart,
-// lines 11 high at 1.3 with 5 between them, a line's keys taking 96 at least
-const SHADE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 219);
-const LINE: f32 = 11.0 * 1.3;
-const LINE_GAP: f32 = 5.0;
-const COLUMN_GAP: f32 = 34.0;
-const KEYS_WIDE: f32 = 96.0;
 // the right-click menu: as wide as the bar's menus, a row 24 high
 const MENU_WIDTH: f32 = 268.0;
 const MENU_ROW: f32 = 24.0;
@@ -169,8 +163,13 @@ fn commands() -> impl Iterator<Item = &'static Command> {
 
 /// the table of keys, line by line: the entries on each line, and what it says.
 fn grouped() -> Vec<(Vec<&'static Command>, &'static str)> {
+    grouped_of(commands())
+}
+
+/// `commands` line by line, as `grouped` lays out the whole table.
+fn grouped_of(commands: impl Iterator<Item = &'static Command>) -> Vec<(Vec<&'static Command>, &'static str)> {
     let mut lines: Vec<(Vec<&'static Command>, &'static str)> = Vec::new();
-    for c in commands() {
+    for c in commands {
         let Some(said) = c.line else { continue };
         match lines.last_mut() {
             Some((on, words)) if *words == said => on.push(c),
@@ -196,9 +195,9 @@ fn joined(on: &[&Command]) -> String {
     text
 }
 
-/// the table of keys: each line's keys as shown, and what they do.
-fn lines() -> Vec<(String, &'static str)> {
-    grouped().into_iter().map(|(on, words)| (joined(&on), words)).collect()
+/// the table of keys by section, for help's keys page: each section's name, and its lines' keys and words.
+pub fn sections() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    SECTIONS.iter().map(|(name, commands)| (*name, grouped_of(commands.iter()).into_iter().map(|(on, words)| (joined(&on), words)).collect())).collect()
 }
 
 /// a command by its key, for a button's tooltip: what it does, and the key.
@@ -210,35 +209,6 @@ pub fn named(key: Key, mods: Mods) -> Option<(String, String)> {
 /// what the line says, and its keys.
 pub fn line(key: Key, mods: Mods) -> Option<(String, String)> {
     grouped().into_iter().find(|(on, _)| on.iter().any(|c| c.send == Some((key, mods)))).map(|(on, words)| (words.to_string(), joined(&on)))
-}
-
-/// the table of keys over the picture: the picture darkened, and the table in the middle of the window. a press
-/// anywhere is to take it away, so nothing under it takes the pointer while it is up.
-pub fn table(ui: &egui::Ui, full: Rect) {
-    let painter = ui.painter();
-    painter.rect_filled(full, 0.0, SHADE);
-    // the keys mono, what they do in archivo (the owner's rule: mono for titles and numbers only)
-    let (keys, words) = (font(MONO_MEDIUM, 11.0), font(SANS, 12.0));
-    let laid: Vec<_> = lines().into_iter().map(|(k, w)| (painter.layout_no_wrap(k, keys.clone(), FG), painter.layout_no_wrap(w.to_string(), words.clone(), DIM))).collect();
-    // a column's words start where its keys end (12 past the longest, which the design's keys never come near) and
-    // it is as wide as its longest words
-    let column = |at: usize| {
-        let lines = || laid.iter().skip(at).step_by(2);
-        let keys_wide = lines().map(|(k, _)| k.size().x + 12.0).fold(KEYS_WIDE, f32::max);
-        (keys_wide, keys_wide + lines().map(|(_, w)| w.size().x).fold(0.0, f32::max))
-    };
-    let (left, right) = (column(0), column(1));
-    let rows = laid.len().div_ceil(2) as f32;
-    let corner = full.center() - Vec2::new((left.1 + COLUMN_GAP + right.1) / 2.0, (rows * (LINE + LINE_GAP) - LINE_GAP) / 2.0);
-    for (i, (k, w)) in laid.into_iter().enumerate() {
-        let (x, keys_wide) = if i % 2 == 0 { (corner.x, left.0) } else { (corner.x + left.1 + COLUMN_GAP, right.0) };
-        let middle = corner.y + (i / 2) as f32 * (LINE + LINE_GAP) + LINE / 2.0;
-        painter.galley(Pos2::new(x, text_top(painter, keys.clone(), middle)), k, FG);
-        painter.galley(Pos2::new(x + keys_wide, text_top(painter, words.clone(), middle)), w, DIM);
-    }
-    egui::Area::new(egui::Id::unique("keys-table")).order(egui::Order::Middle).fixed_pos(full.min).show(ui.ctx(), |ui| {
-        ui.allocate_exact_size(full.size(), Sense::click());
-    });
 }
 
 /// the right-click menu: every command with its key beside it, in sections, its corner at `corner` and kept inside
@@ -285,6 +255,7 @@ pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool) -
 
 #[cfg(test)]
 mod tests {
+    use super::super::MONO_MEDIUM;
     use super::*;
 
     /// a key's name, from the key itself: what the table shows must be what the menu sends.
@@ -308,6 +279,7 @@ mod tests {
             Key::Equals => "=".to_string(),
             Key::BracketLeft => "[".to_string(),
             Key::BracketRight => "]".to_string(),
+            Key::Comma => ",".to_string(),
             // shift + slash is the question mark
             Key::Slash if mods == SHIFT => return "?".to_string(),
             letter => format!("{letter:?}"),
@@ -335,7 +307,7 @@ mod tests {
     #[test]
     fn the_menus_rows_send_the_key_they_show() {
         let rows: Vec<_> = commands().filter_map(|c| Some((c.name?, c.key, c.send?))).collect();
-        assert_eq!(rows.len(), 50);
+        assert_eq!(rows.len(), 51);
         for (name, key, send) in rows {
             assert_eq!(shown(send), key, "{name}");
             assert_eq!(named(send.0, send.1), Some((name.to_string(), key.to_string())));
@@ -343,15 +315,16 @@ mod tests {
         assert!(commands().filter(|c| c.name.is_some()).all(|c| c.send.is_some()), "a row that sends nothing");
     }
 
-    /// the design's table (fig. 21), its words put right where the build differs, and other keys for the same commands
-    /// beside theirs.
+    /// the design's table (fig. 21, set as help's keys page in fig. 39 with control + , new), its words put right
+    /// where the build differs, and other keys for the same commands beside theirs.
     #[test]
     fn the_table_of_keys_is_the_designs_as_built() {
-        let keys: Vec<String> = lines().into_iter().map(|(keys, _)| keys).collect();
+        let keys: Vec<String> = sections().into_iter().flat_map(|(_, lines)| lines.into_iter().map(|(keys, _)| keys)).collect();
         let wanted = [
-            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "page up down", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "esc",
+            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "page up down", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
         ];
         assert_eq!(keys, wanted);
+        assert_eq!(named(Key::Comma, CTRL), Some(("settings".to_string(), "ctrl ,".to_string())));
         assert_eq!(line(Key::Equals, SHIFT), Some(("slower / faster".to_string(), "shift - =".to_string())));
         assert_eq!(line(Key::M, NONE), Some(("mute · volume".to_string(), "M ↑ ↓".to_string())));
     }

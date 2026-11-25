@@ -387,6 +387,32 @@ pub fn reveal(file: &std::path::Path, wake: Sender<Event>) {
     });
 }
 
+/// opens a page in the system's browser, or a file in the program the system gives it, on a thread of its own as
+/// `reveal` does; a line in the window says so when it could not. the player itself sends nothing.
+pub fn open_url(url: &str, wake: Sender<Event>) {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    let url = HSTRING::from(url);
+    std::thread::spawn(move || unsafe {
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        // more than 32 is success
+        let opened = ShellExecuteW(None, w!("open"), &url, None, None, SW_SHOWNORMAL).0 as usize > 32;
+        if com {
+            CoUninitialize();
+        }
+        if !opened {
+            let _ = wake.send(Event::Toast("the system could not open the link".into()));
+        }
+    });
+}
+
+/// whether the system asks for less motion (windows' "animation effects" turned off): the controls then stand still.
+pub fn reduce_motion() -> bool {
+    let mut animate = BOOL(1);
+    let asked = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut animate as *mut BOOL as *mut c_void), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
+    asked.is_ok() && !animate.as_bool()
+}
+
 /// the time of day on the user's clock, as hours and minutes: 14:32.
 pub fn clock() -> String {
     let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
@@ -430,6 +456,7 @@ fn key(vk: u16) -> Option<Key> {
         0xbb | 0x6b => Key::Equals,
         0xdb => Key::BracketLeft,
         0xdd => Key::BracketRight,
+        0xbc => Key::Comma,
         0xbf => Key::Slash,
         0x41 => Key::A,
         0x43 => Key::C,

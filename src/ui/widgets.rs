@@ -200,11 +200,22 @@ pub fn slider(ui: &mut egui::Ui, name: &str, rect: Rect, at: f32, color: Color32
 /// a boxed number with its unit after it, its right middle at `right`. it shows `shown` until it is typed into.
 /// returns the box, and what was typed once enter is pressed or the field is left (escape leaves it unchanged).
 pub fn field(ui: &mut egui::Ui, name: &str, right: Pos2, shown: &str, unit: &str, small: bool) -> (Rect, Option<String>) {
-    let (pad, width) = if small { (5.0, 32.0) } else { (7.0, 46.0) };
+    field_with(ui, name, right, shown, unit, if small { (5.0, 32.0) } else { (7.0, 46.0) }, |c| c.is_ascii_digit() || c == '.')
+}
+
+/// how wide a field is with this unit, and the room each side of its text and the text's own: `field_with`'s `size`.
+pub fn field_width(painter: &egui::Painter, unit: &str, (pad, width): (f32, f32)) -> f32 {
+    let unit = painter.layout_no_wrap(unit.to_string(), font(MONO_MEDIUM, 11.5), DIM).size().x;
+    1.0 + pad + width + if unit > 0.0 { 4.0 + unit } else { 0.0 } + pad + 1.0
+}
+
+/// `field`, with the room each side of the text and the text's own width in `size`, taking only the characters
+/// `keep` keeps.
+pub fn field_with(ui: &mut egui::Ui, name: &str, right: Pos2, shown: &str, unit: &str, (pad, width): (f32, f32), keep: fn(char) -> bool) -> (Rect, Option<String>) {
     let painter = ui.painter().clone();
+    let size = Vec2::new(field_width(&painter, unit, (pad, width)), ROW);
     let unit = painter.layout_no_wrap(unit.to_string(), font(MONO_MEDIUM, 11.5), DIM);
     let gap = if unit.size().x > 0.0 { 4.0 } else { 0.0 };
-    let size = Vec2::new(1.0 + pad + width + gap + unit.size().x + pad + 1.0, ROW);
     let rect = Rect::from_min_size(Pos2::new(right.x - size.x, right.y - size.y / 2.0), size);
     // the number is laid out by egui, which centers a line by its box: it is lifted by the difference
     let lift = text_top(&painter, font(MONO_MEDIUM, 11.5), 0.0) + painter.layout_no_wrap("0".to_string(), font(MONO_MEDIUM, 11.5), FG).size().y / 2.0;
@@ -215,7 +226,7 @@ pub fn field(ui: &mut egui::Ui, name: &str, right: Pos2, shown: &str, unit: &str
     let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.to_string());
     let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(number).layout(egui::Layout::right_to_left(Align::Center)));
     let edit = inside.add(egui::TextEdit::singleline(&mut text).id(id.with("edit")).frame(egui::Frame::NONE).font(font(MONO_MEDIUM, 11.5)).text_color(FG).align(Align2::RIGHT_CENTER).margin(egui::Margin::ZERO).desired_width(width).clip_text(true));
-    text.retain(|c| c.is_ascii_digit() || c == '.');
+    text.retain(keep);
     let entered = (edit.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape))).then(|| text.clone());
     // asked before the store below is opened: egui's own state is behind one lock
     let focused = edit.has_focus();

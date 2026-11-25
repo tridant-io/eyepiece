@@ -38,10 +38,13 @@ impl Drop for Pool {
 
 /// opens the window and runs until it closes. `first` is the file to open at once, if any.
 pub fn run(first: Option<String>) -> Result<(), String> {
-    // a player already open takes the file, and this one is done before it has made anything
-    let later = match instance::claim(first.as_deref()) {
-        instance::Claim::Theirs => return Ok(()),
-        instance::Claim::Ours(later) => later,
+    // a player already open takes the file, and this one is done before it has made anything; unless the settings
+    // say one window is not wanted, and then this one opens a window of its own and takes no one's
+    let settings = crate::settings::Settings::load();
+    let later = match settings.one_window.then(|| instance::claim(first.as_deref())) {
+        Some(instance::Claim::Theirs) => return Ok(()),
+        Some(instance::Claim::Ours(later)) => later,
+        None => None,
     };
     let mtm = objc2::MainThreadMarker::new().ok_or("the window is made on the main thread")?;
     // the application first: the displays are asked about through it
@@ -53,8 +56,10 @@ pub fn run(first: Option<String>) -> Result<(), String> {
         let clip = Clip::open_known(&path);
         (path, clip)
     });
-    let client = match &first {
-        Some((_, Ok(clip))) => window::client_for((clip.width, clip.height)),
+    // with no clip to give it a shape, the window is as it was left, when that is kept, fitted to this display
+    let client = match (&first, settings.window_size.filter(|_| settings.remember_size)) {
+        (Some((_, Ok(clip))), _) => window::client_for((clip.width, clip.height)),
+        (_, Some((w, h))) => window::client_for((w as usize, h as usize)),
         _ => window::client_for_none(),
     };
     let (tx, rx) = mpsc::channel();
@@ -64,7 +69,7 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     if let Some(later) = later {
         instance::serve(later, window::handed);
     }
-    let render = std::thread::Builder::new().name("render".into()).spawn(move || crate::player::run(handle, rx, wake, first)).map_err(|e| e.to_string())?;
+    let render = std::thread::Builder::new().name("render".into()).spawn(move || crate::player::run(handle, rx, wake, first, settings)).map_err(|e| e.to_string())?;
     window::run();
     let _ = render.join();
     Ok(())

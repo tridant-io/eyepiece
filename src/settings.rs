@@ -20,6 +20,13 @@ pub enum Chroma {
     Nearest,
 }
 
+/// where a file opened from the browser goes: in place of what the tab shows, or into a tab of its own
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opens {
+    ThisTab,
+    NewTab,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// the readout counts in timecode instead of frames
@@ -55,6 +62,22 @@ pub struct Settings {
     pub browser_widths: crate::browse::Widths,
     /// a file starts playing when it opens (the owner's ask, 2026-11-24); off, it opens paused on its first frame
     pub play_on_open: bool,
+    pub browser_opens_in: Opens,
+    /// a second launch hands its file to the player open already; off, it opens a window of its own
+    pub one_window: bool,
+    /// how long the controls stay up once the pointer rests off them, 1 to 10 seconds
+    pub controls_after: f32,
+    /// the window opens at the size it was left at (`window_size`) when no file gives it one
+    pub remember_size: bool,
+    /// eyepiece asks for a newer release when it starts
+    pub update_check: bool,
+    /// the picture area's color round a picture of another shape
+    pub background: [u8; 3],
+    /// the folder the browser starts in; none starts it where it was last (`browser_folder`)
+    pub browser_start: Option<PathBuf>,
+    /// how big the preview cache grows before its oldest files go, in GB, 1 to 64
+    pub cache_limit: f32,
+    /// the picture area's size in physical pixels when the window last closed
     pub window_size: Option<(u32, u32)>,
     /// none means the pictures folder (`shot::folder`)
     pub screenshot_folder: Option<PathBuf>,
@@ -84,6 +107,14 @@ impl Default for Settings {
             browser_view: crate::browse::View::Both,
             browser_widths: crate::browse::Widths::default(),
             play_on_open: true,
+            browser_opens_in: Opens::ThisTab,
+            one_window: true,
+            controls_after: 2.4,
+            remember_size: true,
+            update_check: true,
+            background: [0, 0, 0],
+            browser_start: None,
+            cache_limit: 2.0,
             window_size: None,
             screenshot_folder: None,
         }
@@ -137,11 +168,11 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 23] {
+    fn pairs(&self) -> [(&'static str, String); 31] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
-        let [r, g, b] = self.guide_color;
+        let hex = |[r, g, b]: [u8; 3]| format!("#{r:02x}{g:02x}{b:02x}");
         [
             ("readout", word(&READOUT, self.timecode)),
             ("first_frame", self.first_frame.to_string()),
@@ -154,16 +185,24 @@ impl Settings {
             ("grid", word(&SWITCH, self.grid)),
             ("center", word(&SWITCH, self.center)),
             ("tile", wxh(self.tile)),
-            ("guide_color", format!("#{r:02x}{g:02x}{b:02x}")),
+            ("guide_color", hex(self.guide_color)),
             ("chroma", word(&CHROMA, self.chroma)),
+            ("background", hex(self.background)),
             ("screenshot_caption", word(&SWITCH, self.screenshot_caption)),
             ("screenshot_guides", word(&SWITCH, self.screenshot_guides)),
             ("screenshot_markup", word(&SWITCH, self.screenshot_markup)),
             ("browser_folder", path(&self.browser_folder)),
+            ("browser_start", path(&self.browser_start)),
             ("browser_recent", recent.join(" | ")),
             ("browser_view", word(&VIEWS, self.browser_view)),
             ("browser_widths", format!("{} {} {}", self.browser_widths.side, self.browser_widths.column, self.browser_widths.meta)),
+            ("browser_opens_in", word(&OPENS, self.browser_opens_in)),
+            ("cache_limit", self.cache_limit.to_string()),
             ("play_on_open", word(&SWITCH, self.play_on_open)),
+            ("one_window", word(&SWITCH, self.one_window)),
+            ("controls_after", self.controls_after.to_string()),
+            ("update_check", word(&SWITCH, self.update_check)),
+            ("remember_size", word(&SWITCH, self.remember_size)),
             ("window_size", self.window_size.map_or(String::new(), wxh)),
             ("screenshot_folder", path(&self.screenshot_folder)),
         ]
@@ -185,10 +224,12 @@ impl Settings {
             "tile" => self.tile = size(v)?,
             "guide_color" => self.guide_color = color(v)?,
             "chroma" => self.chroma = pick(&CHROMA, v)?,
+            "background" => self.background = color(v)?,
             "screenshot_caption" => self.screenshot_caption = pick(&SWITCH, v)?,
             "screenshot_guides" => self.screenshot_guides = pick(&SWITCH, v)?,
             "screenshot_markup" => self.screenshot_markup = pick(&SWITCH, v)?,
             "browser_folder" => self.browser_folder = folder(v),
+            "browser_start" => self.browser_start = folder(v),
             // a bar cannot be in a windows path
             "browser_recent" => self.browser_recent = v.split('|').filter_map(|p| folder(p.trim())).collect(),
             "browser_view" => self.browser_view = pick(&VIEWS, v)?,
@@ -196,7 +237,13 @@ impl Settings {
                 let [side, column, meta]: [f32; 3] = v.split_whitespace().map(|n| n.parse().ok()).collect::<Option<Vec<f32>>>()?.try_into().ok()?;
                 self.browser_widths = crate::browse::Widths { side, column, meta }.kept();
             }
+            "browser_opens_in" => self.browser_opens_in = pick(&OPENS, v)?,
+            "cache_limit" => self.cache_limit = number(v, 1.0, 64.0)?,
             "play_on_open" => self.play_on_open = pick(&SWITCH, v)?,
+            "one_window" => self.one_window = pick(&SWITCH, v)?,
+            "controls_after" => self.controls_after = number(v, 1.0, 10.0)?,
+            "update_check" => self.update_check = pick(&SWITCH, v)?,
+            "remember_size" => self.remember_size = pick(&SWITCH, v)?,
             "window_size" => self.window_size = if v.is_empty() { None } else { Some(size(v)?) },
             "screenshot_folder" => self.screenshot_folder = folder(v),
             _ => return None,
@@ -211,6 +258,7 @@ const SWITCH: [(&str, bool); 2] = [("off", false), ("on", true)];
 const LOOPS: [(&str, Loop); 3] = [("off", Loop::Off), ("one", Loop::One), ("all", Loop::All)];
 const CHROMA: [(&str, Chroma); 2] = [("bilinear", Chroma::Bilinear), ("nearest", Chroma::Nearest)];
 const VIEWS: [(&str, crate::browse::View); 3] = [("both", crate::browse::View::Both), ("gallery", crate::browse::View::Gallery), ("list", crate::browse::View::List)];
+const OPENS: [(&str, Opens); 2] = [("this tab", Opens::ThisTab), ("a new tab", Opens::NewTab)];
 
 fn word<T: Copy + PartialEq>(words: &[(&str, T)], value: T) -> String {
     words.iter().find(|w| w.1 == value).map_or("", |w| w.0).to_string()
@@ -221,7 +269,7 @@ fn pick<T: Copy>(words: &[(&str, T)], v: &str) -> Option<T> {
 }
 
 /// `settings.txt` in the system's settings folder: %APPDATA%\eyepiece on windows
-fn file() -> Option<PathBuf> {
+pub fn file() -> Option<PathBuf> {
     #[cfg(windows)]
     let base = PathBuf::from(std::env::var_os("APPDATA")?);
     // macos. linux comes in phase 5
@@ -255,7 +303,7 @@ fn size(v: &str) -> Option<(u32, u32)> {
 }
 
 /// `#rrggbb`
-fn color(v: &str) -> Option<[u8; 3]> {
+pub fn color(v: &str) -> Option<[u8; 3]> {
     let hex = v.strip_prefix('#').filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
     let n = u32::from_str_radix(hex, 16).ok()?;
     Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
@@ -314,6 +362,14 @@ mod tests {
             browser_view: crate::browse::View::List,
             browser_widths: crate::browse::Widths { side: 180.0, column: 200.5, meta: 300.0 },
             play_on_open: false,
+            browser_opens_in: Opens::NewTab,
+            one_window: false,
+            controls_after: 6.5,
+            remember_size: false,
+            update_check: false,
+            background: [0x1e, 0x28, 0x33],
+            browser_start: Some(PathBuf::from(r"D:\renders_out")),
+            cache_limit: 16.0,
             window_size: Some((1280, 720)),
             screenshot_folder: Some(PathBuf::from(r"\\nas\review = notes")),
         };

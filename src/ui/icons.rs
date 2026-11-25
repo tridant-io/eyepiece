@@ -28,7 +28,18 @@ pub enum Icon {
     Pen,
     Text,
     Undo,
+    // the strip's right end (fig. 32): help, and settings
+    Help,
+    Gear,
 }
+
+/// the gear's outline: eight teeth round it, as the design draws it
+const GEAR: [(f32, f32); 32] = [
+    (12.52, 7.12), (14.25, 7.23), (14.25, 8.77), (12.52, 8.88), (11.81, 10.57), (12.96, 11.88), (11.88, 12.96), (10.57, 11.81),
+    (8.88, 12.52), (8.77, 14.25), (7.23, 14.25), (7.12, 12.52), (5.43, 11.81), (4.12, 12.96), (3.04, 11.88), (4.19, 10.57),
+    (3.48, 8.88), (1.75, 8.77), (1.75, 7.23), (3.48, 7.12), (4.19, 5.43), (3.04, 4.12), (4.12, 3.04), (5.43, 4.19),
+    (7.12, 3.48), (7.23, 1.75), (8.77, 1.75), (8.88, 3.48), (10.57, 4.19), (11.88, 3.04), (12.96, 4.12), (11.81, 5.43),
+];
 
 /// the stroke the design gives every icon, in the icon's own units
 const WIDTH: f32 = 1.4;
@@ -153,6 +164,22 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Undo => {
             line(&[(5.5, 4.0), (3.0, 6.5), (5.5, 9.0)]);
             line(&[&[(3.5, 6.5)][..], &arc(9.0, 9.7, 3.2, -90.0, 90.0), &[(6.5, 12.9)]].concat());
+        }
+        // a question mark: its hook two thirds of a ring round (8, 6.14), from the left over the top, then a curve
+        // into its stem; its dot drawn as the info icon's
+        Icon::Help => {
+            let hook = [arc(8.0, 6.14, 2.3, 178.4, 258.4), arc(8.0, 6.14, 2.3, 258.4, 338.4), arc(8.0, 6.14, 2.3, 338.4, 418.6)].concat();
+            let into = (1..=6).map(|i| {
+                let (t, u) = (i as f32 / 6.0, 1.0 - i as f32 / 6.0);
+                let at = |a: f32, b: f32, c: f32, d: f32| u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d;
+                (at(9.2, 8.5, 8.0, 8.0), at(8.1, 8.5, 9.0, 9.9))
+            });
+            line(&hook.into_iter().chain(into).chain([(8.0, 10.4)]).collect::<Vec<_>>());
+            painter.circle_filled(p(8.0, 12.75), 0.95 * unit, color);
+        }
+        Icon::Gear => {
+            painter.add(Shape::closed_line(GEAR.iter().map(|&(x, y)| p(x, y)).collect(), stroke));
+            painter.circle_stroke(p(8.0, 8.0), 2.1 * unit, stroke);
         }
     }
 }

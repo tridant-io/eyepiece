@@ -41,6 +41,8 @@ static ROOM: (AtomicU32, AtomicU32) = (AtomicU32::new(1920), AtomicU32::new(1080
 static VISIBLE: AtomicBool = AtomicBool::new(true);
 /// the refresh rate of the display the window is on, as the bits of an f32; 0 until it is known
 static HZ: AtomicU32 = AtomicU32::new(0);
+/// the system asks for less motion, as it said when the window was made
+static STILL: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     /// the window and its view, on the main thread. what changes between events is the view's own (`ViewState`)
@@ -500,6 +502,7 @@ fn by_place(code: u16) -> Key {
         24 => Key::Equals,
         33 => Key::BracketLeft,
         30 => Key::BracketRight,
+        43 => Key::Comma,
         44 => Key::Slash,
         _ => Key::Other,
     }
@@ -533,6 +536,7 @@ fn key(event: &NSEvent) -> Option<Key> {
             Some('=' | '+') => Key::Equals,
             Some('[' | '{') => Key::BracketLeft,
             Some(']' | '}') => Key::BracketRight,
+            Some(',' | '<') => Key::Comma,
             Some('/' | '?') => Key::Slash,
             Some('a') => Key::A,
             Some('c') => Key::C,
@@ -602,6 +606,7 @@ pub fn measure_display(mtm: MainThreadMarker) {
 pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle, String> {
     let mtm = MainThreadMarker::new().ok_or("the window is made on the main thread")?;
     *EVENTS.lock().unwrap() = Some(events);
+    STILL.store(NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion(), Ordering::Relaxed);
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     // lives as long as the program: the application and the window hold it without keeping it
@@ -867,6 +872,24 @@ pub fn reveal(file: &std::path::Path, wake: Sender<Event>) {
             let _ = wake.send(Event::Toast("finder could not show the file".into()));
         }
     });
+}
+
+/// opens a page in the system's browser, or a file in the program the system gives it; a line in the window says so
+/// when it could not. the player itself sends nothing.
+pub fn open_url(url: &str, wake: Sender<Event>) {
+    let url = url.to_string();
+    on_main(move |_, _, _| {
+        // a path is a file's url, anything else is taken as a url as written
+        let link = if url.starts_with('/') { Some(NSURL::fileURLWithPath(&NSString::from_str(&url))) } else { NSURL::URLWithString(&NSString::from_str(&url)) };
+        if !link.is_some_and(|link| NSWorkspace::sharedWorkspace().openURL(&link)) {
+            let _ = wake.send(Event::Toast("the system could not open the link".into()));
+        }
+    });
+}
+
+/// whether the system asks for less motion: the controls then stand still.
+pub fn reduce_motion() -> bool {
+    STILL.load(Ordering::Relaxed)
 }
 
 /// the time of day on the user's clock, as hours and minutes: 14:32.

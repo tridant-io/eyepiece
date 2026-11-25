@@ -366,13 +366,14 @@ impl Gpu {
         }
     }
 
-    /// starts a frame: the whole window black.
-    pub fn clear(&self) {
+    /// starts a frame: the whole window in `background`, what the settings put behind the picture.
+    pub fn clear(&self, background: [u8; 3]) {
+        let [r, g, b] = background.map(|v| v as f32 / 255.0);
         unsafe {
             // a flip-model swapchain unbinds its target at every present
             self.ctx.OMSetRenderTargets(Some(std::slice::from_ref(&self.rtv)), None);
             if let Some(rtv) = &self.rtv {
-                self.ctx.ClearRenderTargetView(rtv, &[0.0, 0.0, 0.0, 1.0]);
+                self.ctx.ClearRenderTargetView(rtv, &[r, g, b, 1.0]);
             }
         }
     }

@@ -24,9 +24,11 @@ use crate::media::clip::Clip;
 use std::sync::mpsc;
 
 /// opens the window and runs until it closes. `first` is the file to open at once, if any. when a player is
-/// running already, it is handed `first` instead, and this returns with nothing made.
+/// running already, it is handed `first` instead, and this returns with nothing made; unless the settings say one
+/// window is not wanted, and then this one opens a window of its own.
 pub fn run(first: Option<String>) -> Result<(), String> {
-    if instance::handed_over(first.as_deref()) {
+    let settings = crate::settings::Settings::load();
+    if settings.one_window && instance::handed_over(first.as_deref()) {
         return Ok(());
     }
     Gpu::early();
@@ -38,15 +40,17 @@ pub fn run(first: Option<String>) -> Result<(), String> {
         let clip = Clip::open_known(&path);
         (path, clip)
     });
-    let client = match &first {
-        Some((_, Ok(clip))) => window::client_for((clip.width, clip.height)),
+    // with no clip to give it a shape, the window is as it was left, when that is kept, fitted to this display
+    let client = match (&first, settings.window_size.filter(|_| settings.remember_size)) {
+        (Some((_, Ok(clip))), _) => window::client_for((clip.width, clip.height)),
+        (_, Some((w, h))) => window::client_for((w as usize, h as usize)),
         _ => (1180, 720),
     };
     let (tx, rx) = mpsc::channel();
     // the render thread's way to wake itself: what it has read or written in the background says when it is done
     let wake = tx.clone();
     let handle = window::create(client, tx).map_err(|e| e.to_string())?;
-    let render = std::thread::Builder::new().name("render".into()).spawn(move || crate::player::run(handle, rx, wake, first)).map_err(|e| e.to_string())?;
+    let render = std::thread::Builder::new().name("render".into()).spawn(move || crate::player::run(handle, rx, wake, first, settings)).map_err(|e| e.to_string())?;
     window::run();
     let _ = render.join();
     Ok(())

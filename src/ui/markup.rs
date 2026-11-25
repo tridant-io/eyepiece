@@ -432,7 +432,7 @@ mod tests {
         drive(&mut ui, &[(300.0, 200.0, None)]);
         assert!(ui.cross);
         ui.pointer_leave();
-        let mut out = ui.run(&super::super::Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None });
+        let mut out = ui.run(&super::super::Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &super::super::tests::DEFAULTS });
         out.textures.clear();
         assert!(!out.cross, "out of the window");
     }

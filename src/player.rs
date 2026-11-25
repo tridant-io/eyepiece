@@ -436,7 +436,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
             Action::Extras(_) | Action::Mark(..) | Action::ClearMarks => {}
         }
     }
@@ -1430,14 +1430,19 @@ fn over_picture(pointer: Option<(f32, f32)>, window: (f32, f32), scale: f32) -> 
     pointer.filter(|p| p.1 > 34.0 * scale && p.1 < window.1 - 52.0 * scale)
 }
 
-/// runs the player until its window closes. what is kept between runs is read first and written back after.
-/// `first` is the file given at the start, with its clip already opened or the reason it did not.
-pub fn run(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>) {
-    let mut settings = Settings::load();
+/// runs the player until its window closes. `settings` is what was kept between runs, read before the window was
+/// made; it is written back after. `first` is the file given at the start, with its clip already opened or the
+/// reason it did not.
+pub fn run(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>, mut settings: Settings) {
     play(window, events, wake, first, &mut settings);
     if let Err(e) = settings.save() {
         eprintln!("eyepiece: the settings were not saved: {e}");
     }
+}
+
+/// the preview cache's limit in bytes, from the settings' GB
+fn cache_bytes(settings: &Settings) -> u64 {
+    (settings.cache_limit as f64 * (1u64 << 30) as f64) as u64
 }
 
 fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>, settings: &mut Settings) {
@@ -1450,12 +1455,16 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let hz = window::refresh_rate();
     // the maker of the browser's pictures stands back while a clip plays
     let playing_now = Arc::new(AtomicBool::new(false));
-    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
+    // the browser starts in the fixed folder the settings name, or where it was last
+    let start = settings.browser_start.clone().or_else(|| settings.browser_folder.clone());
+    let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, start, pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
     ui.set_browser_view(settings.browser_view);
     ui.set_browser_widths(settings.browser_widths);
     ui.set_pinned(settings.pin_controls);
     ui.set_buttons_room(window::buttons_room());
+    ui.set_still(window::reduce_motion());
+    crate::preview::set_limit(cache_bytes(settings));
     // the player's one way out to the speakers, as loud as it was left
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
@@ -1483,7 +1492,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     };
     // what just happened, said in the window until then; and where screenshots go, as the menu names it
     let mut toast: Option<(String, Instant)> = None;
-    let shots_label = shots_to(&shots_folder(settings));
+    let mut shots_label = shots_to(&shots_folder(settings));
     let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open };
     // the file given at launch, opened before there were tabs, plays as any file opened does
     if let Some(view) = tabs.view().filter(|_| settings.play_on_open) {
@@ -1538,10 +1547,22 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 let for_browser = browsing && !mods.ctrl && !mods.alt && !matches!(key, Key::BracketLeft | Key::BracketRight);
                 command = !(ui.typing() || for_browser);
             }
-            // any key takes the table of keys away and then does what it does; esc and ? only take it away
-            let table_up = matches!(event, Event::Key { .. }) && ui.hide_keys();
+            // a panel up has the keys first (`Ui::panel_key`): help's go on to the player once it has closed, settings'
+            // wait. a field in it being typed into takes them instead
+            let panel_took = match &event {
+                Event::Key { key, mods } if !ui.typing() => ui.panel_key(*key, *mods),
+                _ => false,
+            };
+            // nor is the character of a key the panel took typed anywhere, once the key has closed it
+            command |= panel_took;
             match event {
-                Event::Close => return,
+                // the window's size is kept for the next start, unless it fills the display
+                Event::Close => {
+                    if !fullscreen && settings.remember_size {
+                        settings.window_size = Some((gpu.w, gpu.h));
+                    }
+                    return;
+                }
                 Event::Resize { w, h } => {
                     if let Err(e) = gpu.resize(w, h) {
                         return window::set_title(window, &format!("eyepiece · the graphics device stopped: {e}"));
@@ -1579,7 +1600,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Toast(said) => toast = say(said),
                 // what was read in the background is taken up below, with everything else
                 Event::Wake => {}
-                Event::Key { key: Key::Escape | Key::Slash, .. } if table_up => {}
+                Event::Key { .. } if panel_took => {}
+                // what a key types under a panel is no one's, unless a field of the panel has the keyboard
+                Event::Char(_) if ui.panel_up() && !ui.typing() => {}
+                Event::Wheel { notches, .. } if ui.panel_up() => {
+                    ui.wheel(notches);
+                }
                 // a field being typed into takes the keys; escape closes it and its menu
                 Event::Key { key, mods } if ui.typing() => {
                     // control + V types what the clipboard holds
@@ -1600,6 +1626,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     let count = tabs.all.len();
                     tabs.select((tabs.up + if key == Key::BracketLeft { count - 1 } else { 1 }) % count);
                 }
+                // control + , (command + , on a mac) brings settings up, or takes it away; ? (or the slash alone)
+                // brings help up on its keys page, over the browser too
+                Event::Key { key: Key::Comma, mods } if mods.ctrl => ui.toggle_settings(),
+                Event::Key { key: Key::Slash, mods } if !mods.ctrl && !mods.alt => ui.show_help(),
                 Event::Key { key: Key::W, mods } if mods.ctrl => tabs.close(tabs.up),
                 Event::Key { key: Key::T, mods } if mods.ctrl && mods.shift => tabs.reopen(&gpu, &wake),
                 // control + C copies the frame
@@ -1640,8 +1670,6 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // from the row of tools), is no command's
                 Event::Char(_) if command && !ui.typing() => command = false,
                 Event::Char(c) if browsing && !ui.typing() => ui.browser_char(c),
-                // ? (or the slash alone) shows the table of keys over the clip
-                Event::Key { key: Key::Slash, mods } if !mods.ctrl && !mods.alt => ui.show_keys(),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis, markup mode
                 Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::E | Key::Up | Key::Down | Key::PageUp | Key::PageDown) => match key {
@@ -1810,6 +1838,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 browsing: tab.browsing(),
                 fullscreen,
                 toast: opening.as_deref().filter(|_| tab.view.is_some() || tab.error.is_some()).or(toast.as_ref().map(|(said, _)| said.as_str())),
+                settings,
             };
             ui.run(&screen)
         };
@@ -1831,10 +1860,35 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::SelectTab(to) => tabs.select(*to),
                 Action::GoClip(to) => tabs.go_item(*to, Why::Stepped, &gpu, &wake),
                 Action::CloseTab(at) => tabs.close(*at),
+                // from the browser: in place of what the tab shows, or in a tab of its own, as the settings say
                 Action::Open(path) => {
-                    tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
+                    tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, settings.browser_opens_in == settings::Opens::ThisTab);
                 }
                 Action::Reveal(file) => window::reveal(file, wake.clone()),
+                Action::OpenUrl(url) => window::open_url(url, wake.clone()),
+                Action::Settings(to) => {
+                    let was = std::mem::replace(settings, (**to).clone());
+                    tabs.play_on_open = settings.play_on_open;
+                    loudness(&mut speaker, settings);
+                    crate::preview::set_limit(cache_bytes(settings));
+                    shots_label = shots_to(&shots_folder(settings));
+                    // a loop mode set here is the tab's that is up, when it is a tab of that kind
+                    let tab = tabs.tab();
+                    let mode = if tab.played.is_some() { (was.loop_folder != settings.loop_folder).then_some(settings.loop_folder) } else { (was.loop_file != settings.loop_file).then_some(settings.loop_file) };
+                    if let Some(mode) = mode {
+                        tab.set_mode(mode, settings);
+                    }
+                    // loop analysis that is on takes its new seconds at once
+                    if let Some(v) = tabs.view().filter(|v| v.transport.seam().is_some() && was.loop_analysis_seconds != settings.loop_analysis_seconds) {
+                        v.act(&Action::Seam(Some(settings.loop_analysis_seconds as f64)), size, settings);
+                    }
+                    // a second launch reads this from the file before it has a window: it is written at once
+                    if was.one_window != settings.one_window {
+                        if let Err(e) = settings.save() {
+                            toast = say(format!("the settings were not saved: {e}"));
+                        }
+                    }
+                }
                 Action::Shot(what) => {
                     if let Some((v, marks)) = tabs.marked() {
                         shoot(v, marks, &gpu, *what, settings, scale, &wake);
@@ -2034,7 +2088,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // the decoder shares this device: its calls stay out of the middle of ours. the lock is let go before
                 // the present, which waits for the display
                 let _lock = gpu.locked();
-                gpu.clear();
+                gpu.clear(settings.background);
                 if let Some(v) = tabs.view() {
                     v.draw(&gpu);
                 }

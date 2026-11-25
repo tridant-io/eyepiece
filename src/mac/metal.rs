@@ -247,13 +247,14 @@ impl Gpu {
         Ok(if deep { (plane(0, MTLPixelFormat::R16Unorm)?, plane(1, MTLPixelFormat::RG16Unorm)?) } else { (plane(0, MTLPixelFormat::R8Unorm)?, plane(1, MTLPixelFormat::RG8Unorm)?) })
     }
 
-    /// starts a pass that draws into `target`, cleared to black.
-    fn begin(&self, target: &ProtocolObject<dyn MTLTexture>) -> Option<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, Encoder)> {
+    /// starts a pass that draws into `target`, cleared to `background`.
+    fn begin(&self, target: &ProtocolObject<dyn MTLTexture>, background: [u8; 3]) -> Option<(Retained<ProtocolObject<dyn MTLCommandBuffer>>, Encoder)> {
         let pass = MTLRenderPassDescriptor::renderPassDescriptor();
         let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
         color.setTexture(Some(target));
         color.setLoadAction(MTLLoadAction::Clear);
-        color.setClearColor(MTLClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 });
+        let [red, green, blue] = background.map(|v| v as f64 / 255.0);
+        color.setClearColor(MTLClearColor { red, green, blue, alpha: 1.0 });
         color.setStoreAction(MTLStoreAction::Store);
         let buffer = self.queue.commandBuffer()?;
         let encoder = buffer.renderCommandEncoderWithDescriptor(&pass)?;
@@ -267,7 +268,8 @@ impl Gpu {
     pub fn read_pixels(&self, w: u32, h: u32, draw: impl FnOnce(&Gpu)) -> Result<Vec<u16>, String> {
         let _pool = super::Pool::new();
         let target = self.texture(w, h, TARGETS[1], MTLTextureUsage::RenderTarget)?;
-        let (buffer, encoder) = self.begin(&target).ok_or("no pass")?;
+        // a picture of the source is never the window's background
+        let (buffer, encoder) = self.begin(&target, [0, 0, 0]).ok_or("no pass")?;
         let outer = self.pass.replace(Some(Pass { buffer, encoder, drawable: None, target: 1, size: (w, h) }));
         draw(self);
         let Some(pass) = self.pass.replace(outer) else { return Err("the pass was taken".into()) };
@@ -283,13 +285,13 @@ impl Gpu {
     /// metal lets go of a texture's memory when the last use of it is done: there is nothing to hand over here.
     pub fn flush(&self) {}
 
-    /// starts a frame: the whole window black. waits here until the display has a back buffer free, which is what
-    /// paces play to the refresh. a window that cannot be seen is not asked for one (the wait for it can take a
-    /// second), and nothing is drawn.
-    pub fn clear(&self) {
+    /// starts a frame: the whole window in `background`, what the settings put behind the picture. waits here until
+    /// the display has a back buffer free, which is what paces play to the refresh. a window that cannot be seen is
+    /// not asked for one (the wait for it can take a second), and nothing is drawn.
+    pub fn clear(&self, background: [u8; 3]) {
         let Some(drawable) = self.layer.as_ref().filter(|_| super::window::visible()).and_then(|layer| layer.nextDrawable()) else { return };
         let texture = drawable.texture();
-        let Some((buffer, encoder)) = self.begin(&texture) else { return };
+        let Some((buffer, encoder)) = self.begin(&texture, background) else { return };
         self.pass.replace(Some(Pass { buffer, encoder, drawable: Some(drawable), target: 0, size: (texture.width() as u32, texture.height() as u32) }));
     }
 

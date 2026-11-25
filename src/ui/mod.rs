@@ -2,11 +2,13 @@
 //! platform-neutral: the window reports the pointer and the keys, this returns triangles for the renderer and what
 //! was asked for. one unit here is one of the design's pixels; the display's scale turns it into physical pixels.
 
+mod brand;
 mod browser;
 mod icons;
 mod keys;
 mod markup;
 mod menus;
+mod panel;
 mod widgets;
 
 pub use markup::{caption, saved};
@@ -14,7 +16,7 @@ pub use markup::{caption, saved};
 use crate::event::{Key, Mods};
 use crate::markup::{Mark, Marks};
 use crate::media::meta::Meta;
-use crate::settings::Loop;
+use crate::settings::{Loop, Settings};
 use crate::timecode::Timecode;
 use crate::preview::make::Pictures;
 use crate::preview::spare::Seam;
@@ -68,9 +70,8 @@ const GAP: f32 = 2.0;
 const PAD: f32 = 8.0;
 /// under this width the bar's labels are shortened
 const NARROW: f32 = 760.0;
-/// the controls fade in and out over this long, and go away this long after the pointer stops
+/// the controls fade in and out over this long (and go away as long after the pointer stops as the settings say)
 const FADE: f32 = 0.14;
-const IDLE: f64 = 2.4;
 /// the zoom chip goes this long after the pointer rests
 const CHIP_IDLE: f64 = 2.0;
 /// the longer side of the navigator
@@ -160,6 +161,8 @@ pub struct Screen<'a> {
     pub fullscreen: bool,
     /// what just happened, said low in the middle of the window for a moment
     pub toast: Option<&'a str>,
+    /// what is kept between runs, which the settings panel shows and changes
+    pub settings: &'a Settings,
 }
 
 /// the facts for the metadata panel, which are read in the background.
@@ -338,6 +341,10 @@ pub enum Action {
     Close,
     /// a key, as if it were pressed: a command chosen in the right-click menu
     Key(Key, Mods),
+    /// the settings as a control of the settings panel left them: they hold at once
+    Settings(Box<Settings>),
+    /// this page in the system's browser, or this file in the program the system opens it with
+    OpenUrl(String),
 }
 
 /// what one pass over the controls produced.
@@ -432,12 +439,23 @@ pub struct Ui {
     time_strip: Vec<TimePicture>,
     time_read: Option<TimePicture>,
     time_picture: Option<(usize, egui::TextureHandle)>,
-    /// the table of keys is up; the right-click menu is open, from where it was asked for, and was drawn there last
-    keys: bool,
+    /// the right-click menu is open, from where it was asked for, and was drawn there last
     commands: Option<Pos2>,
     commands_rect: Rect,
-    /// whether each of the last two presses went to the right-click menu or the table of keys, the earlier first
+    /// whether each of the last two presses went to the right-click menu, a menu or a panel, the earlier first
     taken: [bool; 2],
+    /// the settings or help panel, while one is up
+    panel: Option<panel::Panel>,
+    /// the strip's tridant mark: when the pointer came onto it, and when it left the mark and its card; since when the
+    /// card is up, with the seed its star's holds are drawn from; and where the card was drawn
+    mark_since: Option<f64>,
+    mark_left: Option<f64>,
+    card: Option<(f64, u64)>,
+    card_rect: Rect,
+    /// the brand's drawings and the program's icon, as textures
+    pictures: brand::Pictures,
+    /// the system asks for less motion: nothing moves by itself
+    still: bool,
     /// the button the pointer is on in this pass, where it is and what its tooltip says; and the one it came onto,
     /// and when
     hinted: Option<(egui::Id, Rect, (String, String))>,
@@ -494,10 +512,16 @@ impl Ui {
             time_strip: Vec::new(),
             time_read: None,
             time_picture: None,
-            keys: false,
             commands: None,
             commands_rect: Rect::NOTHING,
             taken: [false; 2],
+            panel: None,
+            mark_since: None,
+            mark_left: None,
+            card: None,
+            card_rect: Rect::NOTHING,
+            pictures: brand::Pictures::default(),
+            still: false,
             hinted: None,
             tip: None,
             browser: browser::Browser::new(folder, pictures),
@@ -653,11 +677,12 @@ impl Ui {
     /// the pointer is elsewhere and the wheel is the player's.
     pub fn wheel(&mut self, notches: i32) -> bool {
         // over a strip with more tabs than fit, the wheel moves the tabs: a tab's least width a notch
-        if self.ctx.pointer_latest_pos().is_some_and(|p| self.tabs_over.is_some_and(|tabs| tabs.contains(p))) {
+        if self.panel.is_none() && self.ctx.pointer_latest_pos().is_some_and(|p| self.tabs_over.is_some_and(|tabs| tabs.contains(p))) {
             self.tab_scroll -= notches as f32 * TAB_MIN;
             return true;
         }
-        let over = self.ctx.pointer_latest_pos().is_some_and(|p| (self.menu == Some(Menu::List) && self.menu_rect.contains(p)) || ((self.facts_pinned || self.facts_up) && self.facts_rect.contains(p)) || (self.commands.is_some() && self.commands_rect.contains(p)));
+        // a panel takes the wheel wherever the pointer is: its page scrolls
+        let over = self.panel.is_some() || self.ctx.pointer_latest_pos().is_some_and(|p| (self.menu == Some(Menu::List) && self.menu_rect.contains(p)) || ((self.facts_pinned || self.facts_up) && self.facts_rect.contains(p)) || (self.commands.is_some() && self.commands_rect.contains(p)));
         if over {
             self.events.push(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Line,
@@ -693,14 +718,57 @@ impl Ui {
         self.markup.on
     }
 
-    /// the table of keys comes up over the clip, in place of any menu.
-    pub fn show_keys(&mut self) {
-        (self.keys, self.menu, self.commands) = (true, None, None);
+    /// help comes up on its keys page (`?`), in place of any menu.
+    pub fn show_help(&mut self) {
+        self.open_panel(panel::Which::Help, 0);
     }
 
-    /// takes the table of keys away. false when it was not up.
-    pub fn hide_keys(&mut self) -> bool {
-        std::mem::take(&mut self.keys)
+    /// settings comes up on its first page, or goes when it is up (control + ,).
+    pub fn toggle_settings(&mut self) {
+        self.toggle_panel(panel::Which::Settings);
+    }
+
+    /// true while the settings or help panel is up.
+    pub fn panel_up(&self) -> bool {
+        self.panel.is_some()
+    }
+
+    /// a key while a panel is up. esc closes either. help keeps the rule of the table of keys it took the place of
+    /// (fig. 39): ? closes it too, and any other key closes it and then does what it does, so a key read there can be
+    /// pressed at once. in settings (fig. 33) up and down go through the pages, control + , closes it, and the
+    /// player's other keys wait. true when the key was the panel's, false when it goes on to the player.
+    pub fn panel_key(&mut self, key: Key, mods: Mods) -> bool {
+        let Some(panel) = &mut self.panel else { return false };
+        let help = panel.which == panel::Which::Help;
+        let closes = key == Key::Escape || (help && key == Key::Slash && !mods.ctrl && !mods.alt) || (!help && key == Key::Comma && mods.ctrl);
+        if closes || help {
+            self.panel = None;
+            return closes;
+        }
+        if matches!(key, Key::Up | Key::Down) {
+            panel.turn(if key == Key::Up { -1 } else { 1 });
+        }
+        true
+    }
+
+    /// the system asks for less motion (`window::reduce_motion`): the mark's star stands still.
+    pub fn set_still(&mut self, still: bool) {
+        self.still = still;
+    }
+
+    /// a panel comes up on one of its pages, over whatever is up, and the menus and the mark's card go.
+    fn open_panel(&mut self, which: panel::Which, page: usize) {
+        self.panel = Some(panel::Panel::new(which, page));
+        (self.menu, self.commands, self.card) = (None, None, None);
+    }
+
+    /// the strip's button for a panel: it opens it, and closes it when it is the one up.
+    fn toggle_panel(&mut self, which: panel::Which) {
+        if self.panel.as_ref().is_some_and(|panel| panel.which == which) {
+            self.panel = None;
+        } else {
+            self.open_panel(which, 0);
+        }
     }
 
     /// the view changed by key or wheel: the zoom chip shows again.
@@ -783,7 +851,7 @@ impl Ui {
             }
             // no clip to look at: the strip stays up, and under it the browser, or why the file did not open
             _ => {
-                (self.menu, self.shown, self.keys, self.commands) = (None, true, false, None);
+                (self.menu, self.shown, self.commands) = (None, true, None);
                 let body = Rect::from_min_max(strip.left_bottom(), full.max);
                 match (screen.error.filter(|_| !screen.browsing), screen.opening.filter(|_| !screen.browsing)) {
                     (Some(why), _) => {
@@ -809,6 +877,8 @@ impl Ui {
                 (self.hinted, self.tip) = (None, None);
             }
         }
+        // the settings or help panel, over whatever is up
+        self.panel_over(ui, full, screen, actions);
         if let Some(said) = screen.toast {
             toast(ui, full, said);
         }
@@ -837,26 +907,25 @@ impl Ui {
         let pointer = ui.ctx().pointer_latest_pos();
         let pressed = ui.input(|i| i.pointer.any_pressed());
         // egui counts a double click by time and place, not by what was hit: one whose first press chose a row of the
-        // right-click menu, closed a menu or took the table of keys away is not one on the picture
+        // right-click menu, closed a menu or a panel, or went to a panel, is not one on the picture
         if pressed {
-            self.taken = [self.taken[1], self.keys || self.commands.is_some() || self.menu.is_some()];
+            self.taken = [self.taken[1], self.panel.is_some() || self.commands.is_some() || self.menu.is_some()];
         }
         if picture.double_clicked() && !self.taken[0] && !self.markup.on {
             actions.push(Action::Fullscreen);
         }
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
-        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.markup.on && self.markup.row.is_some_and(|row| row.contains(p))));
+        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.card.is_some() && self.card_rect.contains(p)) || (self.markup.on && self.markup.row.is_some_and(|row| row.contains(p))));
         let held = ui.input(|i| i.pointer.any_down());
         // in markup mode the pointer is a cross where a drag would draw: on the picture, clear of everything over it
-        self.cross = self.markup.on && self.inside && !over && !self.keys && pointer.is_some_and(|p| !(self.commands.is_some() && self.commands_rect.contains(p)));
+        self.cross = self.markup.on && self.inside && !over && self.panel.is_none() && pointer.is_some_and(|p| !(self.commands.is_some() && self.commands_rect.contains(p)));
 
         // a press anywhere but on the open menu or its button closes the menu
         if self.menu.is_some() && pressed && !pointer.is_some_and(|p| self.menu_rect.contains(p) || self.menu_button.contains(p)) {
             self.menu = None;
         }
-        // the right-click menu closes the same way, and a right click on the picture opens it there. a press anywhere
-        // takes the table of keys away, and does nothing else (the table takes it)
+        // the right-click menu closes the same way, and a right click on the picture opens it there
         if self.commands.is_some() && pressed && !pointer.is_some_and(|p| self.commands_rect.contains(p)) {
             self.commands = None;
         }
@@ -864,7 +933,6 @@ impl Ui {
         if opened {
             self.commands = pointer;
         }
-        self.keys &= !pressed;
 
         // the design's rule: moving the pointer brings the controls up; they go when it rests for a while off them,
         // or leaves the window. an open menu keeps them up.
@@ -882,7 +950,7 @@ impl Ui {
         if self.moved && middle {
             self.awake_until = self.awake_until.min(now + 0.9);
         } else if self.moved && !still {
-            (self.shown, self.awake_until) = (true, now + IDLE);
+            (self.shown, self.awake_until) = (true, now + screen.settings.controls_after as f64);
         }
         if self.moved || std::mem::take(&mut self.view_changed) {
             self.chip_until = now + CHIP_IDLE;
@@ -909,17 +977,13 @@ impl Ui {
                 }
             }
         }
-        // the table of keys takes the window, as the design draws it: the strip and the bar step aside while it is up,
-        // and the chips stay
-        self.shown &= !self.keys;
+        // a panel takes the window, as the design draws it: the bar steps aside while it is up, and the strip stays
+        let panel = self.panel.is_some();
+        self.shown &= !panel;
         let alpha = ui.ctx().animate_bool_with_time(ui.scope_id().with("chrome"), self.shown, FADE);
 
         Self::draw_guides(ui.painter(), model.guides, model.picture, model.shown_size, self.scale);
         self.markup.marks(ui, model, self.scale);
-        // the table of keys: over the picture, and under the chips, which still say what is not as the file has it
-        if self.keys {
-            keys::table(ui, full);
-        }
         // what states the view sits under the strip when it is up, as in the design: a fault across the top, then
         // loop analysis, speed and the look from the left, and the zoom at the right
         let mut top = full.top() + 10.0 + STRIP * alpha;
@@ -992,6 +1056,13 @@ impl Ui {
             }
         }
 
+        if panel {
+            ui.set_opacity(1.0);
+            self.strip(ui, strip, screen, false, actions);
+            // nothing under a panel has a tooltip
+            (self.hinted, self.tip) = (None, None);
+            return;
+        }
         if alpha <= 0.0 {
             return;
         }
@@ -1138,12 +1209,28 @@ impl Ui {
         }
 
         // the window's buttons, at the right: minimize, maximize, close. 10 x 10 marks in 40-wide buttons. where the
-        // system draws its own at the left (`buttons_room`) there are none of ours. the tabs have the rest: `from`
-        // to `x`
+        // system draws its own at the left (`buttons_room`) there are none of ours. before them help, settings and
+        // the tridant mark, 32 wide each (fig. 32), the last thing at the right on a mac. the tabs have the rest:
+        // `from` to `x`
         let (from, x, ours) = match self.buttons_room {
-            Some(room) => (strip.left() + room, strip.right(), 0),
-            None => (strip.left(), strip.right() - 3.0 * WINDOW_BUTTON, 3),
+            Some(room) => (strip.left() + room, strip.right() - 3.0 * PLUS, 0),
+            None => (strip.left(), strip.right() - 3.0 * WINDOW_BUTTON - 3.0 * PLUS, 3),
         };
+        let open = self.panel.as_ref().map(|panel| panel.which);
+        for (i, (name, icon, which, tip)) in [("help", Icon::Help, panel::Which::Help, keys::named(Key::Slash, keys::SHIFT)), ("settings", Icon::Gear, panel::Which::Settings, keys::named(Key::Comma, keys::CTRL))].into_iter().enumerate() {
+            let rect = Rect::from_min_size(Pos2::new(x + i as f32 * PLUS, strip.top()), Vec2::new(PLUS, STRIP - 1.0));
+            let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
+            // lit while pressed, and while its panel is up: the button closes what it opened
+            if response.is_pointer_button_down_on() || open == Some(which) {
+                painter.rect_filled(rect, 0.0, HOVER);
+            }
+            icons::draw(&painter, rect, icon, FG);
+            if response.clicked() {
+                self.toggle_panel(which);
+            }
+            self.hint(&response, tip);
+        }
+        self.mark(ui, &painter, Rect::from_min_size(Pos2::new(x + 2.0 * PLUS, strip.top()), Vec2::new(PLUS, STRIP - 1.0)), actions);
         for (i, (name, action)) in [("close", Action::Close), ("maximize", Action::ToggleMaximize), ("minimize", Action::Minimize)].into_iter().enumerate().take(ours) {
             let rect = Rect::from_min_size(Pos2::new(strip.right() - (i + 1) as f32 * WINDOW_BUTTON, strip.top()), Vec2::new(WINDOW_BUTTON, STRIP - 1.0));
             let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
@@ -1253,6 +1340,95 @@ impl Ui {
         self.hint(&response, keys::named(Key::N, keys::NONE));
     }
 
+    /// the tridant mark at the strip's right end (fig. 32): the brand's star, 14 across, in the strip's dim ink and
+    /// brighter under the pointer, never in the brand's colors. resting on it brings up its card, which stays while
+    /// the pointer is on the mark or the card, so the card's link can be pressed; a press on the mark opens about.
+    fn mark(&mut self, ui: &egui::Ui, painter: &egui::Painter, mark: Rect, actions: &mut Vec<Action>) {
+        let now = ui.input(|i| i.time);
+        let response = ui.interact(mark, ui.scope_id().with("mark"), Sense::click());
+        if response.clicked() {
+            self.open_panel(panel::Which::Settings, panel::ABOUT);
+        }
+        let (star, size) = self.on_pixels(mark.center(), Vec2::splat(14.0));
+        brand::draw(painter, self.pictures.get(ui.ctx(), brand::Art::Star, size), star, 0.0, if response.hovered() { FG } else { DIM });
+        let on = self.panel.is_none() && (response.hovered() || (self.card.is_some() && ui.ctx().pointer_latest_pos().is_some_and(|p| self.card_rect.contains(p))));
+        let (since, wait) = if on {
+            self.mark_left = None;
+            (*self.mark_since.get_or_insert(now), TIP_IN)
+        } else {
+            self.mark_since = None;
+            (*self.mark_left.get_or_insert(now), FACTS_OUT)
+        };
+        if on != self.card.is_some() {
+            if now - since >= wait {
+                // the star's holds are drawn from the time it comes up: a simple pseudo-random
+                let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+                self.card = on.then_some((now, seed));
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_secs_f64(wait - (now - since)));
+            }
+        }
+        if let Some((up, seed)) = self.card {
+            self.card_rect = self.card(ui, mark, now - up, seed, actions);
+        }
+    }
+
+    /// the mark's card, under the strip, its right edge on the mark's, 6 below the strip: the star at 40, moving as
+    /// `brand::motion` says, then "eyepiece 0.1.0", "a tridant system" and tridant.io as a link. the star draws only
+    /// while the card is up, and stands still when the system asks for less motion. returns where it was drawn.
+    fn card(&mut self, ui: &egui::Ui, mark: Rect, t: f64, seed: u64, actions: &mut Vec<Action>) -> Rect {
+        let painter = ui.painter();
+        let version = painter.layout_no_wrap(format!("eyepiece {}", panel::VERSION), font(MONO_MEDIUM, 11.5), FG);
+        let mut line = LayoutJob::default();
+        for (words, color) in [("a ", DIM), ("tridant", FG), (" system", DIM)] {
+            line.append(words, 0.0, TextFormat { font_id: font(SANS, 12.0), color, ..Default::default() });
+        }
+        let system = painter.layout_job(line);
+        let link = painter.layout_no_wrap("tridant.io".to_string(), font(SANS, 12.0), FG);
+        // 10 round the star and 14 at the right; three lines 8 apart, each as tall as its type
+        let words = version.size().x.max(system.size().x).max(link.size().x);
+        let size = Vec2::new(10.0 + 40.0 + 12.0 + words + 14.0, 10.0 + 11.5 + 8.0 + 12.0 + 8.0 + 12.0 + 10.0);
+        let card = Rect::from_min_size(Pos2::new(mark.right() - size.x, mark.top() + STRIP + 6.0), size);
+        // a press on the card is not a press on what is under it
+        ui.interact(card, ui.scope_id().with("card"), Sense::click());
+        painter.rect_filled(card, 0.0, CHIP);
+        painter.rect_stroke(card, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
+        let (turn, scale) = if self.still {
+            (0.0, 1.0)
+        } else {
+            let (turn, scale, rest) = brand::motion(t, seed);
+            match rest {
+                Some(rest) => ui.ctx().request_repaint_after(Duration::from_secs_f64(rest)),
+                None => ui.ctx().request_repaint(),
+            }
+            (turn, scale)
+        };
+        let middle = Pos2::new(card.left() + 10.0 + 20.0, card.center().y);
+        let (star, pixels) = self.on_pixels(middle, Vec2::splat(brand::TURNING_SIZE));
+        brand::draw(painter, self.pictures.get(ui.ctx(), brand::Art::Turning, pixels), Rect::from_center_size(star.center(), star.size() * scale), turn, FG);
+        let left = card.left() + 10.0 + 40.0 + 12.0;
+        let top = card.top() + 10.0;
+        painter.galley(Pos2::new(left, text_top(painter, font(MONO_MEDIUM, 11.5), top + 5.75)), version, FG);
+        painter.galley(Pos2::new(left, text_top(painter, font(SANS, 12.0), top + 19.5 + 6.0)), system, FG);
+        // tridant.io, underlined dotted as a folder tab's count is: a press opens it in the system's browser
+        let at = Pos2::new(left, text_top(painter, font(SANS, 12.0), top + 39.5 + 6.0));
+        let width = link.size().x;
+        painter.galley(at, link, FG);
+        if ui.interact(Rect::from_min_size(Pos2::new(left, top + 36.5), Vec2::new(width, 18.0)), ui.scope_id().with("card-link"), Sense::click()).clicked() {
+            actions.push(Action::OpenUrl(panel::TRIDANT.to_string()));
+        }
+        dotted(painter, font(SANS, 12.0), at, width, FG);
+        card
+    }
+
+    /// a box `size` across round `middle` on whole physical pixels, and how many it takes: a texture drawn there
+    /// is sharp.
+    fn on_pixels(&self, middle: Pos2, size: Vec2) -> (Rect, [usize; 2]) {
+        let pixels = (size * self.scale).round().max(Vec2::splat(1.0));
+        let min = ((middle.to_vec2() * self.scale - pixels / 2.0).round() / self.scale).to_pos2();
+        (Rect::from_min_size(min, pixels / self.scale), [pixels.x as usize, pixels.y as usize])
+    }
+
     /// the label of tab `i`, which plays a folder, inside `text`, as the design's fig. 14 has it: the folder's name and
     /// a slash, dim; the clip's place, underlined dotted, between arrows to the clip before and the clip after; the
     /// clip's name, cut in its middle to the room left. an arrow does what its page key does, on its own tab.
@@ -1281,16 +1457,7 @@ impl Ui {
             painter.galley(Pos2::new(left + NAV_PAD, top), painter.layout_no_wrap(glyph.to_string(), font(family, 11.5), color), color);
         }
         let figures = painter.layout_no_wrap(format!("{} of {}", place.at + 1, place.count), font(MONO_MEDIUM, 11.5), FG);
-        // the dotted line: the row of pixels 3 under the figures, every other one lit. as a mesh of its own: a line or
-        // a rect a pixel across is rounded away to nothing
-        let figure = &figures.rows[0].row.glyphs[0];
-        let under = (top + figure.pos.y + figure.uv_rect.offset.y + figure.uv_rect.size.y).round() + 3.0;
-        let (mut dots, mut dot) = (egui::Mesh::default(), at.round());
-        while dot < at + count {
-            dots.add_colored_rect(Rect::from_min_size(Pos2::new(dot, under), Vec2::splat(1.0)), FG);
-            dot += 2.0;
-        }
-        painter.add(dots);
+        dotted(&painter, font(MONO_MEDIUM, 11.5), Pos2::new(at, top), count, FG);
         painter.galley(Pos2::new(at, top), figures, FG);
         let name = at + count + arrow + space;
         if name < text.right() {
@@ -1484,9 +1651,9 @@ impl Ui {
 
     /// the tooltip of the button the pointer rests on: in a chip 7 over the bar or under the strip, as the menus stand,
     /// from the button's edge on the side of the window it is on. it comes a moment after the pointer does, and never
-    /// while a menu, the metadata panel or the table of keys is up, or a button is held.
+    /// while a menu, the metadata panel, the mark's card or a panel is up, or a button is held.
     fn tooltip(&mut self, ui: &egui::Ui, full: Rect, now: f64) {
-        let quiet = self.menu.is_some() || self.commands.is_some() || self.keys || self.facts_up || ui.input(|i| i.pointer.any_down());
+        let quiet = self.menu.is_some() || self.commands.is_some() || self.panel.is_some() || self.card.is_some() || self.facts_up || ui.input(|i| i.pointer.any_down());
         let Some((id, button, (does, key))) = self.hinted.take().filter(|_| !quiet) else {
             self.tip = None;
             return;
@@ -1500,6 +1667,8 @@ impl Ui {
         let (left, low) = (button.center().x < full.center().x, button.center().y > full.center().y);
         let corner = Pos2::new(if left { button.left() } else { button.right() }, if low { full.bottom() - (1.0 + ROW + TIME) - 7.0 } else { full.top() + STRIP + 7.0 });
         let anchor = Align2([if left { egui::Align::Min } else { egui::Align::Max }, if low { egui::Align::Max } else { egui::Align::Min }]);
+        // on a mac command does what control does, and a hint names the key held there
+        let key = if cfg!(target_os = "macos") { key.replace("ctrl", "cmd") } else { key };
         let key = if key.is_empty() { key } else { format!(" · {key}") };
         chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0, SANS);
     }
@@ -1573,6 +1742,21 @@ impl Ui {
             painter.galley(Pos2::new(number.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), number.center().y)), galley, FG);
         }
     }
+}
+
+/// the dotted line under words that are a link, or a count that opens a list: the row of pixels 3 under the figures
+/// of the type laid out at `at`, every other one lit, for `width`. as a mesh of its own: a line or a rect a pixel
+/// across is rounded away to nothing.
+fn dotted(painter: &egui::Painter, font_id: FontId, at: Pos2, width: f32, color: Color32) {
+    let figure = painter.layout_no_wrap("0".to_string(), font_id, color);
+    let glyph = &figure.rows[0].row.glyphs[0];
+    let under = (at.y + glyph.pos.y + glyph.uv_rect.offset.y + glyph.uv_rect.size.y).round() + 3.0;
+    let (mut dots, mut dot) = (egui::Mesh::default(), at.x.round());
+    while dot < at.x + width {
+        dots.add_colored_rect(Rect::from_min_size(Pos2::new(dot, under), Vec2::splat(1.0)), color);
+        dot += 2.0;
+    }
+    painter.add(dots);
 }
 
 /// how far the strip's tabs are scrolled: no further than their end, and, when another tab has just come up, far
@@ -1770,8 +1954,11 @@ fn banner(ui: &egui::Ui, at: Pos2, width: f32, text: &str) -> Rect {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// the settings a test's screen carries: the defaults
+    pub(in crate::ui) static DEFAULTS: std::sync::LazyLock<Settings> = std::sync::LazyLock::new(Settings::default);
 
     /// the row of controls sits in the middle of the bar as it is seen: as far under the line along the bar's top as
     /// it is over the timebar's track at rest.
@@ -1798,7 +1985,7 @@ mod tests {
     #[test]
     fn a_step_with_the_controls_away_says_its_frame() {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        let screen = |frame| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(Model { frame, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+        let screen = |frame| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(Model { frame, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
         let pass = |ui: &mut Ui, frame| ui.run(&screen(frame)).textures.clear();
         pass(&mut ui, 0);
         assert!(ui.flash.is_none(), "nothing is said of a clip that only came up");
@@ -1904,7 +2091,7 @@ mod tests {
 
     /// `drive`, over the clip `model` tells of
     pub(super) fn drive_with(ui: &mut Ui, model: Model, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
-        drive_on(ui, &Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None }, steps)
+        drive_on(ui, &Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS }, steps)
     }
 
     /// `drive`, over what `screen` shows
@@ -1933,7 +2120,7 @@ mod tests {
     /// to the middle of the window. fitted, there is none, and a click there is a click on the picture.
     #[test]
     fn the_navigator_pans_a_picture_zoomed_past_the_window() {
-        let screen = |clip| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(clip), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None };
+        let screen = |clip| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(clip), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
         // a 1920 x 1080 picture at 1:1 in the 640 x 360 window, its middle in the window's
         let zoomed = || Model { picture: (-640.0, -360.0, 1920.0, 1080.0), overflows: true, zoomed: true, ..model() };
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
@@ -1954,7 +2141,7 @@ mod tests {
     fn the_address_field_copies_its_path_and_takes_a_pasted_one() {
         let folder = std::env::temp_dir();
         let mut ui = Ui::new((1240, 700), 1.0, false, Some(folder.clone()), None);
-        let screen = Screen { tabs: vec!["new tab"], current: 0, places: Vec::new(), clip: None, error: None, opening: None, list: None, browsing: true, fullscreen: false, toast: None };
+        let screen = Screen { tabs: vec!["new tab"], current: 0, places: Vec::new(), clip: None, error: None, opening: None, list: None, browsing: true, fullscreen: false, toast: None, settings: &DEFAULTS };
         let pass = |ui: &mut Ui| {
             let mut out = ui.run(&screen);
             out.textures.clear();
@@ -1982,7 +2169,7 @@ mod tests {
     #[test]
     fn back_pressed_twice_fast_goes_back_two_folders() {
         let mut ui = Ui::new((1240, 700), 1.0, false, Some(std::env::temp_dir()), None);
-        let screen = Screen { tabs: vec!["browser"], current: 0, places: Vec::new(), clip: None, error: None, opening: None, list: None, browsing: true, fullscreen: false, toast: None };
+        let screen = Screen { tabs: vec!["browser"], current: 0, places: Vec::new(), clip: None, error: None, opening: None, list: None, browsing: true, fullscreen: false, toast: None, settings: &DEFAULTS };
         let pass = |ui: &mut Ui| ui.run(&screen).textures.clear();
         pass(&mut ui);
         let start = ui.browser_folder().to_path_buf();
@@ -2031,7 +2218,7 @@ mod tests {
         assert_eq!(drive(&mut ui, &click(23.0, 328.0)), vec![]);
         assert!(ui.pinned() && ui.shown);
         ui.pointer_leave();
-        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None });
+        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
         out.textures.clear();
         assert!(ui.shown && out.shown, "pinned, the controls stay when the pointer leaves");
         std::thread::sleep(Duration::from_millis(350));
@@ -2040,7 +2227,7 @@ mod tests {
         assert_eq!(drive(&mut ui, &click(23.0, 328.0)), vec![]);
         assert!(!ui.pinned());
         ui.pointer_leave();
-        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None });
+        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
         out.textures.clear();
         assert!(!ui.shown, "not pinned, they go with the pointer");
     }
@@ -2049,7 +2236,7 @@ mod tests {
     /// the window, changing size, says it moved; pinned, they stay.
     #[test]
     fn entering_fullscreen_takes_the_controls_away() {
-        let screen = |fullscreen| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen, toast: None };
+        let screen = |fullscreen| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen, toast: None, settings: &DEFAULTS };
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
         drive_on(&mut ui, &screen(false), &[(600.0, 328.0, None), (601.0, 328.0, None)]);
         assert!(ui.shown, "the pointer on the bar brings the controls up");
@@ -2091,16 +2278,18 @@ mod tests {
 
     /// on a mac the window's buttons are the system's own, at the strip's left: the strip keeps their room, has none
     /// of its own there or at the right, and the tabs start after the room. "clip" is 4 of the type's 6.9-wide
-    /// letters in a tab 40 wider, with its close mark 14 from the tab's end.
+    /// letters in a tab 40 wider, with its close mark 14 from the tab's end. the mark is the last thing at the right,
+    /// where the window's close button is elsewhere.
     #[test]
     fn where_the_system_draws_the_windows_buttons_the_strip_keeps_their_room() {
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
         ui.set_buttons_room(Some(78.0));
         let close_mark = 27.6 + 40.0 - 14.0;
-        for (x, asked) in [(20.0, vec![]), (60.0, vec![]), (78.0 + close_mark, vec![Action::CloseTab(0)]), (880.0, vec![]), (800.0, vec![])] {
+        for (x, asked) in [(20.0, vec![]), (60.0, vec![]), (78.0 + close_mark, vec![Action::CloseTab(0)]), (780.0, vec![]), (884.0, vec![])] {
             assert_eq!(drive(&mut ui, &click(x, 16.0)), asked, "a click at {x}");
             std::thread::sleep(Duration::from_millis(350));
         }
+        assert!(ui.panel.as_ref().is_some_and(|panel| panel.which == panel::Which::Settings), "the mark at the far right opened about");
         // elsewhere they are the strip's, at the right, close last, and the tabs start at the left edge
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
         for (x, asked) in [(880.0, vec![Action::Close]), (840.0, vec![Action::ToggleMaximize]), (800.0, vec![Action::Minimize]), (close_mark, vec![Action::CloseTab(0)])] {
@@ -2117,7 +2306,7 @@ mod tests {
         let (previous, count, next) = (12.0 + 55.2 + 8.45, 12.0 + 55.2 + 16.9 + 20.7, 12.0 + 55.2 + 16.9 + 41.4 + 8.45);
         let place = |at| Some(Place { folder: "browse", at, count: 4, clip: "hap_64.mov" });
         let list = || FolderList { title: "browse", at: 0, items: Vec::new() };
-        let screen = |clip, error| Screen { tabs: vec!["browse / 1 of 4 · hap_64.mov", "browse / 2 of 4 · prores_64.mov"], current: 0, places: vec![place(0), place(1)], clip, error, opening: None, list: Some(list()), browsing: false, fullscreen: false, toast: None };
+        let screen = |clip, error| Screen { tabs: vec!["browse / 1 of 4 · hap_64.mov", "browse / 2 of 4 · prores_64.mov"], current: 0, places: vec![place(0), place(1)], clip, error, opening: None, list: Some(list()), browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
         let up = screen(Some(model()), None);
         assert_eq!(drive_on(&mut ui, &up, &click(next, 16.0)), vec![Action::Key(Key::PageDown, keys::NONE)]);
@@ -2210,28 +2399,121 @@ mod tests {
         assert!(ui.commands.is_some() && room.contains_rect(ui.commands_rect), "{:?} is not inside {room:?}", ui.commands_rect);
     }
 
-    /// the click that takes the table of keys away does nothing else; the next one does what it does.
+    /// a press outside a panel closes it and does nothing else; a press in it does not close it; the next press
+    /// does what it does. in the least window, 640 x 360, the panel is the window less 16 each side, under the strip:
+    /// 16 to 624 across and 48 to 344 down.
     #[test]
-    fn the_click_that_takes_the_table_of_keys_away_does_nothing_else() {
+    fn a_press_outside_a_panel_closes_it_and_does_nothing_else() {
         use crate::event::Button::Left;
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        // the bar's next-frame button: 30 wide from 112, 32 up from the bottom
-        let next = (127.0, 328.0);
+        // the timebar, the window's bottom 14, which the panel leaves clear: the middle of its three frames
+        let next = (320.0, 354.0);
         drive(&mut ui, &[(next.0, next.1, None)]);
-        ui.show_keys();
-        let actions = drive(&mut ui, &[(next.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
-        assert_eq!(actions, vec![], "the click on the button only took the table away");
-        assert!(!ui.keys);
-        // the bar stepped aside for the table: the pointer moves, and it comes back
-        let actions = drive(&mut ui, &[(next.0 + 1.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
-        assert_eq!(actions, vec![Action::Step(1)]);
-        // nor does a double click on the picture whose first click took the table away fill the display
-        ui.show_keys();
-        // long enough for the clicks before not to count with these
+        ui.show_help();
+        assert_eq!(drive(&mut ui, &click(300.0, 200.0)), vec![], "a press inside the panel");
+        assert!(ui.panel_up(), "a press inside the panel leaves it up");
+        assert_eq!(ui.panel.as_ref().unwrap().rect, Rect::from_min_max(Pos2::new(16.0, 48.0), Pos2::new(624.0, 344.0)));
         std::thread::sleep(Duration::from_millis(350));
-        let mid = (320.0, 180.0, None);
-        let actions = drive(&mut ui, &[mid, mid, (mid.0, mid.1, Some((Left, true))), (mid.0, mid.1, Some((Left, false))), (mid.0, mid.1, Some((Left, true))), (mid.0, mid.1, Some((Left, false)))]);
+        let actions = drive(&mut ui, &[(next.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
+        assert_eq!(actions, vec![], "the press on the timebar only closed the panel");
+        assert!(!ui.panel_up());
+        // the bar stepped aside for the panel: the pointer moves, and it comes back
+        std::thread::sleep(Duration::from_millis(350));
+        // (the timebar goes there as the button goes down, and again as it comes up: the clip here never moves)
+        let actions = drive(&mut ui, &[(next.0 + 1.0, next.1, None), (next.0, next.1, None), (next.0, next.1, Some((Left, true))), (next.0, next.1, Some((Left, false)))]);
+        assert!(!actions.is_empty() && actions.iter().all(|a| *a == Action::Seek(1)), "{actions:?}");
+        // nor does a double click on the picture whose first press closed the panel fill the display
+        ui.show_help();
+        std::thread::sleep(Duration::from_millis(350));
+        let beside = (8.0, 180.0, None);
+        let actions = drive(&mut ui, &[beside, beside, (beside.0, beside.1, Some((Left, true))), (beside.0, beside.1, Some((Left, false))), (beside.0, beside.1, Some((Left, true))), (beside.0, beside.1, Some((Left, false)))]);
         assert_eq!(actions, vec![]);
+    }
+
+    /// the keys of a panel (figs. 33, 39): esc closes either. help keeps the table of keys' rule: ? closes it, and any
+    /// other key closes it and goes on to the player. settings goes through its pages with up and down, closes on
+    /// control + , and holds the player's other keys.
+    #[test]
+    fn a_panels_keys() {
+        let mut ui = Ui::new((1088, 612), 1.0, false, None, None);
+        let page = |ui: &Ui| ui.panel.as_ref().map(|panel| (panel.which, panel.page));
+        ui.show_help();
+        assert_eq!(page(&ui), Some((panel::Which::Help, 0)), "? opens help on its keys page");
+        assert!(ui.panel_key(Key::Slash, keys::SHIFT) && !ui.panel_up(), "? closes it");
+        ui.show_help();
+        assert!(!ui.panel_key(Key::G, keys::NONE) && !ui.panel_up(), "G closes it, then steps");
+        ui.show_help();
+        assert!(ui.panel_key(Key::Escape, keys::NONE) && !ui.panel_up());
+        ui.toggle_settings();
+        assert_eq!(page(&ui), Some((panel::Which::Settings, 0)), "control + , opens settings on general");
+        assert!(ui.panel_key(Key::Down, keys::NONE) && ui.panel_key(Key::Down, keys::NONE));
+        assert_eq!(page(&ui), Some((panel::Which::Settings, 2)));
+        assert!(ui.panel_key(Key::Up, keys::NONE) && ui.panel_key(Key::G, keys::NONE) && ui.panel_key(Key::Space, keys::NONE));
+        assert_eq!(page(&ui), Some((panel::Which::Settings, 1)), "the player's keys wait");
+        assert!(ui.panel_key(Key::Comma, keys::CTRL) && !ui.panel_up(), "control + , closes it");
+        ui.toggle_settings();
+        ui.toggle_settings();
+        assert!(!ui.panel_up());
+        assert!(!ui.panel_key(Key::G, keys::NONE), "with no panel up a key is the player's");
+    }
+
+    /// the strip's right end (fig. 32), on windows just left of minimize: help, settings and the mark, 32 wide each.
+    /// a press on ? or the gear opens its panel, lit while it is up; a press on the mark opens settings on about. in
+    /// the panel a press on its pages goes to them, and a switch is a change of the settings, asked for at once.
+    #[test]
+    fn the_strips_buttons_open_the_panels_and_a_switch_changes_a_setting() {
+        let mut ui = Ui::new((1088, 612), 1.0, false, None, None);
+        let page = |ui: &Ui| ui.panel.as_ref().map(|panel| (panel.which, panel.page));
+        // from the right: 120 of window buttons, then the mark, the gear and ?
+        let (help, gear, mark) = (1088.0 - 120.0 - 96.0 + 16.0, 1088.0 - 120.0 - 64.0 + 16.0, 1088.0 - 120.0 - 32.0 + 16.0);
+        assert_eq!(drive(&mut ui, &click(gear, 16.0)), vec![]);
+        assert_eq!(page(&ui), Some((panel::Which::Settings, 0)));
+        // the panel, 760 x 500 in the middle: its sidebar's pages from 87.5 down, 29 apart
+        assert_eq!(ui.panel.as_ref().unwrap().rect, Rect::from_min_size(Pos2::new(164.0, 56.0), Vec2::new(760.0, 500.0)));
+        std::thread::sleep(Duration::from_millis(350));
+        drive(&mut ui, &click(220.0, 87.5 + 29.0 * 2.0 + 14.0));
+        assert_eq!(page(&ui), Some((panel::Which::Settings, 2)), "a press on playback");
+        std::thread::sleep(Duration::from_millis(350));
+        drive(&mut ui, &click(220.0, 87.5 + 14.0));
+        // general's first row, 102 down: a label and a note, 48.65 high, its switch at the page's right, 20 in
+        std::thread::sleep(Duration::from_millis(350));
+        let asked = drive(&mut ui, &click(924.0 - 20.0 - 13.0, 102.0 + 24.3));
+        assert_eq!(asked, vec![Action::Settings(Box::new(Settings { play_on_open: false, ..Settings::default() }))]);
+        // a press on the strip is a press outside: it closes the panel, and the next on ? opens help
+        std::thread::sleep(Duration::from_millis(350));
+        drive(&mut ui, &click(help, 16.0));
+        assert!(!ui.panel_up());
+        std::thread::sleep(Duration::from_millis(350));
+        drive(&mut ui, &click(help, 16.0));
+        assert_eq!(page(&ui), Some((panel::Which::Help, 0)));
+        ui.panel = None;
+        std::thread::sleep(Duration::from_millis(350));
+        drive(&mut ui, &click(mark, 16.0));
+        assert_eq!(page(&ui), Some((panel::Which::Settings, panel::ABOUT)));
+    }
+
+    /// resting on the mark brings its card up, under the strip with its right edge on the mark's; it stays while the
+    /// pointer is on the mark or the card, and goes a moment after it leaves both.
+    #[test]
+    fn the_marks_card_stays_while_the_pointer_is_on_it() {
+        let mut ui = Ui::new((1088, 612), 1.0, false, None, None);
+        let mark = (1088.0 - 120.0 - 16.0, 16.0);
+        drive(&mut ui, &[(mark.0, mark.1, None), (mark.0 + 1.0, mark.1, None)]);
+        assert!(ui.card.is_none(), "not before the pointer rests");
+        std::thread::sleep(Duration::from_millis(550));
+        drive(&mut ui, &[(mark.0, mark.1, None), (mark.0, mark.1, None)]);
+        assert!(ui.card.is_some(), "resting on the mark brings the card up");
+        assert_eq!((ui.card_rect.right(), ui.card_rect.top()), (1088.0 - 120.0, STRIP + 6.0));
+        // across the strip's foot and onto the card: it stays
+        let on = ui.card_rect.center();
+        drive(&mut ui, &[(mark.0, 36.0, None), (on.x, on.y, None)]);
+        std::thread::sleep(Duration::from_millis(300));
+        drive(&mut ui, &[(on.x, on.y, None), (on.x + 1.0, on.y, None)]);
+        assert!(ui.card.is_some(), "the pointer on the card keeps it up");
+        drive(&mut ui, &[(300.0, 300.0, None)]);
+        std::thread::sleep(Duration::from_millis(250));
+        drive(&mut ui, &[(301.0, 300.0, None), (300.0, 300.0, None)]);
+        assert!(ui.card.is_none(), "it goes once the pointer has left both");
     }
 
     #[test]

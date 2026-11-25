@@ -8,7 +8,7 @@ pub mod spare;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf, Prefix};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// the small pictures of one clip: frames spread over it, each `width` x `height`, red green blue, 8 bits each.
@@ -29,12 +29,19 @@ pub struct Key(u128);
 
 pub struct Cache {
     root: PathBuf,
-    /// bytes of cache files kept before eviction starts
-    budget: u64,
+    /// bytes of cache files kept before eviction starts; none for the settings' limit (`set_limit`)
+    budget: Option<u64>,
 }
 
-/// the design's cap for hover previews (plan, section 06)
+/// the design's cap for hover previews (plan, section 06), until the settings name another
 const BUDGET: u64 = 2 << 30;
+/// the budget of every cache `open` makes: the settings' limit, read at each eviction so a change holds at once
+static LIMIT: AtomicU64 = AtomicU64::new(BUDGET);
+
+/// the cache's limit, in bytes, from the settings.
+pub fn set_limit(bytes: u64) {
+    LIMIT.store(bytes, Ordering::Relaxed);
+}
 /// where `open` keeps the cache, under the os cache folder
 const PLACE: [&str; 3] = ["eyepiece", "cache", "previews"];
 const MAGIC: [u8; 8] = *b"EYEPPREV";
@@ -64,13 +71,32 @@ impl Cache {
             None
         };
         let root = std::env::var_os("EYEPIECE_CACHE").map(PathBuf::from).or(system)?.join(PLACE.iter().collect::<PathBuf>());
-        safe_root(&root, home().as_deref(), &PLACE).then_some(Cache { root, budget: BUDGET })
+        safe_root(&root, home().as_deref(), &PLACE).then_some(Cache { root, budget: None })
     }
 
     /// a cache in a folder of the caller's choosing, with a size budget in bytes (the tests' way in).
     #[cfg(test)]
     pub fn at(root: PathBuf, budget: u64) -> Option<Cache> {
-        safe_root(&root, home().as_deref(), &[]).then_some(Cache { root, budget })
+        safe_root(&root, home().as_deref(), &[]).then_some(Cache { root, budget: Some(budget) })
+    }
+
+    /// the folder the cache keeps its files in.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// the bytes its own files take, from the folder's listing. a folder not made yet holds none.
+    pub fn used(&self) -> io::Result<u64> {
+        match self.listed() {
+            Err(none) if none.kind() == io::ErrorKind::NotFound => Ok(0),
+            listed => Ok(listed?.1),
+        }
+    }
+
+    /// removes every file of its own, the way eviction does: one at a time, the one used longest ago first, under
+    /// the same guard, with a budget of nothing.
+    pub fn clear(&self) -> io::Result<()> {
+        self.evict_to(0)
     }
 
     pub fn key(path: &Path, size: u64, modified: SystemTime) -> Key {
@@ -116,19 +142,37 @@ impl Cache {
         out.sync_all()?;
         drop(out);
         fs::rename(&tmp, self.file(key, "previews"))?;
-        self.evict()
+        self.evict_to(self.budget.unwrap_or_else(|| LIMIT.load(Ordering::Relaxed)))
     }
 
     fn file(&self, key: &Key, extension: &str) -> PathBuf {
         self.root.join(format!("{:032x}.{extension}", key.0))
     }
 
-    /// while the cache files add up to more than the budget, removes the one used longest ago. only files named as
+    /// while the cache files add up to more than `budget`, removes the one used longest ago. only files named as
     /// this cache names them count, and the first error stops it.
-    fn evict(&self) -> io::Result<()> {
+    fn evict_to(&self, budget: u64) -> io::Result<()> {
         if !safe_root(&self.root, home().as_deref(), &[]) {
             return Err(io::Error::other(format!("not evicting: {} is not a safe cache folder", self.root.display())));
         }
+        let (mut files, mut total) = self.listed()?;
+        files.sort();
+        for (_, name, len) in files {
+            if total <= budget {
+                break;
+            }
+            // one gone already was taken by another player making room: any other failure is said
+            match fs::remove_file(self.root.join(&name)) {
+                Err(gone) if gone.kind() == io::ErrorKind::NotFound => {}
+                removed => removed?,
+            }
+            total -= len;
+        }
+        Ok(())
+    }
+
+    /// the cache's own files, each with when it was last used, its name and its size, and their total.
+    fn listed(&self) -> io::Result<(Vec<(SystemTime, String, u64)>, u64)> {
         let day_ago = SystemTime::now().checked_sub(Duration::from_secs(24 * 60 * 60)).unwrap_or(UNIX_EPOCH);
         let (mut files, mut total) = (Vec::new(), 0);
         for item in fs::read_dir(&self.root)? {
@@ -147,19 +191,7 @@ impl Cache {
                 files.push((used, name, meta.len()));
             }
         }
-        files.sort();
-        for (_, name, len) in files {
-            if total <= self.budget {
-                break;
-            }
-            // one gone already was taken by another player making room: any other failure is said
-            match fs::remove_file(self.root.join(&name)) {
-                Err(gone) if gone.kind() == io::ErrorKind::NotFound => {}
-                removed => removed?,
-            }
-            total -= len;
-        }
-        Ok(())
+        Ok((files, total))
     }
 }
 
@@ -510,16 +542,37 @@ mod tests {
         used_ago(&all.file(&b, "previews"), 1);
         assert!(all.get(&a).is_some());
         let one = fs::metadata(all.file(&a, "previews")).unwrap().len();
-        Cache::at(dir.clone(), one).unwrap().evict().unwrap();
+        Cache::at(dir.clone(), one).unwrap().evict_to(one).unwrap();
         assert!(all.file(&a, "previews").exists() && !all.file(&b, "previews").exists());
+        tidy(&dir);
+    }
+
+    /// clearing takes every file of the cache's own, one at a time, and leaves the folder and anything not its own;
+    /// what is in use is counted from the listing, and a folder not made yet holds nothing.
+    #[test]
+    fn clearing_takes_only_the_caches_own_files() {
+        let dir = scratch("clear");
+        let all = Cache::at(dir.clone(), u64::MAX).unwrap();
+        assert_eq!(all.used().unwrap(), 0);
+        for name in ["a.mov", "b.mov"] {
+            all.put(&key(name), &previews(8, 8, 2, || 3)).unwrap();
+        }
+        let foreign = dir.join("notes.txt");
+        fs::write(&foreign, [7; 1000]).unwrap();
+        let one = fs::metadata(all.file(&key("a.mov"), "previews")).unwrap().len();
+        assert_eq!(all.used().unwrap(), 2 * one);
+        all.clear().unwrap();
+        assert_eq!(all.used().unwrap(), 0);
+        assert!(dir.is_dir() && fs::metadata(&foreign).unwrap().len() == 1000);
+        fs::remove_file(&foreign).unwrap();
         tidy(&dir);
     }
 
     #[test]
     fn eviction_refuses_an_unsafe_root() {
         // what an empty LOCALAPPDATA would give: relative, so it names the working folder
-        let cache = Cache { root: PathBuf::from(r"eyepiece\cache\previews"), budget: 0 };
-        assert!(cache.evict().is_err());
+        let cache = Cache { root: PathBuf::from(r"eyepiece\cache\previews"), budget: Some(0) };
+        assert!(cache.evict_to(0).is_err() && cache.clear().is_err());
         assert!(Cache::at(PathBuf::new(), 0).is_none());
     }
 
