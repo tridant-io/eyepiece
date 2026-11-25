@@ -363,7 +363,7 @@ mod tests {
         ctx.set_fonts(super::super::fonts());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             for c in commands() {
-                for (text, font_id) in [(c.key, font(MONO_MEDIUM, 10.0)), (c.key, font(MONO_MEDIUM, 11.0)), (c.name.unwrap_or(""), font(SANS, 12.0)), (c.name.unwrap_or(""), font(MONO_MEDIUM, 11.0)), (c.line.unwrap_or(""), font(MONO, 11.0))] {
+                for (text, font_id) in [(c.key, font(MONO_MEDIUM, 10.0)), (c.key, font(MONO_MEDIUM, 11.0)), (c.name.unwrap_or(""), font(SANS, 12.0)), (c.name.unwrap_or(""), font(MONO_MEDIUM, 11.0)), (c.line.unwrap_or(""), font(SANS, 12.0))] {
                     assert!(ui.ctx().fonts_mut(|f| f.has_glyphs(&font_id, text)), "{font_id:?} cannot draw {text}");
                 }
                 if let Some(name) = c.name {
