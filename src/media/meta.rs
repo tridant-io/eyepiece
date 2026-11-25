@@ -60,6 +60,7 @@ impl Meta {
         let (stored, shown) = clip::stored(path, &input, &video, count)?;
         let (count, hidden, all_key) = (stored.len(), stored.iter().filter(|s| s.hidden).count(), stored.iter().all(|s| s.key));
         let (samples, timeline, _) = clip::frames(&video, stored, shown);
+        let keys = key_row(&samples);
         // before `probe`, which mixes in what the decoder finds or assumes
         let container = input.color(video.index);
         let audio = input.audio();
@@ -87,6 +88,8 @@ impl Meta {
         }
         // up to `max` bytes of the first frame
         let first = |max: usize| samples.first().ok_or_else(|| "no frames listed".to_string()).and_then(|s| bytes(path, &Sample { size: s.size.min(max), ..*s }));
+        // the coded stream's profile and level, read by the probe: h.264's and hevc's. prores names its profile in its tag
+        let mut profile = None;
         let (codec, depth, alpha, color) = if let Some(variant) = hap_variant(&tag) {
             let (codec, depth) = hap_rows(variant, &tag, first(usize::MAX));
             let alpha = match tag.as_str() {
@@ -123,6 +126,9 @@ impl Meta {
                 "h264" | "hevc" => input.probe(),
                 _ => Err("not read for this codec yet".to_string()),
             };
+            if probed.is_ok() {
+                profile = Some(profile_row(&video.codec_name, input.profile(video.index)));
+            }
             let codec = clip::codec_name(&video).map_or_else(|| video.codec_name.clone(), str::to_string);
             let depth = match probed.and_then(|()| input.depth(video.index).ok_or_else(|| "not read: the decoder named no pixel format".to_string())) {
                 Ok((bits, shift)) => row("bit depth", format!("{bits}-bit · {}", chroma(shift)), Tone::Plain),
@@ -154,7 +160,11 @@ impl Meta {
             }
             _ => row("bit rate", "not worked out: the picture has no one length to take it over", Tone::Assumed),
         };
-        let mut picture = vec![codec, row("size", format!("{} × {}", video.width, video.height), Tone::Plain), rate_row(&timeline), row("frames", frames, Tone::Plain), duration_row(&timeline), rate, depth, alpha];
+        let mut picture = vec![codec];
+        picture.extend(profile);
+        picture.extend([row("size", format!("{} × {}", video.width, video.height), Tone::Plain), aspect_row(input.pixel_aspect(video.index), video.width, video.height), rate_row(&timeline), row("frames", frames, Tone::Plain)]);
+        picture.extend(keys);
+        picture.extend([duration_row(&timeline), rate, depth, alpha]);
         picture.extend(color);
 
         let mut sound: Vec<Row> = audio
@@ -405,6 +415,73 @@ fn grouped(n: u64) -> String {
     out
 }
 
+/// a picture's shape as people name it: "16:9" when its terms are small, else its width over its height, "2.39:1".
+fn shape(width: u64, height: u64) -> String {
+    let gcd = |mut a: u64, mut b: u64| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    let g = gcd(width, height).max(1);
+    let (w, h) = (width / g, height / g);
+    if w <= 32 && h <= 32 {
+        format!("{w}:{h}")
+    } else {
+        format!("{:.2}:1", width as f64 / height as f64)
+    }
+}
+
+/// the pixel aspect and the shape it gives the picture. the container's word is taken over the stream's, as players
+/// take it; where both speak and differ, that is a fault. where neither does, square is assumed. the player draws
+/// every pixel square, as stored, and says so when the file asks for another shape.
+fn aspect_row((container, stream): (Option<(i32, i32)>, Option<(i32, i32)>), width: usize, height: usize) -> Row {
+    let square = |(w, h): (i32, i32)| w == h;
+    match (container, stream) {
+        (Some(c), Some(s)) if c.0 as i64 * s.1 as i64 != s.0 as i64 * c.1 as i64 => row("aspect", format!("pixels {}:{} in the container, {}:{} in the stream", c.0, c.1, s.0, s.1), Tone::Fault),
+        (None, None) => row("aspect", format!("not stated in file. shown as square pixels · {}", shape(width as u64, height as u64)), Tone::Assumed),
+        (Some(p), _) | (None, Some(p)) if square(p) => row("aspect", format!("square pixels · {}", shape(width as u64, height as u64)), Tone::Plain),
+        (Some(p), _) | (None, Some(p)) => {
+            let shown = shape(width as u64 * p.0 as u64, height as u64 * p.1 as u64);
+            row("aspect", format!("pixels {}:{}, a {shown} picture · drawn here with square pixels, as stored", p.0, p.1), Tone::Plain)
+        }
+    }
+}
+
+/// the coded stream's profile and level, in the forms the codecs' own documents give: h.264's level 51 is 5.1,
+/// hevc's 153 (thirty times the level) is 5.1 too.
+fn profile_row(codec: &str, (name, level): (Option<String>, Option<i32>)) -> Row {
+    let level = level.map(|l| match codec {
+        "hevc" => format!("level {}.{}", l / 30, l % 30 / 3),
+        _ => format!("level {}.{}", l / 10, l % 10),
+    });
+    match (name, level) {
+        (Some(name), Some(level)) => row("profile", format!("{name} · {level}"), Tone::Plain),
+        (Some(name), None) => row("profile", format!("{name} · the stream states no level"), Tone::Plain),
+        (None, Some(level)) => row("profile", format!("not stated in the stream · {level}"), Tone::Plain),
+        (None, None) => row("profile", "not stated in the stream", Tone::Assumed),
+    }
+}
+
+/// how far apart the key frames are, counted in the frames the file stores: none when every frame is one, which
+/// the frames row says.
+fn key_row(samples: &[Sample]) -> Option<Row> {
+    let at: Vec<usize> = samples.iter().enumerate().filter(|(_, s)| s.key).map(|(i, _)| i).collect();
+    if at.len() == samples.len() {
+        return None;
+    }
+    let gaps: Vec<usize> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    let count = match at.len() {
+        1 => "one, the first".to_string(),
+        n => format!("{n} in all"),
+    };
+    Some(match (gaps.iter().min(), gaps.iter().max()) {
+        (Some(low), Some(high)) if low == high => row("key frames", format!("every {low} frames · {count}"), Tone::Plain),
+        (Some(low), Some(high)) => row("key frames", format!("every {low} to {high} frames · {count}"), Tone::Plain),
+        _ => row("key frames", count, Tone::Plain),
+    })
+}
+
 /// so many bytes over so many seconds, in bits a second to three figures, in decimal units.
 fn bit_rate(bytes: u64, seconds: f64) -> String {
     let mut v = bytes as f64 * 8.0 / seconds;
@@ -476,6 +553,33 @@ mod tests {
         let (said, tone) = get(&m, "bit rate");
         assert!(tone == Tone::Plain && said.contains("b/s · the picture alone · "), "{said}");
         assert_eq!(get(&read("h264_vfr_64.mp4"), "bit rate").1, Tone::Assumed);
+    }
+
+    /// the shape a pixel aspect gives, the profile and level in the codecs' own forms, and how far apart key frames
+    /// are, each as the file states it; what it does not state is labeled, and a container and a stream that
+    /// disagree are a fault.
+    #[test]
+    fn aspect_profile_and_key_frames_say_what_the_file_says() {
+        assert_eq!([shape(1920, 1080), shape(64, 64), shape(4096, 2160), shape(1440 * 4, 1080 * 3)], ["16:9", "1:1", "1.90:1", "16:9"]);
+        let aspect = |c, s, w, h| {
+            let r = aspect_row((c, s), w, h);
+            (r.value, r.tone)
+        };
+        assert_eq!(aspect(None, None, 1920, 1080), ("not stated in file. shown as square pixels · 16:9".to_string(), Tone::Assumed));
+        assert_eq!(aspect(None, Some((1, 1)), 1920, 1080), ("square pixels · 16:9".to_string(), Tone::Plain));
+        assert_eq!(aspect(Some((4, 3)), None, 1440, 1080).0, "pixels 4:3, a 16:9 picture · drawn here with square pixels, as stored");
+        assert_eq!(aspect(Some((4, 3)), Some((8, 6)), 1440, 1080).1, Tone::Plain);
+        assert_eq!(aspect(Some((4, 3)), Some((1, 1)), 1440, 1080).1, Tone::Fault);
+        assert_eq!(profile_row("h264", (Some("high".into()), Some(51))).value, "high · level 5.1");
+        assert_eq!(profile_row("hevc", (Some("main 10".into()), Some(153))).value, "main 10 · level 5.1");
+        assert_eq!(profile_row("h264", (None, None)).tone, Tone::Assumed);
+        let samples = |keys: &[bool]| keys.iter().map(|&key| Sample { pos: 0, size: 1, time: 0, key, hidden: false }).collect::<Vec<_>>();
+        assert!(key_row(&samples(&[true; 5])).is_none(), "every frame a key frame is the frames row's to say");
+        assert_eq!(key_row(&samples(&[true, false, false, true, false, false, true, false])).unwrap().value, "every 3 frames · 3 in all");
+        assert_eq!(key_row(&samples(&[true, false, true, false, false, true])).unwrap().value, "every 2 to 3 frames · 3 in all");
+        assert_eq!(key_row(&samples(&[true, false, false])).unwrap().value, "one, the first");
+        let m = read("h264_320.mp4");
+        assert_eq!((get(&m, "profile").0, get(&m, "key frames").0), ("high · level 1.3", "every 8 frames · 3 in all"));
     }
 
     #[test]

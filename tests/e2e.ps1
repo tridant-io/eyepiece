@@ -773,17 +773,17 @@ Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value
 Start-Player
 Start-Sleep -Milliseconds 1000
 function Get-ClipUp { if ((Get-Title) -match ' . clip (\d) of 4') { [int]$Matches[1] } else { 0 } }
-function Go-FirstClip { foreach ($i in 1..5) { if ((Get-ClipUp) -eq 1) { break }; Send-Key 0x22; Start-Sleep -Milliseconds 500 } }
+function Go-FirstClip { foreach ($i in 1..5) { if ((Get-ClipUp) -eq 1) { break }; Send-Key 0x27 1 4; Start-Sleep -Milliseconds 500 } }
 # the title is left alone during play: space stops it, and then it says where the folder is. it has played for
 # longer than its three clips last, so it has gone round past the file that does not open
 Send-Key 0x0D 1 1; Start-Sleep -Milliseconds 1500; Send-Key 0x20
 Assert-Title 'shift + enter plays the folder, past the file that does not open, without the one not on the disk' ' / \d . .* . clip [123] of 4( . \d+ held at cuts)?$'
 Go-FirstClip
 Assert-Title 'the first clip is the first by name' '^hap_64\.mov . \d / 3 . .* . clip 1 of 4'
-Send-Key 0x22; Assert-Title 'page down goes to the next clip' '^prores_64\.mov . .* . clip 2 of 4'
-Send-Key 0x21; Assert-Title 'page up goes back' '^hap_64\.mov . .* . clip 1 of 4'
-Send-Key 0x21; Assert-Title 'page up from the first clip goes round to the last, which does not open and says why' '^eyepiece . .*y_broken\.mov'
-Send-Key 0x21; Assert-Title 'and page up again goes on to the clip before it' '^x_roll\.mov . .* . clip 3 of 4'
+Send-Key 0x27 1 4; Assert-Title 'control + right goes to the next clip' '^prores_64\.mov . .* . clip 2 of 4'
+Send-Key 0x25 1 4; Assert-Title 'control + left goes back' '^hap_64\.mov . .* . clip 1 of 4'
+Send-Key 0x25 1 4; Assert-Title 'control + left from the first clip goes round to the last, which does not open and says why' '^eyepiece . .*y_broken\.mov'
+Send-Key 0x25 1 4; Assert-Title 'and control + left again goes on to the clip before it' '^x_roll\.mov . .* . clip 3 of 4'
 Go-FirstClip
 # the folder's tab (fig. 14): "browse /" from 12 (8 letters 6.9 wide), then the count, "1 of 4", between two arrows
 # 16.9 wide with their room. the arrows do what the page keys do

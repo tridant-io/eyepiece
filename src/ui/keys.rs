@@ -94,8 +94,8 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("new tab", "new tab", "N", Key::N, NONE),
             both("switch tabs", "previous tab", "[", Key::BracketLeft, NONE),
             both("switch tabs", "next tab", "]", Key::BracketRight, NONE),
-            both("previous / next clip", "previous clip of the folder", "page up", Key::PageUp, NONE),
-            both("previous / next clip", "next clip of the folder", "page down", Key::PageDown, NONE),
+            both("previous / next clip", "previous clip of the folder", "ctrl left", Key::Left, CTRL),
+            both("previous / next clip", "next clip of the folder", "ctrl right", Key::Right, CTRL),
             menu_only("close tab", "ctrl W", Key::W, CTRL),
             menu_only("reopen closed tab", "ctrl shift T", Key::T, CTRL_SHIFT),
         ],
@@ -321,7 +321,7 @@ mod tests {
     fn the_table_of_keys_is_the_designs_as_built() {
         let keys: Vec<String> = sections().into_iter().flat_map(|(_, lines)| lines.into_iter().map(|(keys, _)| keys)).collect();
         let wanted = [
-            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "page up down", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
+            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "ctrl left right", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
         ];
         assert_eq!(keys, wanted);
         assert_eq!(named(Key::Comma, CTRL), Some(("settings".to_string(), "ctrl ,".to_string())));

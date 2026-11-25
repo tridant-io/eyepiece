@@ -1456,7 +1456,7 @@ impl Ui {
         let [title, arrow, count, space] = folder_pieces(&painter, place, family);
         painter.galley(Pos2::new(text.left(), top), painter.layout_no_wrap(format!("{} /", place.folder), font(family, 11.5), DIM), DIM);
         let at = text.left() + title + arrow;
-        for (left, glyph, key) in [(at - arrow, "‹", Key::PageUp), (at + count, "›", Key::PageDown)] {
+        for (left, glyph, key) in [(at - arrow, "‹", Key::Left), (at + count, "›", Key::Right)] {
             let hit = Rect::from_min_max(Pos2::new(left, text.top()), Pos2::new(left + arrow, text.bottom())).intersect(text);
             let mut lit = false;
             if hit.is_positive() {
@@ -1465,9 +1465,9 @@ impl Ui {
                     if !up {
                         actions.push(Action::SelectTab(i));
                     }
-                    actions.push(Action::Key(key, keys::NONE));
+                    actions.push(Action::Key(key, keys::CTRL));
                 }
-                self.hint(&response, keys::named(key, keys::NONE));
+                self.hint(&response, keys::named(key, keys::CTRL));
                 lit = response.hovered();
             }
             let color = if lit { FG } else { DIM };
@@ -2315,7 +2315,7 @@ pub(super) mod tests {
         }
     }
 
-    /// the design's fig. 14: a folder's tab has arrows beside its count that do what page up and page down do, on
+    /// the design's fig. 14: a folder's tab has arrows beside its count that do what control with an arrow does, on
     /// that tab, whether its clip opened or not. a click elsewhere on the tab that is up still shows the list. here
     /// "browse /" is 8 of the type's 6.9-wide letters from 12, each arrow 16.9 wide with its room, the count 41.4
     #[test]
@@ -2326,10 +2326,10 @@ pub(super) mod tests {
         let screen = |clip, error| Screen { tabs: vec!["browse / 1 of 4 · hap_64.mov", "browse / 2 of 4 · prores_64.mov"], current: 0, places: vec![place(0), place(1)], clip, error, opening: None, list: Some(list()), browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
         let up = screen(Some(model()), None);
-        assert_eq!(drive_on(&mut ui, &up, &click(next, 16.0)), vec![Action::Key(Key::PageDown, keys::NONE)]);
+        assert_eq!(drive_on(&mut ui, &up, &click(next, 16.0)), vec![Action::Key(Key::Right, keys::CTRL)]);
         assert!(ui.menu.is_none(), "an arrow does not open the list");
         std::thread::sleep(Duration::from_millis(350));
-        assert_eq!(drive_on(&mut ui, &up, &click(previous, 16.0)), vec![Action::Key(Key::PageUp, keys::NONE)]);
+        assert_eq!(drive_on(&mut ui, &up, &click(previous, 16.0)), vec![Action::Key(Key::Left, keys::CTRL)]);
         std::thread::sleep(Duration::from_millis(350));
         assert_eq!(drive_on(&mut ui, &up, &click(count, 16.0)), vec![]);
         assert!(ui.menu == Some(Menu::List), "the count shows the list");
@@ -2337,10 +2337,10 @@ pub(super) mod tests {
         // brings it up and steps it
         let other = 12.0 + 55.2 + 2.0 * 16.9 + 41.4 + 6.9 + 69.0 + 28.0;
         std::thread::sleep(Duration::from_millis(350));
-        assert_eq!(drive_on(&mut ui, &up, &click(other + next, 16.0)), vec![Action::SelectTab(1), Action::Key(Key::PageDown, keys::NONE)]);
+        assert_eq!(drive_on(&mut ui, &up, &click(other + next, 16.0)), vec![Action::SelectTab(1), Action::Key(Key::Right, keys::CTRL)]);
         // a clip of the folder that did not open: its tab steps on all the same
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
-        assert_eq!(drive_on(&mut ui, &screen(None, Some("it does not open")), &click(next, 16.0)), vec![Action::Key(Key::PageDown, keys::NONE)]);
+        assert_eq!(drive_on(&mut ui, &screen(None, Some("it does not open")), &click(next, 16.0)), vec![Action::Key(Key::Right, keys::CTRL)]);
         // and the type has the arrows: a sign it lacks is drawn as an empty box
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts());

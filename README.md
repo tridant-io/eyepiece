@@ -109,6 +109,7 @@ in development, with no release. the mac build opens its window, plays clips (wi
 
 - rest the pointer on the metadata button to read it; click it, or press **I**, to pin it at the top right. **copy all** puts it on the clipboard.
 - it reads the file's name, size, date and path; the container; the codec and its profile; the picture's size, frame count, frame rate and duration; bit depth and chroma; color (matrix, primaries, transfer) and range; alpha; the audio; the timecode; and for a sequence, its run of files and any missing frames.
+- **aspect** says whether the pixels are square and the picture's shape (16:9, 2.39:1). a file that asks for other pixels (anamorphic footage) is drawn here with square pixels, as stored, and the row says so. **profile** gives h.264's and hevc's profile and level ("high · level 5.1"). **key frames** says how far apart they are ("every 250 frames"), where not every frame is one.
 - the bit rate is worked out, not read from the file's summary: the bytes stored for the frames shown, and all of the file's bytes, each over the picture's length.
 - **labeled, never guessed.** every value is read from the file, or is dim and says the file does not state it and what is assumed instead. frame counts and rates come from the file's own table.
 - a fault in the file (a sound track shorter or longer than the picture, frames missing from a sequence, a variable frame rate, a first frame that cannot be read) is amber, and an amber dot on the metadata button says the file has one.
@@ -138,7 +139,7 @@ a played folder is a folder's clips, played one after another in name order, in 
 
 - **start one** from the browser with **open folder** (**shift + enter**), or pick several videos there and press **open selected** (or **enter**). a folder dropped on the window, given at launch or handed over by a second launch plays too.
 - **loop all** (the folder's default) goes round the folder; **one** stays in the clip that is up; **off** plays the folder through once and stops on its last frame.
-- **page up** and **page down** go to the clip before and after, round the ends. the arrows either side of the clip's place on the tab do the same.
+- **ctrl + ←** and **ctrl + →** (**cmd** on a mac) go to the clip before and after, round the ends. the arrows either side of the clip's place on the tab do the same.
 - the tab names the folder, the clip's place in it and the clip (`wall / ‹ 2 of 19 › wall_v012.mov`). a click on the tab lists the folder's clips, each with its size, rate and frames; a size or rate that differs from the first clip's is amber, which is how the one odd clip in a folder is found. a click on a row goes to that clip.
 - the window is sized once, to the folder's biggest clip, and every clip is fitted inside it, so nothing jumps at a cut. the clips before and after the one on screen are kept ready, so a cut only swaps pictures.
 - the loop mode, speed, look and loop analysis carry from clip to clip; between two clips of one size and length, the frame, zoom and pan carry too, so two versions flip on the spot.
@@ -268,7 +269,7 @@ on a mac, command does what control does.
 | O | open: the browser over this tab |
 | N | new tab |
 | [ · ] | previous / next tab |
-| page up · page down | previous / next clip of the folder |
+| ctrl + ← · ctrl + → | previous / next clip of the folder |
 | ctrl + W | close tab |
 | ctrl + shift + T | reopen closed tab |
 

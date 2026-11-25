@@ -27,6 +27,8 @@ const LICENSE: &str = "https://spdx.org/licenses/CPAL-1.0.html";
 /// what eyepiece is, in the owner's words (2026-11-24)
 const WHAT: &str = "a video review player for video professionals: extremely fast, lightweight, and only what you need.";
 
+/// the program's icon on about: twice the design's 64 (the owner's word, 2026-11-24)
+const ICON: f32 = 128.0;
 /// the panel at the design's scale; its sidebar's width, and its page's head and foot
 const WIDTH: f32 = 760.0;
 const HEIGHT: f32 = 500.0;
@@ -194,9 +196,14 @@ impl Ui {
         }
         painter.rect_filled(Rect::from_min_size(Pos2::new(head.left(), head.bottom() - 1.0), Vec2::new(head.width(), 1.0)), 0.0, LINE);
 
-        let foot = Rect::from_min_max(Pos2::new(page.left(), page.bottom() - FOOT), page.max);
+        // about alone has no foot: it has nothing to reset, and saying so says nothing
+        let footless = panel.which == Which::Settings && panel.page == ABOUT;
+        let foot = Rect::from_min_max(Pos2::new(page.left(), page.bottom() - if footless { 0.0 } else { FOOT }), page.max);
         let body = Rect::from_min_max(Pos2::new(page.left() + 20.0, head.bottom() + 2.0), Pos2::new(page.right() - 20.0, foot.top() - 8.0));
         let (reset, note) = self.page(ui, panel, body, s, actions);
+        if footless {
+            return closed;
+        }
 
         // the foot: "reset this page" where the page has one, then what is fixed or where the page comes from
         painter.rect_filled(Rect::from_min_size(foot.min, Vec2::new(foot.width(), 1.0)), 0.0, LINE);
@@ -227,7 +234,7 @@ impl Ui {
             (Which::Settings, 1) => {
                 let check_at_start = s.update_check;
                 scrolled(ui, body, id, |ui| self.about(ui, body.height(), check_at_start, actions));
-                (false, "nothing to reset here")
+                (false, "")
             }
             (Which::Settings, 2) => {
                 scrolled(ui, body, id, |ui| playback(ui, s));
@@ -292,7 +299,7 @@ impl Ui {
         let painter = ui.painter().clone();
         ui.add_space(16.0);
         // the icon, and beside it what the program is: the column's lines with the room above each
-        let column = width - 64.0 - 16.0;
+        let column = width - ICON - 20.0;
         let mut version = LayoutJob::default();
         version.append(VERSION, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 12.0), color: FG, ..Default::default() });
         version.append(&format!(" · {COMMIT}"), 0.0, TextFormat { font_id: font(MONO_MEDIUM, 12.0), color: DIM, ..Default::default() });
@@ -308,11 +315,11 @@ impl Ui {
             (painter.layout_job(system), 9.0),
         ];
         let height: f32 = lines.iter().map(|(galley, above)| galley.size().y + above).sum();
-        let (block, _) = ui.allocate_exact_size(Vec2::new(width, height.max(64.0)), Sense::hover());
-        let (icon, pixels) = self.on_pixels(Pos2::new(block.left() + 32.0, block.center().y), Vec2::splat(64.0));
+        let (block, _) = ui.allocate_exact_size(Vec2::new(width, height.max(ICON)), Sense::hover());
+        let (icon, pixels) = self.on_pixels(Pos2::new(block.left() + ICON / 2.0, block.center().y), Vec2::splat(ICON));
         painter.image(self.pictures.get(ui.ctx(), Art::Icon, pixels), icon, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
         let mut top = block.center().y - height / 2.0;
-        let left = block.left() + 64.0 + 16.0;
+        let left = block.left() + ICON + 20.0;
         let mut whose = Rect::NOTHING;
         for (galley, above) in lines {
             top += above;

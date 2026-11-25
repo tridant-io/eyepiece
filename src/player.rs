@@ -1189,7 +1189,7 @@ impl Tabs {
         }
     }
 
-    /// page up and page down: the folder's clip before or after, round its ends, counted from the one on its way
+    /// control with an arrow: the folder's clip before or after, round its ends, counted from the one on its way
     /// when there is one, so presses in a row each go one further.
     fn step_item(&mut self, by: i64, gpu: &Gpu, wake: &Sender<Event>) {
         let tab = self.tab();
@@ -1812,12 +1812,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // from the row of tools), is no command's
                 Event::Char(_) if command && !ui.typing() => command = false,
                 Event::Char(c) if browsing && !ui.typing() => ui.browser_char(c),
+                // control with an arrow: the played folder's clip before or after (the owner's word, 2026-11-24, in place
+                // of page up and page down)
+                Event::Key { key: key @ (Key::Left | Key::Right), mods } if mods.ctrl && !mods.alt => tabs.step_item(if key == Key::Left { -1 } else { 1 }, &gpu, &wake),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
                 // the next display), the readout, the guides, the loop mode and loop analysis, markup mode
-                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::E | Key::Up | Key::Down | Key::PageUp | Key::PageDown) => match key {
+                Event::Key { key, mods } if !mods.ctrl && !mods.alt && matches!(key, Key::N | Key::O | Key::P | Key::T | Key::D | Key::C | Key::R | Key::A | Key::S | Key::I | Key::M | Key::E | Key::Up | Key::Down) => match key {
                     Key::N => tabs.new_tab(),
-                    Key::PageUp => tabs.step_item(-1, &gpu, &wake),
-                    Key::PageDown => tabs.step_item(1, &gpu, &wake),
                     Key::M => {
                         settings.mute = !settings.mute;
                         loudness(&mut speaker, settings);

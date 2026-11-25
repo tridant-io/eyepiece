@@ -304,6 +304,28 @@ impl Input {
         }
     }
 
+    /// a stream's pixel aspect, as (the container's, the coded stream's), each (width, height) where it is stated: the
+    /// container's from its own header (mov's pasp, mkv's display size), the stream's from its parameters (h.264's
+    /// and hevc's vui, read by `probe`).
+    pub fn pixel_aspect(&self, stream: usize) -> (Option<(i32, i32)>, Option<(i32, i32)>) {
+        let stated = |q: ffi::AVRational| (q.num > 0 && q.den > 0).then_some((q.num, q.den));
+        unsafe {
+            let st = *(*self.ctx).streams.add(stream);
+            (stated((*st).sample_aspect_ratio), stated((*(*st).codecpar).sample_aspect_ratio))
+        }
+    }
+
+    /// after `probe`: the coded stream's profile, by the codec's own name for it, and its level as the stream numbers
+    /// it. none where the stream does not say.
+    pub fn profile(&self, stream: usize) -> (Option<String>, Option<i32>) {
+        unsafe {
+            let par = (**(*self.ctx).streams.add(stream)).codecpar;
+            let name = ffi::avcodec_profile_name((*par).codec_id, (*par).profile);
+            let name = (!name.is_null()).then(|| CStr::from_ptr(name).to_string_lossy().to_lowercase());
+            (name, ((*par).level > 0).then_some((*par).level))
+        }
+    }
+
     /// every audio stream, as the container describes it. read before `probe`, which fills a missing length with a guess.
     pub fn audio(&self) -> Vec<Audio> {
         (0..self.streams())
