@@ -38,13 +38,13 @@ in development, with no release. the mac build opens its window, plays clips (wi
 3. **step.** **F** and **G**, or **←** and **→**, step one frame back and forward. **shift** with an arrow steps ten. **home** and **end** go to the first and last frame. the wheel scrubs one frame a notch.
 4. **fill the screen.** **P** or a double-click on the picture goes fullscreen, **shift + P** goes fullscreen on the next display, and **esc** comes back.
 5. **the controls** come up when the pointer moves, and go 2.4 s after it rests off them or leaves the window. keys never bring them up. the pin at the far left of the bar keeps them up, and is kept between runs.
-6. **find a key.** **?** lays the table of keys over the picture. a right-click lists every command with its key, and resting on a button names what it does and its key.
+6. **find a key.** **?** opens help on its page of keys. a right-click lists every command with its key, and resting on a button names what it does and its key.
 
 ## features
 
 ### the window
 
-- **the strip** along the top holds the tabs, **+** for a new tab, and minimize, maximize and close. drag it to move the window; double-click it to maximize.
+- **the strip** along the top holds the tabs, **+** for a new tab, then at its right **?** for help, the gear for settings and the tridant mark, then minimize, maximize and close. drag it to move the window; double-click it to maximize. rest the pointer on the mark for the version and a link to tridant.io; press it for about. while a newer release is out, a quiet **update** button stands left of **?**.
 - **the bar** along the bottom holds the pin, previous frame, play, next frame and the readout (the frame or timecode, and the clip's length); then the loop, speed and zoom menus, the view menu, metadata, screenshot, sound and fullscreen; and the full-width timebar under them.
 - **chips** stay on the picture while it is not as the file has it: speed, zoom, loop analysis, mirror, flip, rotate, one channel alone, sound off.
 - with the controls away, what a key did is said at the lower left for a moment: the frame a step landed on (or its timecode), the clip a tab or page key brought up, the loop mode, the volume or the mute.
@@ -186,15 +186,21 @@ the browser shows when eyepiece starts with no file and in a new tab; **O** lays
 - **M** or the speaker button mutes. the speaker's slider comes out while the pointer is on it, and **↑** and **↓** turn the volume a tenth (**↑** also ends a mute). the volume and the mute are kept between runs.
 - only the tab that is up is heard, through the system's default output. channels beyond stereo are mixed down.
 
-### settings
+### settings, help and about
 
-the settings are kept in `%APPDATA%\eyepiece\settings.txt`, one `key = value` a line. the file is plain text and editable by hand; a line taken out gets its default.
+the gear on the strip, or **ctrl + ,**, opens settings: a panel over the picture with a page for each part of the player. a change takes effect at once; there is no save button, and each page has "reset this page". esc, the close mark or a press outside the panel closes it.
 
-- set from the player and kept: the readout (frames or timecode), the loop modes for a file and for a played folder, the loop analysis seconds, the volume and mute, the pin, the guides and their tile, the screenshot menu's switches, the browser's folder, recent folders, view and column widths, and the window's size.
-- in the file only, for now: `first_frame` (0 or 1), `guide_color`, `chroma` (`bilinear` or `nearest`), `screenshot_folder`, and `play_on_open` (`on`, or `off` to open a file paused on its first frame).
-- speed, zoom, pan, mirror, flip, rotate and channels start as the file has them in every tab, and markup is never kept.
+- **general:** play a file when it opens (on at first), open a file from the browser in this tab or a new one, one window, keep the controls up, how long the controls stay after the pointer rests, remember the window's size, check for updates when eyepiece starts, and where the settings file is.
+- **about:** the version and build, what eyepiece is, "a tridant system", whether an update is out (with check now), the links and the license.
+- **playback:** the loop modes, loop analysis seconds, frames or timecode, the first frame's number (0 or 1), volume and mute.
+- **display:** the color behind the picture (black, dark gray, mid gray or your own), chroma, the guides, their tile and their color.
+- **browser:** where it starts (where it was last, or a fixed folder), recent folders, and the preview cache: its size, its limit and clearing it.
+- **screenshots:** the folder (never one that holds media) and what a saved picture carries.
+- **open-source notices:** the notices installed beside the program, with find.
 
-**coming in the next release:** a settings panel drawn inside the window (the gear on the strip, or **ctrl + ,**), with pages for general, about, playback, display, browser, screenshots and the open-source notices. a change takes effect at once and goes into the same settings.txt. the **?** key, and a **?** button on the strip, will open help, with the table of keys and a short page on what eyepiece does. the about page will give the version, "a tridant system" and the license.
+**?** on the strip, or the **?** key, opens help: the keys, and a short page on what eyepiece does. any key closes help and then does what it does, so a key read there can be pressed at once.
+
+the settings are kept in `%APPDATA%\eyepiece\settings.txt`, one `key = value` a line, plain text and editable by hand; a line taken out gets its default. speed, zoom, pan, mirror, flip, rotate and channels start as the file has them in every tab, and markup is never kept.
 
 ![the settings panel open on its general page](docs/images/settings.png)
 
@@ -202,7 +208,7 @@ the settings are kept in `%APPDATA%\eyepiece\settings.txt`, one `key = value` a 
 
 ### updates
 
-planned: a check at launch, at most once a day, for a newer release on github, shown as a quiet **update** button on the strip and never a prompt; it can be switched off (see [privacy](#privacy)).
+on windows, eyepiece looks for a newer release on github once a frame is up, at most once a day. a newer one shows as a quiet **update** button on the strip, and nothing else: no prompt, no dialog. the button opens what the release is and what changed in it, with **update** and **cancel**. update downloads the release, checks every file against the sha-256 the release lists and that the program and its libraries are signed by Tridant, Inc. as the running one is, puts it in place of the running build and starts it again on the files open now. any failure leaves the installed version as it was and says why. a build that is not signed never updates itself. the switch is in settings, general; about has check now. the mac's updates will come with its app bundle, which is not built yet.
 
 ## formats
 
@@ -308,10 +314,11 @@ on a mac, command does what control does.
 | P | fullscreen |
 | shift + P | fullscreen on the next display |
 | right-click | every command |
-| ? | the table of keys |
+| ? | help, on its page of keys |
+| ctrl + , | settings |
 | esc | leave fullscreen, close |
 
-**esc** leaves fullscreen first, then drops markup text being typed, then closes a menu, then ends markup mode. with the table of keys up, any key takes it away and then does what it does; **esc** and **?** only take it away.
+**esc** leaves fullscreen first, then drops markup text being typed, then closes a menu, then ends markup mode. with help up, any key closes it and then does what it does; **esc** and **?** only close it.
 
 ### in the browser
 
@@ -334,8 +341,8 @@ in the browser, letters select names instead of running commands.
 
 ## privacy
 
-- **today, eyepiece sends nothing over the network.** it makes no request to any server. reading a file on a share is the file system's work, and on a network volume the browser reads only the folder's listing until you open a file or ask.
-- **the planned update check** will make one unauthenticated request to github for the latest release, at launch, at most once a day, carrying only `eyepiece/<version>` as its user agent: no account, id, file name or setting. like any connection it shows your public address and the time. a switch turns it off. a download happens only when you press update.
+- **the update check is all eyepiece sends.** on windows, at most once a day, it asks github for the latest release's manifest, with only `eyepiece/<version>` as its user agent: no account, id, file name or setting. like any connection it shows your public address and the time. a switch in settings turns it off. the release itself is downloaded only when you press update. the links on about and in help open your browser; eyepiece itself sends nothing else.
+- reading a file on a share is the file system's work, and on a network volume the browser reads only the folder's listing until you open a file or ask.
 - what eyepiece keeps stays on your machine: its settings file, the preview cache in the system's cache folder, and the screenshots you save.
 
 ## build from source
