@@ -1,13 +1,19 @@
-# writes THIRD-PARTY-NOTICES.txt for the windows release build: every crate compiled into eyepiece.exe with its license
-# and the text of it, ffmpeg, and the two typefaces. the same lock file, crates and ffmpeg always give the same bytes.
+# writes THIRD-PARTY-NOTICES.txt for a release build: every crate compiled into the program with its license and the
+# text of it, ffmpeg, and the two typefaces. the same lock file, crates and ffmpeg always give the same bytes.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\notices.ps1          writes dist\eyepiece\THIRD-PARTY-NOTICES.txt
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\notices.ps1 -Check   fails, naming the crate, on a license off the allow list
+#   ... -Target aarch64-apple-darwin -Ffmpeg <folder> -Out <file>   for the mac: <folder> holds a copy of the mac's
+#   libavutil dylib and source.txt, as spike/mac/setup.sh leaves them (scripts/package-mac.sh fetches them)
 # the texts come from each crate's own source in the local cargo registry, so the crates must have been fetched (any
 # cargo build does that). scripts\package.ps1 runs it.
-param([string]$Out, [string]$Ffmpeg, [switch]$Check)
+param([string]$Out, [string]$Ffmpeg, [string]$Target = 'x86_64-pc-windows-msvc', [switch]$Check)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
-$target = 'x86_64-pc-windows-msvc'
+$target = $Target
+$mac = $target -like '*-apple-darwin'
+# what the notices call the program, and where its ffmpeg is
+$exe = if ($mac) { 'the eyepiece program' } else { 'eyepiece.exe' }
+$libs = if ($mac) { 'libav*.dylib and libswresample.dylib files in eyepiece.app/Contents/Frameworks' } else { 'av*.dll and sw*.dll files beside eyepiece.exe' }
 if (-not $Out) { $Out = Join-Path $repo 'dist\eyepiece\THIRD-PARTY-NOTICES.txt' }
 $Out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
 
@@ -79,7 +85,7 @@ $program = $meta.packages | Where-Object { $_.id -eq $meta.resolve.root }
 $byName = @{}
 foreach ($p in $meta.packages) { $byName["$($p.name) v$($p.version)"] += @($p) }
 
-# what is linked into the program: its normal dependencies on windows. build scripts, what they use (bindgen, cc) and
+# what is linked into the program: its normal dependencies on the target. build scripts, what they use (bindgen, cc) and
 # proc macros only run while it compiles. the tree's first line is the program itself.
 $tree = Invoke-Cargo tree --quiet --locked --target $target --edges 'normal,no-proc-macro' --prefix none --format '{p}' --manifest-path $manifest
 $seen = @{}
@@ -175,11 +181,23 @@ Add-Text 'Archivo' 'OFL-1.1' (Join-Path $fonts 'Archivo-OFL.txt')
 # ffmpeg, as the libraries themselves say: one build, its license and its configuration. by default the one the build
 # links against: FFMPEG_DIR, else what scripts\setup.ps1 fetched.
 if (-not $Ffmpeg) { $Ffmpeg = if ($env:FFMPEG_DIR) { $env:FFMPEG_DIR } else { Join-Path $repo 'third_party\ffmpeg' } }
+if ($mac) {
+    $avutil = Get-Item (Join-Path $Ffmpeg 'libavutil.*.dylib')
+    if (@($avutil).Count -ne 1) { throw "want one libavutil dylib in $Ffmpeg" }
+    # "ffmpeg source <commit> <day> <branch>", as setup.sh wrote it
+    $source = (Get-Content -LiteralPath (Join-Path $Ffmpeg 'source.txt') -TotalCount 1) -split ' '
+    $ffVersion = "$($source[4]) at commit $($source[2]) ($($source[3]))"
+    $revision = "commit $($source[2])"
+    $release = $source[4] -replace '^release/', ''
+    $copyright = "Copyright (c) 2000-$($source[3].Substring(0, 4)) the FFmpeg developers"
+} else {
 if (-not (Test-Path (Join-Path $Ffmpeg 'bin\avutil-*.dll'))) { throw "no ffmpeg in $Ffmpeg`: run scripts\setup.ps1 first" }
 $versions = @(Get-ChildItem (Join-Path $Ffmpeg 'bin') -Filter '*.dll' | ForEach-Object { $_.VersionInfo.ProductVersion } | Select-Object -Unique)
 if ($versions.Count -ne 1) { throw "the ffmpeg libraries are not one build: $($versions -join ', ')" }
 $ffVersion = $versions[0]
 $avutil = Get-Item (Join-Path $Ffmpeg 'bin\avutil-*.dll')
+$copyright = $avutil.VersionInfo.LegalCopyright
+}
 $raw = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($avutil.FullName))
 $ffLicense = [regex]::Match($raw, '(L?GPL version [\d.]+ or later|nonfree and unredistributable)').Value
 if ($ffLicense -notlike 'LGPL *') { throw "this ffmpeg is '$ffLicense', not lgpl, and must not ship (adr 0005)" }
@@ -187,35 +205,47 @@ $at = $raw.IndexOf('--enable-shared')
 if ($at -lt 0) { throw 'this ffmpeg was not built as shared libraries, and must not ship (adr 0005)' }
 $from = $raw.LastIndexOf([char]0, $at) + 1
 $config = $raw.Substring($from, $raw.IndexOf([char]0, $at) - $from)
+if (-not $mac) {
 $download = [regex]::Match([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'setup.ps1')), 'https://github\.com/BtbN/FFmpeg-Builds/[^''"\s]+').Value
 if (-not $download) { throw 'scripts\setup.ps1 no longer says where ffmpeg comes from' }
 $revision = if ($ffVersion -match '-g([0-9a-f]+)') { "commit $($Matches[1])" } else { "tag $ffVersion" }
 if ($ffVersion -notmatch '^n?(\d+\.\d+)') { throw "cannot read ffmpeg's release from its version '$ffVersion'" }
 $release = $Matches[1]
+}
 
 $rule = '=' * 100
 $doc = New-Object 'System.Collections.Generic.List[string]'
 function Add-Line([string[]]$Lines) { foreach ($l in $Lines) { $doc.Add($l) } }
-Add-Line "third-party notices: eyepiece $($program.version) for windows x64", '',
+Add-Line "third-party notices: eyepiece $($program.version) for $(if ($mac) { 'macos on apple silicon' } else { 'windows x64' })", '',
     'eyepiece contains open source software made by others. each part is under its own license:', '',
-    "  1. ffmpeg, the separate av*.dll and sw*.dll files beside eyepiece.exe: $ffLicense",
-    "  2. $($crates.Count) rust crates built into eyepiece.exe: $taken",
-    '  3. two typefaces built into eyepiece.exe: OFL-1.1', '',
+    "  1. ffmpeg, the separate $libs`: $ffLicense",
+    "  2. $($crates.Count) rust crates built into $exe`: $taken",
+    "  3. two typefaces built into $exe`: OFL-1.1", '',
     'section 4 gives each license text once, worded as the parts ship it, with the copyright lines of every part',
     'it covers.', ''
 
 Add-Line $rule, '1. ffmpeg', '',
-    "eyepiece reads and decodes video with ffmpeg (https://ffmpeg.org). $($avutil.VersionInfo.LegalCopyright).",
-    "license: $ffLicense, as the build itself says. the text is ffmpeg-LICENSE.txt beside this file.",
-    "version: $ffVersion, the windows build made by https://github.com/BtbN/FFmpeg-Builds,",
-    "downloaded from $download",
-    "source: https://git.ffmpeg.org/ffmpeg.git at $revision. the scripts that made the build are at",
-    'https://github.com/BtbN/FFmpeg-Builds.', '',
-    'ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll beside it, which eyepiece loads',
-    'from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build',
-    "release $release, or a later one whose libraries keep the same major versions (the number in each file name), as shared",
-    'libraries and put your files in place of these. eyepiece needs nothing else to use them.', '',
-    'how this build of ffmpeg was configured:'
+    "eyepiece reads and decodes video with ffmpeg (https://ffmpeg.org). $copyright.",
+    "license: $ffLicense, as the build itself says. the text is ffmpeg-LICENSE.txt beside this file."
+if ($mac) {
+    Add-Line "version: $ffVersion, built from source for macos 13 and later by spike/mac/setup.sh in",
+        "https://github.com/tridant-io/eyepiece. source: https://git.ffmpeg.org/ffmpeg.git at $revision.", '',
+        "ffmpeg is not part of $exe. it is the separate $libs, which eyepiece loads when it",
+        'starts. you may replace them with ffmpeg built your own way, changed or not: build',
+        "release $release, or a later one whose libraries keep the same major versions (the number in each file name), as shared",
+        'libraries and put your files in place of these. eyepiece needs nothing else to use them. a changed app no longer',
+        "carries tridant's signature: sign it again with your own, or ad hoc (codesign --force --deep --sign - eyepiece.app).", ''
+} else {
+    Add-Line "version: $ffVersion, the windows build made by https://github.com/BtbN/FFmpeg-Builds,",
+        "downloaded from $download",
+        "source: https://git.ffmpeg.org/ffmpeg.git at $revision. the scripts that made the build are at",
+        'https://github.com/BtbN/FFmpeg-Builds.', '',
+        'ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll beside it, which eyepiece loads',
+        'from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build',
+        "release $release, or a later one whose libraries keep the same major versions (the number in each file name), as shared",
+        'libraries and put your files in place of these. eyepiece needs nothing else to use them.', ''
+}
+Add-Line 'how this build of ffmpeg was configured:'
 $line = ''
 foreach ($word in $config -split ' ') {
     if ($line -and $line.Length + 1 + $word.Length -gt 98) { Add-Line "  $line"; $line = $word } else { $line = "$line $word".Trim() }
@@ -226,7 +256,7 @@ $wide = ($crates | ForEach-Object { $_.Who.Length } | Measure-Object -Maximum).M
 $wideExpr = ($crates | ForEach-Object { $_.Expression.Length } | Measure-Object -Maximum).Maximum + 2
 $wideTake = ($crates | ForEach-Object { ($_.Take -join ' AND ').Length } | Measure-Object -Maximum).Maximum + 2
 Add-Line $rule, '2. rust crates', '',
-    "the $($crates.Count) crates built into eyepiece.exe, each from crates.io at the version shown. where a crate offers a",
+    "the $($crates.Count) crates built into $exe, each from crates.io at the version shown. where a crate offers a",
     'choice of licenses, eyepiece takes the first it offers of these:',
     "  $($allowed -join ', ')",
     'section 4 has the text of the license taken, as the crate ships it, and any license file of the crate that does not',
@@ -243,7 +273,7 @@ if ($bare.Count) {
 }
 
 Add-Line $rule, '3. typefaces', '',
-    'the controls are drawn in ibm plex mono and archivo, which are built into eyepiece.exe. both are under the SIL Open',
+    "the controls are drawn in ibm plex mono and archivo, which are built into $exe. both are under the SIL Open",
     'Font License 1.1: the text is in section 4, and in the fonts-*.txt files beside this file.', ''
 
 foreach ($g in $texts.Values) {

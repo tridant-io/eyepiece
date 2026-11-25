@@ -34,6 +34,16 @@ pub enum Applying {
     Failed(String),
 }
 
+/// what the modal's go button says and asks for, given the release's page: on windows the update itself; on a mac,
+/// which does not update itself yet, the release's page, where its disk image is
+fn go(page: &str) -> (&'static str, Action) {
+    if cfg!(target_os = "macos") {
+        ("download", Action::OpenUrl(page.to_string()))
+    } else {
+        ("update", Action::StartUpdate)
+    }
+}
+
 /// the modal's width, and the picture behind it darkened as behind a panel
 const WIDTH: f32 = 440.0;
 const SHADE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 153);
@@ -155,7 +165,11 @@ impl Ui {
                     if release.notes.len() > 3 {
                         lines.push((words(&painter, &format!("and {} more in the release notes.", release.notes.len() - 3), 12.0, DIM, inner), 8.0, None));
                     }
-                    let what = format!("update downloads it from github, checks it is Tridant, Inc.'s, puts it in place of {current} and starts it again on the files open now.");
+                    let what = if cfg!(target_os = "macos") {
+                        format!("download opens the release on github: open its disk image and drag eyepiece to applications, in place of {current}.")
+                    } else {
+                        format!("update downloads it from github, checks it is Tridant, Inc.'s, puts it in place of {current} and starts it again on the files open now.")
+                    };
                     lines.push((words(&painter, &what, 12.0, DIM, inner), 14.0, None));
                 }
                 Applying::Downloading(done, all) => lines.push((words(&painter, &format!("download {} of {}", megabytes(*done), megabytes(*all)), 12.0, FG, inner), 22.0, None)),
@@ -214,7 +228,7 @@ impl Ui {
             if buttons {
                 let row = rect.bottom() - 20.0 - 26.0;
                 let (first, second) = match applying {
-                    Applying::No => (Some("cancel"), Some("update")),
+                    Applying::No => (Some("cancel"), Some(go(&release.page).0)),
                     Applying::Failed(_) => (Some("close"), Some("try again")),
                     _ => (Some("cancel"), None),
                 };
@@ -222,7 +236,10 @@ impl Ui {
                 if let Some(label) = second {
                     let wide = button_width(ui, label);
                     if button(ui, "update-go", Rect::from_min_size(Pos2::new(right - wide, row), Vec2::new(wide, 26.0)), label, true) {
-                        actions.push(Action::StartUpdate);
+                        let (_, asked) = go(&release.page);
+                        // a mac's go is a page in the browser: the modal has done its part
+                        close = matches!(asked, Action::OpenUrl(_));
+                        actions.push(asked);
                     }
                     right -= wide + 6.0;
                 }
@@ -247,22 +264,17 @@ impl Ui {
         }
     }
 
-    /// about's update line (fig. 34): what the last look for a release found, and check now, or see the update. on
-    /// a mac there is none yet: its updates come with an app bundle, which is not built.
+    /// about's update line (fig. 34): what the last look for a release found, and check now, or see the update
     pub(super) fn update_line(&mut self, ui: &mut egui::Ui, check_at_start: bool, actions: &mut Vec<Action>) {
         let width = ui.available_width();
         let painter = ui.painter().clone();
-        let (title, sub, label, busy) = if cfg!(target_os = "macos") {
-            ("updates come with the mac's app bundle".to_string(), "it is not built yet: a newer version is installed by hand.".to_string(), None, false)
-        } else {
-            match &self.updates {
-                Updates::Unchecked if !check_at_start => ("checks at start are off".to_string(), "turned off in general. check now still asks, once.".to_string(), Some("check now"), false),
-                Updates::Unchecked => ("not looked for in this run".to_string(), "eyepiece asks github at most once a day.".to_string(), Some("check now"), false),
-                Updates::Checking => ("checking for updates".to_string(), "asking github for the latest release".to_string(), Some("check now"), true),
-                Updates::Current(at) => ("up to date".to_string(), format!("checked today at {at}"), Some("check now"), false),
-                Updates::Found(release, _) => (format!("eyepiece {} is out", release.version), format!("you have {} · released {}", super::panel::VERSION, release.date), Some("see the update"), false),
-                Updates::Failed(at) => ("could not check".to_string(), format!("github did not answer at {at}. it is asked again at the next start."), Some("check now"), false),
-            }
+        let (title, sub, label, busy) = match &self.updates {
+            Updates::Unchecked if !check_at_start => ("checks at start are off".to_string(), "turned off in general. check now still asks, once.".to_string(), Some("check now"), false),
+            Updates::Unchecked => ("not looked for in this run".to_string(), "eyepiece asks github at most once a day.".to_string(), Some("check now"), false),
+            Updates::Checking => ("checking for updates".to_string(), "asking github for the latest release".to_string(), Some("check now"), true),
+            Updates::Current(at) => ("up to date".to_string(), format!("checked today at {at}"), Some("check now"), false),
+            Updates::Found(release, _) => (format!("eyepiece {} is out", release.version), format!("you have {} · released {}", super::panel::VERSION, release.date), Some("see the update"), false),
+            Updates::Failed(at) => ("could not check".to_string(), format!("github did not answer at {at}. it is asked again at the next start."), Some("check now"), false),
         };
         let room = width - 28.0 - label.map_or(0.0, |l| button_width(ui, l) + 14.0);
         let title = painter.layout_no_wrap(title, font(SANS, 12.5), FG);
@@ -284,6 +296,22 @@ impl Ui {
                     actions.push(Action::CheckUpdates);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// the update's go button: on windows it updates; on a mac it opens the release's page, where its disk image is
+    #[test]
+    fn the_go_button_updates_on_windows_and_opens_the_release_on_a_mac() {
+        let page = "https://github.com/tridant-io/eyepiece/releases/tag/v0.3.0";
+        if cfg!(target_os = "macos") {
+            assert_eq!(go(page), ("download", Action::OpenUrl(page.to_string())));
+        } else {
+            assert_eq!(go(page), ("update", Action::StartUpdate));
         }
     }
 }

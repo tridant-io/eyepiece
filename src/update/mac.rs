@@ -1,5 +1,6 @@
-//! the update on macos: the check alone, through the system's url session. a mac build is updated with its app
-//! bundle, which is not built yet, so download, apply and relaunch say so and change nothing.
+//! the update on macos: the check alone, through the system's url session. a mac does not update itself yet: the
+//! update's button opens the release's page, where its disk image is, so download, apply and relaunch are never
+//! asked for, and say so and change nothing if they are.
 
 use super::{split, Release, AGENT, WAIT};
 use block2::RcBlock;
@@ -9,7 +10,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
-const NOT_YET: &str = "updates on the mac come with the app bundle, which is not built yet";
+const NOT_YET: &str = "a mac does not update itself yet: its new version is downloaded from the release's page";
 
 pub fn download(_: &Release, _: &Path, _: &mut dyn FnMut(u64, u64), _: &AtomicBool) -> Result<(), String> {
     Err(NOT_YET.to_string())

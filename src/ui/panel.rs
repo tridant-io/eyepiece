@@ -257,7 +257,7 @@ impl Ui {
             }
             (Which::Settings, _) => {
                 notices(ui, panel, body, actions);
-                (false, "THIRD-PARTY-NOTICES.txt, then ffmpeg-LICENSE.txt, as installed beside the program")
+                (false, "THIRD-PARTY-NOTICES.txt, then ffmpeg-LICENSE.txt, as installed with the program")
             }
             (Which::Help, 0) => {
                 scrolled(ui, body, id, keys_page);
@@ -355,9 +355,15 @@ impl Ui {
     }
 }
 
+/// where a release puts the license and the notices: beside the program, or in a mac app's resources
+fn texts() -> Option<std::path::PathBuf> {
+    let folder = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    Some(if cfg!(target_os = "macos") { folder.join("../Resources") } else { folder })
+}
+
 /// what "read it" opens: the license beside the program, when there is one, or its text on spdx's site
 fn license() -> String {
-    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("LICENSE")));
+    let beside = texts().map(|folder| folder.join("LICENSE"));
     beside.filter(|file| file.is_file()).map_or(LICENSE.to_string(), |file| file.to_string_lossy().into_owned())
 }
 
@@ -737,10 +743,10 @@ impl Laid {
 }
 
 impl Notices {
-    /// THIRD-PARTY-NOTICES.txt, then ffmpeg-LICENSE.txt, from the program's own folder. a build run from the source
+    /// THIRD-PARTY-NOTICES.txt, then ffmpeg-LICENSE.txt, from where the release puts them (`texts`). a build run from the source
     /// tree has neither, and says where they come from.
     fn read() -> Notices {
-        let folder = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.to_path_buf()));
+        let folder = texts();
         let read = |name: &str| folder.as_ref().and_then(|folder| std::fs::read_to_string(folder.join(name)).ok()).map(|text| text.trim_start_matches('\u{feff}').to_string());
         let (ours, ffmpeg) = (read("THIRD-PARTY-NOTICES.txt"), read("ffmpeg-LICENSE.txt"));
         let mut paras = ours.as_deref().map_or_else(Vec::new, |text| paragraphs(text, true));
