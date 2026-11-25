@@ -24,10 +24,6 @@ pub fn relaunch(_: &Path, _: &[OsString]) -> Result<(), String> {
     Err(NOT_YET.to_string())
 }
 
-/// nothing is ever set aside on a mac
-pub fn tidy(_: &Path) -> Vec<String> {
-    Vec::new()
-}
 
 /// asks for `url` and gives its body, refusing one longer than `limit`. an ephemeral session keeps no cookie, cache
 /// or credential, and the request carries the player's user agent and no language of the user's
