@@ -202,7 +202,12 @@ impl Settings {
             ("browser_start", path(&self.browser_start)),
             ("browser_recent", recent.join(" | ")),
             ("browser_view", word(&VIEWS, self.browser_view)),
-            ("browser_widths", format!("{} {} {}", self.browser_widths.side, self.browser_widths.column, self.browser_widths.meta)),
+            // the sidebar, the columns as far as the last one dragged, the metadata column
+            ("browser_widths", {
+                let w = &self.browser_widths;
+                let columns = w.columns.iter().rposition(|&c| c != crate::browse::COLUMN).map_or(0, |last| last + 1);
+                std::iter::once(w.side).chain(w.columns[..columns].iter().copied()).chain([w.meta]).map(|n| n.to_string()).collect::<Vec<_>>().join(" ")
+            }),
             ("browser_opens_in", word(&OPENS, self.browser_opens_in)),
             ("cache_limit", self.cache_limit.to_string()),
             ("play_on_open", word(&SWITCH, self.play_on_open)),
@@ -242,8 +247,15 @@ impl Settings {
             "browser_recent" => self.browser_recent = v.split('|').filter_map(|p| folder(p.trim())).collect(),
             "browser_view" => self.browser_view = pick(&VIEWS, v)?,
             "browser_widths" => {
-                let [side, column, meta]: [f32; 3] = v.split_whitespace().map(|n| n.parse().ok()).collect::<Option<Vec<f32>>>()?.try_into().ok()?;
-                self.browser_widths = crate::browse::Widths { side, column, meta }.kept();
+                // the sidebar, then each column's, then the metadata column's. a column not named has the design's width
+                let n: Vec<f32> = v.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?;
+                let (&side, rest) = n.split_first()?;
+                let (&meta, columns) = rest.split_last()?;
+                let mut widths = crate::browse::Widths { side, meta, ..Default::default() };
+                for (depth, &width) in columns.iter().enumerate().take(crate::browse::COLUMNS) {
+                    widths.set_column(depth, width);
+                }
+                self.browser_widths = widths.kept();
             }
             "browser_opens_in" => self.browser_opens_in = pick(&OPENS, v)?,
             "cache_limit" => self.cache_limit = number(v, 1.0, 64.0)?,
@@ -369,7 +381,7 @@ mod tests {
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
             browser_view: crate::browse::View::List,
-            browser_widths: crate::browse::Widths { side: 180.0, column: 200.5, meta: 300.0 },
+            browser_widths: { let mut w = crate::browse::Widths { side: 180.0, meta: 300.0, ..Default::default() }; w.set_column(2, 200.5); w },
             play_on_open: false,
             browser_opens_in: Opens::NewTab,
             one_window: false,

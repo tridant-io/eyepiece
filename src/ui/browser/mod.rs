@@ -336,22 +336,36 @@ struct Layout {
 impl Layout {
     /// `shown` columns on the path; `card`: one is selected, so the metadata column is wanted.
     fn new(area: Rect, shown: usize, card: bool, view: View, widths: Widths) -> Layout {
-        let Widths { side, column, meta: wide } = widths;
+        let (side, wide) = (widths.side, widths.meta);
         // with the column alone showing, the cards keep no room
         let least = if view == View::List { 0.0 } else { MAIN_MIN };
-        let meta = card && area.width() - side - column - wide >= least;
-        let room = area.width() - side - if meta { wide } else { 0.0 };
-        let fit = (((room - least) / column).floor().max(1.0) as usize).min(shown);
+        let deepest = widths.column(shown.saturating_sub(1));
+        let meta = card && area.width() - side - deepest - wide >= least;
+        let room = area.width() - side - if meta { wide } else { 0.0 } - least;
+        // the deepest columns that fit, each at its own width, and always the deepest one
+        let mut fit = 0;
+        let mut taken = 0.0;
+        while fit < shown && (fit == 0 || taken + widths.column(shown - fit - 1) <= room) {
+            taken += widths.column(shown - fit - 1);
+            fit += 1;
+        }
+        let first = shown - fit;
         let x = |offset: f32| area.left() + offset;
         let top = area.top() + PATH_LINE;
         let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, top), Pos2::new(to.max(from), area.bottom()));
-        let main = x(side + fit as f32 * column);
+        let mut left = side;
+        let columns = (first..shown)
+            .map(|depth| {
+                left += widths.column(depth);
+                span(x(left - widths.column(depth)), x(left))
+            })
+            .collect();
         Layout {
             side: Rect::from_min_max(area.min, Pos2::new(x(side), area.bottom())),
             address: Rect::from_min_max(Pos2::new(x(side), area.top()), Pos2::new(area.right(), top)),
-            first: shown - fit,
-            columns: (0..fit).map(|i| span(x(side + i as f32 * column), x(side + (i + 1) as f32 * column))).collect(),
-            main: span(main, if meta { area.right() - wide } else { area.right() }),
+            first,
+            columns,
+            main: span(x(left), if meta { area.right() - wide } else { area.right() }),
             meta: meta.then(|| span(area.right() - wide, area.right())),
         }
     }
@@ -669,8 +683,7 @@ impl State {
     }
 
     /// the edges the parts are resized by, each 7 wide over its rule: the sidebar's right, every folder column's right
-    /// (they share one width, so the edge stays under the pointer whichever is dragged), the metadata column's left.
-    /// a double click puts an edge back where the design has it.
+    /// (each column its own), the metadata column's left. a double click puts an edge back where the design has it.
     fn edges(&mut self, ui: &egui::Ui, layout: &Layout) {
         let at = ui.ctx().pointer_latest_pos();
         let grab = |name: usize, x: f32, rect: Rect| {
@@ -693,10 +706,10 @@ impl State {
             let (on, to, back) = grab(1 + i, rect.right(), *rect);
             over |= on;
             if let Some(x) = to {
-                self.widths.column = (x - layout.side.right()) / (i + 1) as f32;
+                self.widths.set_column(layout.first + i, x - rect.left());
             }
             if back {
-                self.widths.column = Widths::default().column;
+                self.widths.set_column(layout.first + i, browse::COLUMN);
             }
         }
         if let Some(rect) = layout.meta {
@@ -1623,14 +1636,19 @@ mod tests {
         // fig. 28's width with a card selected: two columns, the main area, the metadata column
         let layout = Layout::new(area(1240.0), 5, true, View::Both, Widths::default());
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_some()), (3, 2, true));
-        assert_eq!((layout.main.left(), layout.main.width()), { let w = Widths::default(); (w.side + 2.0 * w.column, 1240.0 - w.side - 2.0 * w.column - w.meta) });
+        assert_eq!((layout.main.left(), layout.main.width()), { let w = Widths::default(); (w.side + 2.0 * browse::COLUMN, 1240.0 - w.side - 2.0 * browse::COLUMN - w.meta) });
         // with nothing selected there is no metadata column, and more columns fit
         assert_eq!(Layout::new(area(1240.0), 5, false, View::Both, Widths::default()).columns.len(), 4);
         // with the column alone showing, the cards keep no room: the columns have it
         assert_eq!(Layout::new(area(1240.0), 9, false, View::List, Widths::default()).columns.len(), 6);
         // wider columns, fewer of them; a wider sidebar moves all after it
-        let wide = Layout::new(area(1240.0), 5, false, View::Both, Widths { side: 200.0, column: 240.0, meta: 316.0 });
+        let wide = Layout::new(area(1240.0), 5, false, View::Both, Widths { side: 200.0, columns: [240.0; browse::COLUMNS], meta: 316.0 });
         assert_eq!((wide.columns.len(), wide.columns[0].left(), wide.main.left()), (2, 200.0, 680.0));
+        // each column at its own width: the fourth of five 300 wide takes one column's room, so three fit, not four
+        let mut widths = Widths::default();
+        widths.set_column(3, 300.0);
+        let own = Layout::new(area(1240.0), 5, false, View::Both, widths);
+        assert_eq!((own.first, own.columns.iter().map(|c| c.width()).collect::<Vec<_>>()), (2, vec![browse::COLUMN, 300.0, browse::COLUMN]));
         // narrow: one column, the deepest, and no metadata column
         let layout = Layout::new(area(700.0), 5, true, View::Both, Widths::default());
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_none()), (4, 1, true));
@@ -1787,8 +1805,8 @@ mod tests {
         assert_eq!(state.address, Some(gone.to_string_lossy().into_owned()));
     }
 
-    /// an edge dragged resizes its part, and the folders' columns share one width, so the edge of the second stays
-    /// under the pointer; a double click on an edge puts it back. the widths keep within what keeps every part usable.
+    /// an edge dragged resizes its part, each folder column alone, so the edge stays under the pointer; a double click
+    /// on an edge puts it back. the widths keep within what keeps every part usable.
     #[test]
     fn the_parts_are_resized_by_their_edges() {
         let folder = std::env::temp_dir().join("eyepiece-no-such-edges");
@@ -1817,11 +1835,12 @@ mod tests {
         };
         drag(&mut state, &mut pass_with, 150.0, 210.0);
         assert_eq!(state.widths.side, 210.0);
-        // the second column's right edge, at 210 + 2 x 168, dragged 40 right: each column is 20 wider
+        // the second column's right edge, at 210 + 2 x 168, dragged 40 right: that column alone is 40 wider
         let columns = state.nav.drawn();
         if columns >= 2 {
             drag(&mut state, &mut pass_with, 210.0 + 2.0 * 168.0, 210.0 + 2.0 * 168.0 + 40.0);
-            assert_eq!(state.widths.column, 188.0);
+            let changed: Vec<f32> = state.widths.columns.iter().copied().filter(|&w| w != browse::COLUMN).collect();
+            assert_eq!(changed, vec![208.0], "the second column alone is wider; the first keeps its width");
         }
         drag(&mut state, &mut pass_with, 210.0, 20.0);
         assert_eq!(state.widths.side, 110.0, "no narrower than a row's name needs");

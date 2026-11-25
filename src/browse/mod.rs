@@ -66,26 +66,41 @@ pub enum View {
     List,
 }
 
-/// how wide the browser's parts are, in the design's px: the sidebar, each folder's column, the metadata column.
-/// each is dragged by its edge and kept between runs; a double click on an edge puts it back.
+/// how wide the browser's parts are, in the design's px: the sidebar, each folder's column by its place along the
+/// path (the first from the root, then the next), the metadata column. each is dragged by its own edge and kept
+/// between runs; a double click on an edge puts it back.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Widths {
     pub side: f32,
-    pub column: f32,
+    pub columns: [f32; COLUMNS],
     pub meta: f32,
 }
+
+/// the columns that keep a width of their own: one deeper than these is as wide as the last
+pub const COLUMNS: usize = 16;
+/// a column's width until it is dragged (figs. 27 and 28)
+pub const COLUMN: f32 = 168.0;
 
 impl Default for Widths {
     /// the design's (figs. 27 and 28)
     fn default() -> Widths {
-        Widths { side: 150.0, column: 168.0, meta: 316.0 }
+        Widths { side: 150.0, columns: [COLUMN; COLUMNS], meta: 316.0 }
     }
 }
 
 impl Widths {
     /// within what keeps every part usable: a sidebar row's name, a column's names, the metadata's facts
     pub fn kept(self) -> Widths {
-        Widths { side: self.side.clamp(110.0, 360.0), column: self.column.clamp(120.0, 480.0), meta: self.meta.clamp(240.0, 640.0) }
+        Widths { side: self.side.clamp(110.0, 360.0), columns: self.columns.map(|w| w.clamp(120.0, 480.0)), meta: self.meta.clamp(240.0, 640.0) }
+    }
+
+    /// the width of the column at `depth` along the path
+    pub fn column(&self, depth: usize) -> f32 {
+        self.columns[depth.min(COLUMNS - 1)]
+    }
+
+    pub fn set_column(&mut self, depth: usize, width: f32) {
+        self.columns[depth.min(COLUMNS - 1)] = width;
     }
 }
 
