@@ -317,8 +317,10 @@ struct State {
     over_edge: bool,
     /// the pass it was last drawn in
     drawn: u64,
-    /// a folder being walked for its subfolders' clips, to play them: one at a time
+    /// a folder being walked for its subfolders' clips, to play them: one at a time. a network folder's walk is kept
+    /// while the player's ask about it stands: asked for again then, it plays what was counted, with no second walk
     walks: Jobs<Result<Clips, String>>,
+    walked: Option<(PathBuf, Clips, Instant)>,
     /// the right-click menu: what it is on and where it was asked for; and where it was last drawn
     menu: Option<(On, Pos2)>,
     menu_rect: Rect,
@@ -512,6 +514,7 @@ impl State {
             over_edge: false,
             drawn: 0,
             walks: Jobs::new(),
+            walked: None,
             menu: None,
             menu_rect: Rect::NOTHING,
             copied: None,
@@ -607,6 +610,9 @@ impl State {
         }
         self.read.extend(self.metas.answers());
         for (folder, clips) in self.walks.answers() {
+            if let Some(found) = clips.as_ref().ok().filter(|_| browse::volume_of(&folder) == Volume::Network) {
+                self.walked = Some((folder.clone(), found.clone(), Instant::now()));
+            }
             self.choose(Chosen::PlayTree(folder, clips));
         }
         self.nav.settle();
@@ -708,10 +714,13 @@ impl State {
             Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
             Click::PlayFolder(to) => self.choose(Chosen::PlayFolder(to)),
             // off the drawing thread, as a folder is listed: played when its answer comes in
-            Click::PlayTree(to) => {
-                self.walks.keep_only(|_| false);
-                self.walks.ask(to, folder::walk);
-            }
+            Click::PlayTree(to) => match self.walked.take().filter(|(of, _, at)| *of == to && at.elapsed() < folder::ASKED_FOR) {
+                Some((_, clips, _)) => self.choose(Chosen::PlayTree(to, Ok(clips))),
+                None => {
+                    self.walks.keep_only(|_| false);
+                    self.walks.ask(to, folder::walk);
+                }
+            },
             Click::Read(file) => {
                 self.asked.insert(file);
             }
@@ -2216,6 +2225,39 @@ mod tests {
         assert_eq!(browser.state().menu, None, "a press outside puts it away");
         browser.key(Key::Enter, Mods { shift: true, ctrl: true, alt: false });
         assert!(browser.state().walks.waiting(&dome), "control + shift + enter walks the folder shown");
+    }
+
+    /// the player asks before it plays a network folder. asked for again while that stands, the folder plays the walk
+    /// that was counted, with no second walk, which on a slow share could outlast the ask and so ask for ever. later
+    /// than that, it is walked again.
+    #[cfg(windows)]
+    #[test]
+    fn a_network_folder_asked_for_again_plays_the_walk_it_was_asked_about() {
+        let mut made = Scratch(Vec::new());
+        let top = made.folder(std::env::temp_dir().join(format!("eyepiece-asked-{}", std::process::id())));
+        made.file(top.join("a.mov"));
+        let share = shared(&top);
+        let mut state = State::new(Some(share.clone()), Vec::new(), None);
+        let walked = |state: &mut State| {
+            for _ in 0..200 {
+                state.take_answers();
+                if let Some(Chosen::PlayTree(_, Ok(clips))) = state.chosen.take() {
+                    return clips;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            panic!("the walk did not come");
+        };
+        state.click(Click::PlayTree(share.clone()));
+        let first = walked(&mut state);
+        assert_eq!(first.items, [share.join("a.mov")]);
+        state.click(Click::PlayTree(share.clone()));
+        assert!(matches!(&state.chosen, Some(Chosen::PlayTree(_, Ok(again))) if *again == first) && !state.walks.busy(), "a second walk");
+        state.walked = Some((share.clone(), first, Instant::now().checked_sub(folder::ASKED_FOR).unwrap()));
+        state.chosen = None;
+        state.click(Click::PlayTree(share.clone()));
+        assert!(state.chosen.is_none() && state.walks.waiting(&share), "a walk kept too long played");
+        walked(&mut state);
     }
 
     /// read again, a folder shows what was put in it since, and not before; what was read of its files goes, to be

@@ -1077,7 +1077,7 @@ impl Tabs {
         let deep = clips.as_ref().is_ok_and(|clips| clips.deep);
         let asked = asking.take().is_some_and(|(of, walked, until)| of == folder && walked == deep && Instant::now() < until);
         let said = self.play_folder(gpu, folder, clips, wake, replace, asked)?;
-        *asking = (!asked).then(|| (folder.to_path_buf(), deep, Instant::now() + Duration::from_secs(8)));
+        *asking = (!asked).then(|| (folder.to_path_buf(), deep, Instant::now() + folder::ASKED_FOR));
         Some(said)
     }
 

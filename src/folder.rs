@@ -6,11 +6,14 @@ use crate::browse::{self, Entry, Kind, Volume};
 use crate::play;
 use crate::settings::Loop;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// a walk of a folder's subfolders gathers this many clips at most, and lists this many folders at most: at the top
 /// of a drive it would otherwise list for minutes
 pub const MOST_CLIPS: usize = 2000;
 pub const MOST_FOLDERS: usize = 10_000;
+/// how long a network folder that was asked about plays when it is asked for again
+pub const ASKED_FOR: Duration = Duration::from_secs(8);
 
 /// what a folder plays: its clips in order, how many were left out because their data is not on the disk, whether
 /// they come from its subfolders too (`deep`), and whether that walk stopped at its bound

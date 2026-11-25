@@ -927,6 +927,15 @@ foreach ($i in 1..100) { if ((Get-Kept).Count -ge $had + 2) { break }; Start-Sle
 Start-Sleep -Milliseconds 500
 Confirm-That 'asked for, the network folder''s two clips get their posters' ((Get-Kept).Count -eq $had + 2) "$((Get-Kept).Count - $had) files of pictures made, for 2 clips"
 Stop-Player
+# played with its subfolders, a network folder is asked about first, with its count, and nothing plays; asked for again
+# it plays what was counted
+Start-Player
+Start-Sleep -Milliseconds 2000
+Send-Key 0x0D 1 5; Start-Sleep -Milliseconds 1500
+Confirm-That 'control + shift + enter on a network folder asks first, and plays nothing' ((Get-Title) -eq 'eyepiece') "the title is '$(Get-Title)'"
+Send-Key 0x0D 1 5; Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'asked for again, it plays the folder''s two clips' ' . clip [12] of 2( . \d+ held at cuts)?$'
+Stop-Player
 foreach ($made in @($netCopies.Keys) + $net, $deep, $share) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
