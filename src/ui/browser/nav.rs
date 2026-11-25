@@ -2,8 +2,9 @@
 //! and how the keys move about them. plain logic: the module above lists the folders off the drawing thread and
 //! draws this.
 //!
-//! as in the design's fig. 28, a folder selected in the last column is shown in the main area before it is entered,
-//! with no column of its own; entering it (right, or a double click) gives it its column.
+//! as in the design's fig. 28, a folder selected in the last column is shown in the main area before it is entered;
+//! entering it (right, or a double click) moves the keys into it. the keys act in one place at a time, as in finder's
+//! column view: the last column entered, or the grid of cards.
 
 use super::Chosen;
 use crate::browse::{self, Entry, Kind, View, Volume};
@@ -24,20 +25,20 @@ pub struct Column {
     pub folder: PathBuf,
     /// the entry selected in it, by path: it holds while the listing is on its way, and is found again in a new one
     pub selected: Option<PathBuf>,
-    /// its first card is selected when its listing comes in, if nothing is by then
-    first_card: bool,
+    /// the keys came into it before its listing did: what they land on is chosen when it comes
+    arriving: bool,
     /// how far its list is scrolled, and whether its selection is still to be brought into view
     pub scroll: f32,
     pub reveal: bool,
 }
 
 impl Column {
-    fn new(folder: PathBuf, selected: Option<PathBuf>, first_card: bool) -> Column {
-        Column { folder, selected, first_card, scroll: 0.0, reveal: true }
+    fn new(folder: PathBuf, selected: Option<PathBuf>) -> Column {
+        Column { folder, selected, arriving: false, scroll: 0.0, reveal: true }
     }
 }
 
-/// where the arrows act: the last column, or the grid of cards
+/// where the arrows act: the last column entered, or the grid of cards
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Focus {
     Columns,
@@ -88,9 +89,9 @@ pub fn columns(root: &Path, folder: &Path) -> Vec<Column> {
     let mut out = Vec::new();
     for part in folder.strip_prefix(root).unwrap_or(Path::new("")).components() {
         let next = at.join(part);
-        out.push(Column::new(std::mem::replace(&mut at, next.clone()), Some(next), false));
+        out.push(Column::new(std::mem::replace(&mut at, next.clone()), Some(next)));
     }
-    out.push(Column::new(at, None, false));
+    out.push(Column::new(at, None));
     out
 }
 
@@ -191,8 +192,24 @@ impl Nav {
             return self.path.len();
         }
         let shown = self.shown().len();
-        let bare = shown > 1 && matches!(self.listings.get(&self.path[shown - 1].folder), Some(Ok(entries)) if !entries.iter().any(|e| e.kind == Kind::Folder));
-        shown - bare as usize
+        shown - (shown > 1 && self.bare()) as usize
+    }
+
+    /// with the cards alone showing, the last column entered has no folder in it to list
+    fn bare(&self) -> bool {
+        self.view == View::Gallery && matches!(self.listings.get(&self.path[self.active()].folder), Some(Ok(entries)) if !entries.iter().any(|e| e.kind == Kind::Folder))
+    }
+
+    /// the keys act in the grid: it was gone into, or with the cards alone showing it is all there is of the folder
+    /// shown. with the column alone showing there is no grid.
+    pub fn in_grid(&self) -> bool {
+        self.view != View::List && (self.focus == Focus::Grid || self.bare())
+    }
+
+    /// the column the keys act in, unless they act in the grid: its selection is drawn as the current one, and the
+    /// selections in the others as the way to it
+    pub fn current_column(&self) -> Option<usize> {
+        (!self.in_grid()).then(|| self.active())
     }
 
     /// what a column lists of a folder: everything in it, or with the cards alone showing its files, its folders.
@@ -230,9 +247,9 @@ impl Nav {
         self.entries(&self.main().folder).iter().filter(|e| is_card(e))
     }
 
-    /// the selected card
+    /// the selected card. a folder only shown has none: what was selected in it is not where the keys are
     pub fn card(&self) -> Option<&Entry> {
-        self.selected(self.main()).filter(|e| is_card(e))
+        self.selected(self.main()).filter(|e| is_card(e) && !self.previewing)
     }
 
     /// selects an entry of drawn column `at`: the columns after it go, and a folder is shown in the main area until it
@@ -242,11 +259,11 @@ impl Nav {
         let kept = folder && self.path.get(at + 1).is_some_and(|c| c.folder == entry);
         self.path.truncate(at + 1 + kept as usize);
         let column = &mut self.path[at];
-        (column.selected, column.reveal) = (Some(entry.clone()), true);
+        (column.selected, column.reveal, column.arriving) = (Some(entry.clone()), true, false);
         self.previewing = folder;
         if folder {
             if !kept {
-                self.path.push(Column::new(entry, None, true));
+                self.path.push(Column::new(entry, None));
             }
             self.focus = Focus::Columns;
         }
@@ -280,17 +297,82 @@ impl Nav {
         }
     }
 
-    /// left: the active column goes, and the folder it listed is shown in the main area. from the first column, the
-    /// folder above comes in on the left.
+    /// right, or enter, on a folder: into it, onto what was selected in it before, else its first entry. a folder
+    /// with nothing in it is not gone into.
+    fn into_folder(&mut self) {
+        let Some(folder) = self.selected_folder(&self.path[self.active()]) else { return };
+        if self.listings.contains_key(&folder) && self.listed(&folder).next().is_none() && !self.entries(&folder).iter().any(is_card) {
+            return;
+        }
+        self.enter();
+        self.arrive();
+    }
+
+    /// the keys have come into the active column: onto what was selected in it before, else its first entry. with
+    /// the cards alone showing, into its cards, unless a folder was selected in it. once its listing is in.
+    fn arrive(&mut self) {
+        let at = self.active();
+        let listed = self.listings.contains_key(&self.path[at].folder);
+        self.path[at].arriving = !listed;
+        if !listed {
+            return;
+        }
+        let folder = self.selected(&self.path[at]).is_some_and(|e| e.kind == Kind::Folder);
+        let first = self.cards().next().map(|e| e.path.clone());
+        if let Some(first) = first.filter(|_| self.view == View::Gallery && !folder) {
+            if self.card().is_none() {
+                self.select(at, first, false);
+            }
+            self.focus = Focus::Grid;
+            return;
+        }
+        self.focus = Focus::Columns;
+        let column = &self.path[at];
+        if !self.listed(&column.folder).any(|e| Some(&e.path) == column.selected.as_ref()) {
+            self.pick(0);
+        }
+    }
+
+    /// left: the keys go to the column on the left, and the column they leave stays, as what the folder they came
+    /// from holds. from the first column, the folder above comes in on the left; at the top of a drive or share
+    /// there is none.
     fn back(&mut self) {
+        if self.active() == 0 && !self.reroot() {
+            return;
+        }
         if self.previewing {
             self.path.pop();
         }
         self.previewing = true;
-        if self.path.len() == 1 && !self.reroot() {
-            self.previewing = false;
+        self.focus = Focus::Columns;
+    }
+
+    /// left from the grid: to the column that lists its cards, on the card, or with the cards alone showing and that
+    /// column not drawn, to the column on its left.
+    fn leave_grid(&mut self) {
+        if self.bare() {
+            return self.back();
         }
         self.focus = Focus::Columns;
+    }
+
+    /// right in a column: into a folder; from a video, or from nothing in the folder shown, into the grid on that video
+    /// or the first. with the column alone showing there is no grid to go into.
+    fn right(&mut self) {
+        let at = self.active();
+        match self.selected(&self.path[at]) {
+            Some(e) if e.kind == Kind::Folder => self.into_folder(),
+            _ if self.view == View::List => {}
+            Some(e) if is_card(e) => self.focus = Focus::Grid,
+            Some(_) => {}
+            None => {
+                let first = self.cards().next().map(|e| e.path.clone());
+                if let Some(first) = first {
+                    self.select(at, first, false);
+                    self.focus = Focus::Grid;
+                }
+            }
+        }
     }
 
     /// backspace: the main area shows the folder above the one it shows.
@@ -311,37 +393,38 @@ impl Nav {
     fn reroot(&mut self) -> bool {
         let first = self.path[0].folder.clone();
         let Some(parent) = first.parent().map(Path::to_path_buf) else { return false };
-        self.path.insert(0, Column::new(parent, Some(first), false));
+        self.path.insert(0, Column::new(parent, Some(first)));
         true
     }
 
-    /// up or down the active column. with nothing selected, either selects the first entry.
+    /// up or down the active column, stopping at its ends. with nothing selected, down selects the first entry and up
+    /// the last.
     fn step(&mut self, by: isize) {
         let column = &self.path[self.active()];
         let entries: Vec<&Entry> = self.listed(&column.folder).collect();
         let last = entries.len().saturating_sub(1) as isize;
         let at = column.selected.as_ref().and_then(|s| entries.iter().position(|e| &e.path == s));
-        self.pick(at.map_or(0, |i| (i as isize + by).clamp(0, last) as usize));
+        self.pick(at.map_or(if by > 0 { 0 } else { last as usize }, |i| (i as isize + by).clamp(0, last) as usize));
     }
 
-    /// the arrows, home and end in the grid. left from a card in its first column goes back to the columns.
+    /// the arrows, home and end in the grid: left and right go card by card in reading order, over the ends of the
+    /// rows, and up and down a row. left from the first card leaves the grid. with no card selected, right and down
+    /// select the first, up the last, and left leaves.
     fn move_card(&mut self, key: Key, per_row: usize) {
         let cards: Vec<PathBuf> = self.cards().map(|e| e.path.clone()).collect();
-        let Some(at) = cards.iter().position(|c| Some(c) == self.main().selected.as_ref()) else { return };
+        let at = cards.iter().position(|c| Some(c) == self.main().selected.as_ref());
         let n = cards.len();
-        let to = match key {
-            Key::Left if at % per_row == 0 => {
-                self.focus = Focus::Columns;
-                return;
-            }
-            Key::Left => at - 1,
-            Key::Right if at % per_row + 1 < per_row && at + 1 < n => at + 1,
-            Key::Up if at >= per_row => at - per_row,
-            Key::Down if at + per_row < n => at + per_row,
+        let to = match (key, at) {
+            (Key::Left, Some(0) | None) => return self.leave_grid(),
+            _ if n == 0 => return,
+            (Key::Home, _) | (Key::Right | Key::Down, None) => 0,
+            (Key::End, _) | (Key::Up, None) => n - 1,
+            (Key::Left, Some(i)) => i - 1,
+            (Key::Right, Some(i)) => (i + 1).min(n - 1),
+            (Key::Up, Some(i)) if i >= per_row => i - per_row,
+            (Key::Down, Some(i)) if i + per_row < n => i + per_row,
             // into the last row, which is shorter
-            Key::Down if at / per_row < (n - 1) / per_row => n - 1,
-            Key::Home => 0,
-            Key::End => n - 1,
+            (Key::Down, Some(i)) if i / per_row < (n - 1) / per_row => n - 1,
             _ => return,
         };
         self.select(self.active(), cards[to].clone(), false);
@@ -355,26 +438,25 @@ impl Nav {
             // a key that moves ends what was being typed (letters come as characters)
             self.typed.clear();
         }
+        // the grid was gone into, and the view has none now
+        if !self.in_grid() {
+            self.focus = Focus::Columns;
+        }
         match key {
             Key::Escape => return Some(Chosen::Back),
             Key::Enter if mods.shift => return Some(Chosen::PlayFolder(self.main().folder.clone())),
             Key::Enter => match self.card() {
                 Some(card) => return Some(Chosen::Open(card.path.clone())),
-                None => self.enter(),
+                None => self.into_folder(),
             },
             Key::Backspace => self.up(),
-            _ if self.focus == Focus::Grid => self.move_card(key, per_row.max(1)),
+            _ if self.in_grid() => self.move_card(key, per_row.max(1)),
             Key::Up => self.step(-1),
             Key::Down => self.step(1),
             Key::Home => self.pick(0),
             Key::End => self.pick(self.listed(&self.path[self.active()].folder).count().saturating_sub(1)),
             Key::Left => self.back(),
-            Key::Right => match self.selected(&self.path[self.active()]) {
-                Some(e) if e.kind == Kind::Folder => self.enter(),
-                // with the column alone showing there is no grid to go into
-                Some(e) if is_card(e) && self.view != View::List => self.focus = Focus::Grid,
-                _ => {}
-            },
+            Key::Right => self.right(),
             _ => {}
         }
         self.visit(matches!(key, Key::Up | Key::Down | Key::Home | Key::End));
@@ -389,7 +471,7 @@ impl Nav {
         }
         self.typed_at = Some(now);
         self.typed.extend(c.to_lowercase());
-        let (at, grid) = (self.active(), self.focus == Focus::Grid);
+        let (at, grid) = (self.active(), self.in_grid());
         let folders = self.view == View::Gallery;
         let found = self.entries(&self.path[at].folder).iter().find(|e| (if grid { is_card(e) } else { !folders || e.kind == Kind::Folder }) && e.name.to_lowercase().starts_with(&self.typed));
         if let Some((path, folder)) = found.map(|e| (e.path.clone(), e.kind == Kind::Folder)) {
@@ -407,16 +489,11 @@ impl Nav {
         self.focus = Focus::Grid;
     }
 
-    /// once the main area's listing is in: a folder just shown or entered gets its first card selected.
+    /// once the listing of a folder the keys came into is in: what they land on in it.
     pub fn settle(&mut self) {
-        let main = self.path.len() - 1;
-        if !self.path[main].first_card || !self.listings.contains_key(&self.path[main].folder) {
-            return;
-        }
-        self.path[main].first_card = false;
-        if self.path[main].selected.is_none() {
-            let first = self.cards().next().map(|e| e.path.clone());
-            self.path[main].selected = first;
+        let at = self.active();
+        if self.path[at].arriving && self.listings.contains_key(&self.path[at].folder) {
+            self.arrive();
         }
     }
 
@@ -472,6 +549,45 @@ mod tests {
         nav.shown().iter().map(|c| c.folder.as_path()).collect()
     }
 
+    fn name(path: &Path) -> String {
+        path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())
+    }
+
+    /// where the keys act, the grid or a column named by its folder, and what is selected there: "r: a.mov"
+    fn here(nav: &Nav) -> String {
+        let column = &nav.path[nav.active()];
+        let place = if nav.in_grid() { "grid".to_string() } else { name(&column.folder) };
+        format!("{place}: {}", column.selected.as_deref().map_or(String::new(), name))
+    }
+
+    /// a place `r` with a folder holding a folder and three clips, a folder with nothing in it, a folder of two clips,
+    /// then two clips and a file that is no video; shown as `view` has it
+    fn wide(view: View) -> Nav {
+        let r = at("no/such/r");
+        let mut nav = Nav::new(&r, std::slice::from_ref(&r));
+        nav.view = view;
+        let clips = |dir: &Path, names: &[&str]| names.iter().map(|n| entry(dir, n, Kind::Clip)).collect::<Vec<_>>();
+        let (mixed, shots) = (r.join("mixed"), r.join("shots"));
+        let folders = ["mixed", "none", "shots"].map(|n| entry(&r, n, Kind::Folder));
+        let files = clips(&r, &["a.mov", "b.mov"]).into_iter().chain([entry(&r, "notes.txt", Kind::Other)]);
+        nav.listings.insert(r.clone(), Ok(folders.into_iter().chain(files).collect()));
+        nav.listings.insert(mixed.clone(), Ok([entry(&mixed, "deep", Kind::Folder)].into_iter().chain(clips(&mixed, &["m1.mov", "m2.mov", "m3.mov"])).collect()));
+        nav.listings.insert(mixed.join("deep"), Ok(clips(&mixed.join("deep"), &["z.mov"])));
+        nav.listings.insert(r.join("none"), Ok(Vec::new()));
+        nav.listings.insert(shots.clone(), Ok(clips(&shots, &["c.mov", "d.mov"])));
+        nav
+    }
+
+    /// presses the keys, then says where the keys act and what is selected there
+    fn after(nav: &mut Nav, keys: &[Key]) -> String {
+        for key in keys {
+            press(nav, *key);
+        }
+        here(nav)
+    }
+
+    const VIEWS: [View; 3] = [View::Both, View::List, View::Gallery];
+
     fn opened(chosen: Option<Chosen>) -> Option<PathBuf> {
         match chosen {
             Some(Chosen::Open(file)) => Some(file),
@@ -506,20 +622,21 @@ mod tests {
         let shots = r.join("shots");
         assert_eq!(folders(&nav), [at("no/such"), r.clone()]);
         assert!(nav.card().is_none());
-        // down selects the first entry: a folder, shown in the main area with its first card selected, no column yet
+        // down selects the first entry: a folder, shown in the main area with nothing selected in it, not entered
         press(&mut nav, Key::Down);
         assert_eq!((nav.main().folder.as_path(), nav.previewing), (shots.as_path(), true));
-        assert_eq!(nav.card().map(|c| c.name.as_str()), Some("c.mov"));
+        assert!(nav.card().is_none());
         assert_eq!(folders(&nav).len(), 2);
-        // right enters it: a column of its own, the card still selected; down moves in it
+        // right enters it, onto its first card; down moves in it
         press(&mut nav, Key::Right);
         assert_eq!(folders(&nav), [at("no/such"), r.clone(), shots.clone()]);
+        assert_eq!(nav.card().map(|c| c.name.as_str()), Some("c.mov"));
         press(&mut nav, Key::Down);
         assert_eq!(nav.card().map(|c| c.name.as_str()), Some("d.mov"));
-        // left: its column goes and it is shown again, as it was
+        // left: it is shown again, with what was selected in it, but the keys are not there: no card is selected
         press(&mut nav, Key::Left);
         assert_eq!((folders(&nav).len(), nav.main().folder.as_path()), (2, shots.as_path()));
-        assert_eq!(nav.card().map(|c| c.name.as_str()), Some("d.mov"));
+        assert_eq!((nav.main().selected.clone(), nav.card().is_none()), (Some(shots.join("d.mov")), true));
         // down in the folder above leaves it for a clip there
         press(&mut nav, Key::Down);
         assert_eq!((nav.main().folder.as_path(), nav.previewing), (r.as_path(), false));
@@ -558,38 +675,28 @@ mod tests {
         assert_eq!(folders(&nav), [at("")]);
     }
 
+    /// in the grid, left and right go card by card in reading order, over the ends of the rows, and up and down a row;
+    /// each stops at the ends. left from the very first card goes back to the column, on that card.
     #[test]
-    fn the_arrows_move_about_the_grid_by_rows() {
+    fn the_grid_goes_card_by_card_in_reading_order_and_a_row_at_a_time() {
         let r = at("no/such/r");
         let mut nav = Nav::new(&r, std::slice::from_ref(&r));
         let names = ["c1.mov", "c2.mov", "c3.mov", "c4.mov", "c5.mov"];
         nav.listings.insert(r.clone(), Ok(names.iter().map(|n| entry(&r, n, Kind::Clip)).collect()));
-        let at = |nav: &Nav| nav.card().map(|c| c.name.clone()).unwrap_or_default();
         press(&mut nav, Key::Down);
-        // right from a clip in the column goes into the grid; two cards a row
+        // right from a clip in the column goes into the grid on it; two cards a row
         press(&mut nav, Key::Right);
-        assert_eq!(nav.focus, Focus::Grid);
-        press(&mut nav, Key::Right);
-        assert_eq!(at(&nav), "c2.mov");
-        // the end of a row is as far as right goes
-        press(&mut nav, Key::Right);
-        assert_eq!(at(&nav), "c2.mov");
-        press(&mut nav, Key::Down);
-        assert_eq!(at(&nav), "c4.mov");
-        // the last row is shorter: down goes to its last card
-        press(&mut nav, Key::Down);
-        assert_eq!(at(&nav), "c5.mov");
-        press(&mut nav, Key::Up);
-        assert_eq!(at(&nav), "c3.mov");
-        press(&mut nav, Key::Home);
-        assert_eq!(at(&nav), "c1.mov");
-        press(&mut nav, Key::End);
-        assert_eq!(at(&nav), "c5.mov");
-        // left from the grid's first column goes back to the columns, where up moves in the column again
+        assert_eq!(here(&nav), "grid: c1.mov");
+        let walk = [(Key::Right, "c2.mov"), (Key::Right, "c3.mov"), (Key::Left, "c2.mov"), (Key::Down, "c4.mov"), (Key::Down, "c5.mov"), (Key::Down, "c5.mov"), (Key::Right, "c5.mov"), (Key::Up, "c3.mov"), (Key::Up, "c1.mov"), (Key::Up, "c1.mov"), (Key::End, "c5.mov"), (Key::Left, "c4.mov"), (Key::Left, "c3.mov"), (Key::Home, "c1.mov")];
+        for (key, card) in walk {
+            press(&mut nav, key);
+            assert_eq!(here(&nav), format!("grid: {card}"), "after {key:?}");
+        }
+        // the column, on the card left from; up and down move in the column again
         press(&mut nav, Key::Left);
-        assert_eq!(nav.focus, Focus::Columns);
-        press(&mut nav, Key::Up);
-        assert_eq!(at(&nav), "c4.mov");
+        assert_eq!(here(&nav), "r: c1.mov");
+        press(&mut nav, Key::Down);
+        assert_eq!(here(&nav), "r: c2.mov");
     }
 
     #[test]
@@ -621,9 +728,17 @@ mod tests {
         let (mut nav, r) = tree();
         // nothing selected: enter does nothing
         assert!(press(&mut nav, Key::Enter).is_none());
-        // a folder only shown: enter opens its selected card, as the card is what is selected
+        assert_eq!(here(&nav), "r: ");
+        // a folder: enter goes into it as right does, and then opens the card it lands on
         press(&mut nav, Key::Down);
+        assert!(press(&mut nav, Key::Enter).is_none());
+        assert_eq!(here(&nav), "shots: c.mov");
         assert_eq!(opened(press(&mut nav, Key::Enter)), Some(r.join("shots").join("c.mov")));
+        // back out, the card is still selected in the folder shown, but enter goes into the folder, not to the card
+        press(&mut nav, Key::Left);
+        assert!(press(&mut nav, Key::Enter).is_none());
+        assert_eq!(here(&nav), "shots: c.mov");
+        press(&mut nav, Key::Left);
         press(&mut nav, Key::Down);
         assert_eq!(opened(press(&mut nav, Key::Enter)), Some(r.join("a.mov")));
         let shift = Mods { shift: true, ..Mods::default() };
@@ -767,15 +882,174 @@ mod tests {
         // down again finds no other folder: the files are the cards' business
         press(&mut nav, Key::Down);
         assert_eq!(nav.main().folder, shots);
-        // entered, shots has no folder to list, so no column of its own; its first card is selected, and right goes to it
+        // entered, shots has no folder to list, so no column of its own: right goes into its cards, on the first
         press(&mut nav, Key::Right);
         assert_eq!((nav.shown().len(), nav.drawn()), (3, 2));
-        press(&mut nav, Key::Right);
-        assert!(nav.focus == Focus::Grid);
+        assert_eq!(here(&nav), "grid: c.mov");
+        // with the column alone the keys are in the column, where right finds no grid to go into
         nav.view = View::List;
-        nav.focus = Focus::Columns;
-        assert_eq!(nav.drawn(), 3);
+        assert_eq!((nav.drawn(), here(&nav)), (3, "shots: c.mov".to_string()));
         press(&mut nav, Key::Right);
-        assert!(nav.focus == Focus::Columns, "there is no grid to go into");
+        assert_eq!(here(&nav), "shots: c.mov", "there is no grid to go into");
+        press(&mut nav, Key::Down);
+        assert_eq!(here(&nav), "shots: d.mov");
+    }
+
+    /// up and down move in the column the keys are in and stop at its ends; with nothing selected, down takes the first
+    /// entry and up the last. a folder moved onto is shown in the main area, and the keys stay where they are.
+    #[test]
+    fn up_and_down_move_in_the_column_and_stop_at_its_ends() {
+        use Key::{Down, Left, Right, Up};
+        for view in VIEWS {
+            let last = if view == View::Gallery { "shots" } else { "notes.txt" };
+            let mut nav = wide(view);
+            assert_eq!(after(&mut nav, &[Down]), "r: mixed", "{view:?}");
+            assert_eq!((name(&nav.main().folder), nav.previewing, nav.card().is_none()), ("mixed".to_string(), true, true));
+            assert_eq!(after(&mut nav, &[Down; 7]), format!("r: {last}"), "{view:?}");
+            assert_eq!(after(&mut nav, &[Up; 7]), "r: mixed", "{view:?}");
+            assert_eq!(after(&mut wide(view), &[Up]), format!("r: {last}"), "{view:?}");
+        }
+        // in a column further in: down onto a video selects it in the folder shown, up onto a folder shows that
+        for view in [View::Both, View::List] {
+            let mut nav = wide(view);
+            assert_eq!(after(&mut nav, &[Down, Right, Down]), "mixed: m1.mov", "{view:?}");
+            assert_eq!((name(&nav.main().folder), nav.card().map(|c| c.name.as_str())), ("mixed".to_string(), Some("m1.mov")));
+            assert_eq!(after(&mut nav, &[Up]), "mixed: deep", "{view:?}");
+            assert_eq!((name(&nav.main().folder), nav.previewing), ("deep".to_string(), true));
+        }
+        // with the cards alone the column lists folders only
+        let mut nav = wide(View::Gallery);
+        assert_eq!(after(&mut nav, &[Down, Right, Left, Down]), "mixed: deep");
+        assert_eq!(after(&mut nav, &[Down]), "mixed: deep");
+    }
+
+    /// right: on a folder, into its column, onto what was selected there before, else its first entry; on a video,
+    /// into the grid on that card, and with nothing selected on the first. a folder with nothing in it and a file that
+    /// is no video go nowhere.
+    #[test]
+    fn right_goes_into_a_folder_onto_what_was_selected_there_else_its_first() {
+        use Key::{Down, End, Left, Right};
+        for view in [View::Both, View::List] {
+            let mut nav = wide(view);
+            assert_eq!(after(&mut nav, &[Down, Right]), "mixed: deep", "{view:?}");
+            assert_eq!((name(&nav.main().folder), nav.previewing), ("deep".to_string(), true), "its first entry, a folder, is shown");
+            assert_eq!(after(&mut nav, &[Right]), "deep: z.mov", "{view:?}");
+            assert_eq!(after(&mut wide(view), &[Down, Down, Right]), "r: none", "{view:?}");
+            assert_eq!(after(&mut wide(view), &[End, Right]), "r: notes.txt", "{view:?}");
+            let mut nav = wide(view);
+            assert_eq!(after(&mut nav, &[Down, Down, Down, Right, Down, Left]), "r: shots", "{view:?}");
+            assert_eq!(after(&mut nav, &[Right]), "shots: d.mov", "{view:?}");
+        }
+        assert_eq!(after(&mut wide(View::Both), &[Down, Right, Right, Right]), "grid: z.mov");
+        assert_eq!(after(&mut wide(View::Both), &[Right]), "grid: a.mov");
+        assert_eq!(after(&mut wide(View::Both), &[Down, Right, Right, Right, Right]), "grid: z.mov", "the last card is as far as it goes");
+        // with the column alone there is no grid to go into
+        assert_eq!(after(&mut wide(View::List), &[Down, Right, Right, Right]), "deep: z.mov");
+        assert_eq!(after(&mut wide(View::List), &[Right]), "r: ");
+        // with the cards alone the columns list folders: into a folder's cards when it has any, else into its folders
+        assert_eq!(after(&mut wide(View::Gallery), &[Right]), "grid: a.mov");
+        assert_eq!(after(&mut wide(View::Gallery), &[Down, Right]), "grid: m1.mov");
+        assert_eq!(after(&mut wide(View::Gallery), &[Down, Down, Right]), "r: none");
+        assert_eq!(after(&mut wide(View::Gallery), &[Down, Down, Down, Right]), "grid: c.mov");
+        let mut nav = wide(View::Gallery);
+        let mixed = at("no/such/r/mixed");
+        nav.listings.insert(mixed.clone(), Ok(vec![entry(&mixed, "deep", Kind::Folder)]));
+        assert_eq!(after(&mut nav, &[Down, Right]), "mixed: deep");
+        // a folder not listed yet: the keys go into it, and land on its first entry when its listing comes
+        for view in VIEWS {
+            let mut nav = wide(view);
+            let shots = at("no/such/r/shots");
+            let listing = nav.listings.remove(&shots).unwrap();
+            assert_eq!(after(&mut nav, &[Down, Down, Down, Right]), "shots: ", "{view:?}");
+            nav.listings.insert(shots, listing);
+            nav.settle();
+            assert_eq!(here(&nav), if view == View::Gallery { "grid: c.mov" } else { "shots: c.mov" }, "{view:?}");
+        }
+    }
+
+    /// left: the keys go to the column on the left, onto the folder they came from, which stays shown with what was
+    /// selected in it; from the first column the folder above comes in. from the grid's first card, back to the
+    /// column that lists the cards, on that card.
+    #[test]
+    fn left_goes_to_the_column_on_the_left_and_the_one_left_stays_shown() {
+        use Key::{Down, Left, Right};
+        for view in [View::Both, View::List] {
+            let mut nav = wide(view);
+            assert_eq!(after(&mut nav, &[Down, Right, Right]), "deep: z.mov", "{view:?}");
+            assert_eq!(after(&mut nav, &[Left]), "mixed: deep", "{view:?}");
+            assert_eq!((name(&nav.main().folder), nav.previewing, nav.drawn()), ("deep".to_string(), true, 3), "the column left stays");
+            assert_eq!(nav.main().selected.as_deref().map(name), Some("z.mov".to_string()));
+            assert_eq!(after(&mut nav, &[Left]), "r: mixed", "{view:?}");
+            assert_eq!(after(&mut nav, &[Left]), "such: r", "{view:?}");
+            assert_eq!(folders(&nav), [at("no/such")]);
+        }
+        assert_eq!(after(&mut wide(View::Both), &[Right, Left]), "r: a.mov");
+        // with the cards alone: from the first card to the column of the folder's own folders, or where it has none,
+        // to the column on the left
+        assert_eq!(after(&mut wide(View::Gallery), &[Down, Right, Left]), "mixed: m1.mov");
+        let mut nav = wide(View::Gallery);
+        assert_eq!(after(&mut nav, &[Down, Right, Left, Down, Right]), "grid: z.mov");
+        assert_eq!(after(&mut nav, &[Left]), "mixed: deep");
+        assert_eq!(after(&mut nav, &[Left]), "r: mixed");
+        assert_eq!(after(&mut nav, &[Right]), "mixed: deep", "back in, onto the folder it came from");
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_ends_of_the_column_or_the_grid() {
+        use Key::{Down, End, Home, Right};
+        for view in VIEWS {
+            let last = if view == View::Gallery { "shots" } else { "notes.txt" };
+            let mut nav = wide(view);
+            assert_eq!(after(&mut nav, &[End]), format!("r: {last}"), "{view:?}");
+            assert_eq!(after(&mut nav, &[Home]), "r: mixed", "{view:?}");
+        }
+        let mut nav = wide(View::Both);
+        assert_eq!(after(&mut nav, &[Down, Right, Down, Right, End]), "grid: m3.mov");
+        assert_eq!(after(&mut nav, &[Home]), "grid: m1.mov");
+        assert_eq!(after(&mut wide(View::Gallery), &[Right, End]), "grid: b.mov");
+    }
+
+    /// enter, backspace and typed names act where the keys are: in the grid a name selects a card, in a column an
+    /// entry of it, and with the cards alone a folder; backspace from the grid goes up a folder as from a column.
+    #[test]
+    fn enter_backspace_and_names_act_where_the_keys_are() {
+        use Key::{Backspace, Down, Right};
+        let t0 = Instant::now();
+        let mut nav = wide(View::Both);
+        assert_eq!(after(&mut nav, &[Down, Right, Down, Right]), "grid: m1.mov");
+        nav.char('m', t0);
+        nav.char('3', t0 + Duration::from_millis(50));
+        assert_eq!(here(&nav), "grid: m3.mov");
+        assert_eq!(opened(press(&mut nav, Key::Enter)), Some(at("no/such/r/mixed/m3.mov")));
+        assert_eq!(after(&mut nav, &[Backspace]), "r: mixed");
+        assert_eq!((name(&nav.main().folder), nav.previewing), ("r".to_string(), false));
+        nav.char('a', t0 + Duration::from_secs(5));
+        assert_eq!(here(&nav), "r: a.mov");
+        let mut nav = wide(View::Gallery);
+        nav.char('a', t0);
+        assert_eq!(here(&nav), "r: ", "with the cards alone the column lists no video");
+        nav.char('s', t0 + Duration::from_secs(5));
+        assert_eq!(here(&nav), "r: shots");
+    }
+
+    /// the keys act where the view draws them: switched to the column alone they are in the column; with the cards
+    /// alone and a folder that holds no folder, in the grid from the start, where left goes to the column on the left.
+    #[test]
+    fn the_keys_act_where_the_view_draws_them() {
+        use Key::{Down, Left, Right, Up};
+        let mut nav = wide(View::Both);
+        assert_eq!(after(&mut nav, &[Right, Right]), "grid: b.mov");
+        nav.view = View::List;
+        assert_eq!(here(&nav), "r: b.mov");
+        assert_eq!(after(&mut nav, &[Up]), "r: a.mov");
+        nav.view = View::Gallery;
+        assert_eq!(here(&nav), "r: a.mov");
+        assert_eq!(after(&mut nav, &[Right]), "grid: a.mov");
+        let mut nav = wide(View::Gallery);
+        nav.go(&at("no/such/r/shots"), &[at("no/such/r")]);
+        assert_eq!(here(&nav), "grid: ");
+        assert_eq!(after(&mut nav, &[Down]), "grid: c.mov");
+        assert_eq!(after(&mut nav, &[Left]), "r: shots");
+        assert_eq!(nav.current_column(), Some(0));
     }
 }

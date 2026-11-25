@@ -905,6 +905,64 @@ foreach ($made in @($nestCopies.Keys) + $inner, $dome, $wall, $nest) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
+# ---- the browser's keys act in one place at a time, as in finder's column view, and what is selected there is lit:
+# up and down move in the column the keys are in, right goes into a folder onto its first entry or into the grid on a
+# video, left goes back out, and in the grid left and right go card by card over the ends of the rows. enter opens what
+# is selected where the keys are, which the title names. the folders above the tree hold nothing else, so the columns
+# that fit show only what the test made
+$kwrap = Join-Path $env:APPDATA 'kwrap'; $kin = Join-Path $kwrap 'in'; $keys = Join-Path $kin 'keys'; $kshots = Join-Path $keys 'a_shots'; $kempty = Join-Path $keys 'b_empty'
+New-Item -ItemType Directory $kwrap, $kin, $keys, $kshots, $kempty | Out-Null
+$kcopies = [ordered]@{ (Join-Path $keys 'k1.mov') = 'hap_64.mov'; (Join-Path $keys 'k2.mov') = 'prores_64.mov' }
+foreach ($n in 1..5) { $kcopies[(Join-Path $kshots "c$n.mov")] = 'hap_64.mov' }
+foreach ($to in $kcopies.Keys) { Copy-Item -LiteralPath (Join-Path $media $kcopies[$to]) -Destination $to }
+function Start-Keys([string]$view) {
+    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $keys", 'mute = on', 'play_on_open = off', "browser_view = $view"
+    Start-Player; Start-Sleep -Milliseconds 1000
+}
+# enter opens what is selected where the keys are; O brings the browser back over it, as it was
+function Open-Here([string]$clip, [int]$count, [string]$what) {
+    $script:name = $clip; Send-Key 0x0D; Assert-Frame $what 0 $count
+    Send-Key 0x4F; Start-Sleep -Milliseconds 500
+}
+Start-Keys 'both'
+Send-Key 0x26
+Open-Here 'k2.mov' 4 'up with nothing selected selects the last entry'
+# home shows the folder of shots; right goes into it on its first clip, end to its last, right into the grid on that
+# card, and four lefts there go card by card to the first, over the ends of the rows
+Send-Key 0x24; Start-Sleep -Milliseconds 500; Send-Key 0x27; Send-Key 0x23; Send-Key 0x27; Send-Key 0x25 4
+Open-Here 'c1.mov' 3 'in the grid, left goes card by card over the ends of the rows'
+Send-Key 0x25; Send-Key 0x28
+Open-Here 'c2.mov' 3 'left from the first card goes back to the column on it, where down moves on'
+# lit: the row where the keys are, here the second clip in the last column, and not the folder of shots selected in the
+# column before, on the way there. each row's room right of its name holds its fill alone
+$fit = [math]::Max(1, [math]::Floor(((Get-Width) - 150 - 316 - 360) / 168)); $last = 150 + 168 * ($fit - 1)
+$lit = Get-Bright ($last + 100) (76 + 26.25 + 4) ($last + 168 - 25) (76 + 26.25 * 2 - 4) -Any
+$way = Get-Bright ($last - 168 + 100) (76 + 4) ($last - 25) (76 + 26.25 - 4) -Any
+$room = (168 - 125) * (26.25 - 8) * [math]::Pow([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0, 2)
+Confirm-That 'the selection where the keys are is lit, and the one in the column before is not' ($lit -gt 0.8 * $room -and $way -lt 0.05 * $room) "$lit and $way pixels lit of $([math]::Round($room))"
+# left goes to the column before, onto the folder of shots; down shows the empty folder, right goes nowhere from it,
+# and down moves on to a clip
+Send-Key 0x25; Send-Key 0x28; Start-Sleep -Milliseconds 500; Send-Key 0x27; Send-Key 0x28
+Open-Here 'k1.mov' 3 'right on a folder with nothing in it goes nowhere'
+Stop-Player
+# with the column alone: up takes the last entry, right on a video goes nowhere, as there is no grid, and up moves on
+Start-Keys 'list'
+Send-Key 0x26; Send-Key 0x27; Send-Key 0x26
+Open-Here 'k1.mov' 3 'with the column alone, right on a video goes nowhere'
+Stop-Player
+# with the cards alone the columns list folders only: right from nothing selected goes into the grid on its first
+# card, and on to the next; left back to the first and out to the column, where down shows the folder of shots and
+# right goes into its cards
+Start-Keys 'gallery'
+Send-Key 0x27; Send-Key 0x27
+Open-Here 'k2.mov' 4 'with the cards alone, right from nothing selected goes into the cards'
+Send-Key 0x25; Send-Key 0x25; Send-Key 0x28; Start-Sleep -Milliseconds 500; Send-Key 0x27
+Open-Here 'c1.mov' 3 'and left out of them, down to a folder and right into its cards'
+Stop-Player
+foreach ($made in @($kcopies.Keys) + $kshots, $kempty, $keys, $kin, $kwrap) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
 # ---- a network folder (fig. 29), through this pc's own share: the browser lists it and reads none of its files, so no
 # poster is made, until the note's button asks for its previews; then its two clips get theirs. the folders are as deep
 # as the columns that fit, so these list only what the test made

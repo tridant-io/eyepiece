@@ -29,9 +29,14 @@ const PANEL: Color32 = Color32::from_rgb(0x12, 0x12, 0x12);
 /// a card with no picture, and the file type written on it
 const PLAIN: Color32 = Color32::from_rgb(0x16, 0x16, 0x16);
 const PLAIN_TEXT: Color32 = Color32::from_rgb(0x5f, 0x5f, 0x5f);
-/// a selected row, rgba(255,255,255,.1), and a selected place, .08
-const ROW_ON: Color32 = Color32::from_rgba_premultiplied(26, 26, 26, 26);
+/// the row the keys act on, rgba(255,255,255,.2); a row selected on the way to it, .08, as a selected place is
+const ROW_ON: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51);
 const PLACE_ON: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
+/// the column or grid the keys act in, with nothing selected in it: outlined, as the design's focused player is,
+/// rgba(255,255,255,.45)
+const RING: Color32 = Color32::from_rgba_premultiplied(115, 115, 115, 115);
+/// a card selected on the way to the one the keys act on
+const CARD_PATH: Color32 = Color32::from_rgb(0x6d, 0x6d, 0x6d);
 const ROW_TEXT: Color32 = Color32::from_rgb(0xc9, 0xc9, 0xc9);
 /// a file that is not a video
 const ROW_DIM: Color32 = Color32::from_rgb(0x6d, 0x6d, 0x6d);
@@ -379,9 +384,9 @@ enum Click {
     /// the list of views opens or closes; and one of them is chosen
     ViewMenu,
     View(View),
-    /// a video pressed with control held (one more picked, or one less) or with shift (true: a run of them); and
-    /// the videos picked, opened together
-    Pick(PathBuf, bool),
+    /// a video pressed with control held (one more picked, or one less) or with shift (true: a run of them), in a row
+    /// or a card, which the keys then act in; and the videos picked, opened together
+    Pick(PathBuf, bool, nav::Focus),
     OpenPicked,
 }
 
@@ -634,7 +639,12 @@ impl State {
         if self.picked.first().is_some_and(|picked| picked.parent() != Some(self.nav.main().folder.as_path())) {
             self.picked.clear();
         }
-        let layout = Layout::new(area, self.nav.drawn(), self.nav.card().is_some(), self.nav.view, self.widths);
+        let card = self.nav.card().is_some();
+        let mut layout = Layout::new(area, self.nav.drawn(), card, self.nav.view, self.widths);
+        // the column the keys act in is drawn, before the one it shows a folder in
+        if let Some(at) = self.nav.current_column().filter(|at| *at < layout.first) {
+            layout = Layout::new(area, at + 1, card, self.nav.view, self.widths);
+        }
         self.scroll(ui, &layout);
         let mut clicks = Vec::new();
         self.side(ui, layout.side, &mut clicks);
@@ -703,7 +713,10 @@ impl State {
                 self.anchor = Some(card.clone());
                 self.nav.choose_card(card);
             }
-            Click::Pick(card, run) => self.pick(card, run),
+            Click::Pick(card, run, focus) => {
+                self.pick(card, run);
+                self.nav.focus = focus;
+            }
             // in the order the folder lists them, whatever order they were picked in
             Click::OpenPicked => {
                 let files: Vec<PathBuf> = self.nav.cards().map(|e| e.path.clone()).filter(|path| self.picked.contains(path)).collect();
@@ -1103,11 +1116,17 @@ impl State {
         self.side_height = y + self.side_scroll - rect.top() + 12.0;
     }
 
-    /// one folder on the path as a column: its entries, the selected one lit.
+    /// one folder on the path as a column: its entries, the selected one lit, brightly where the keys act and dimly
+    /// on the way there. where the keys act and nothing is selected, the column is outlined.
     fn column(&mut self, ui: &egui::Ui, at: usize, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         rule(&painter, rect.right() - 1.0, rect);
         let inner = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 1.0, rect.bottom()));
+        let current = self.nav.current_column() == Some(at);
+        let column = &self.nav.path[at];
+        if current && !self.nav.listed(&column.folder).any(|e| Some(&e.path) == column.selected.as_ref()) {
+            painter.rect_stroke(inner, 0.0, (1.0, RING), StrokeKind::Inside);
+        }
         let entries = match self.nav.listings.get(&self.nav.path[at].folder) {
             None => {
                 text(&painter, inner.left() + 12.0, inner.top() + 8.0 + ROW / 2.0, "reading…", font(SANS, 12.5), DIM, inner.width() - 22.0);
@@ -1137,12 +1156,12 @@ impl State {
             let row = Rect::from_min_size(Pos2::new(inner.left(), inner.top() + 8.0 + i as f32 * ROW - scroll), Vec2::new(inner.width(), ROW));
             let on = selected == Some(i) || self.picked.contains(&entry.path);
             if on {
-                painter.rect_filled(row, 0.0, ROW_ON);
+                painter.rect_filled(row, 0.0, if current { ROW_ON } else { PLACE_ON });
             }
             let folder = entry.kind == Kind::Folder;
             let color = match entry.kind {
                 Kind::Other => ROW_DIM,
-                _ if on => Color32::WHITE,
+                _ if on && current => Color32::WHITE,
                 _ => ROW_TEXT,
             };
             // a folder's mark is wide, a file's tall
@@ -1165,7 +1184,7 @@ impl State {
                 // with shift or control held, a video in the folder shown is picked with the others
                 let (shift, more) = self.held;
                 if (shift || more) && is_card(entry) && at + 1 == self.nav.path.len() {
-                    clicks.push((Click::Pick(entry.path.clone(), shift), None));
+                    clicks.push((Click::Pick(entry.path.clone(), shift, nav::Focus::Columns), None));
                     continue;
                 }
                 let twice = if folder { Some(Click::Enter) } else { is_card(entry).then(|| Click::Open(entry.path.clone())) };
@@ -1263,6 +1282,12 @@ impl State {
         let pitch = height + 14.0;
         let selected = self.nav.main().selected.as_ref();
         let at = selected.and_then(|s| cards.iter().position(|c| &c.path == s));
+        // the selected card is outlined in white where the keys act, in gray on the way there; where the keys act
+        // and no card is selected, the grid is outlined
+        let current = self.nav.in_grid();
+        if current && at.is_none() {
+            painter.rect_stroke(rect, 0.0, (1.0, RING), StrokeKind::Inside);
+        }
         // a card newly selected is brought into view; otherwise the wheel moves freely
         let mut scroll = self.grid_scroll;
         if let Some(i) = at.filter(|_| self.revealed.as_ref() != selected) {
@@ -1287,14 +1312,19 @@ impl State {
             let pictures = self.cards.get(&card.path).filter(|c| c.stamp == stamp(card));
             // the pointer's place across the picture scrubs it
             let scrub = response.hover_pos().map(|p| ((p.x - area.left()) / width).clamp(0.0, 1.0));
-            draw_card(&painter, area, thumb, card, at == Some(i) || self.picked.contains(&card.path), pictures, scrub);
+            let outline = match (at == Some(i) || self.picked.contains(&card.path), current) {
+                (false, _) => (1.0, LINE),
+                (true, true) => (2.0, FG),
+                (true, false) => (2.0, CARD_PATH),
+            };
+            draw_card(&painter, area, thumb, card, outline, pictures, scrub);
             if response.secondary_clicked() {
                 right_click(ui, &self.picked, Some(Click::Card(card.path.clone())), On::File(card.path.clone()), clicks);
             }
             if response.clicked() {
                 // with shift or control held the card is picked with the others; a plain press selects it alone
                 let (shift, more) = self.held;
-                clicks.push(if shift || more { (Click::Pick(card.path.clone(), shift), None) } else { (Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))) });
+                clicks.push(if shift || more { (Click::Pick(card.path.clone(), shift, nav::Focus::Grid), None) } else { (Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))) });
             }
             if !nav::makes_pictures(self.nav.volume, card, asked) {
                 continue;
@@ -1627,9 +1657,9 @@ fn draw_picture(painter: &Painter, rect: Rect, picture: &egui::TextureHandle) {
 }
 
 /// a card: its picture, or until there is one the file's type in the middle of a plain one (the design's plain
-/// card); a sequence's marks at the top right; then the name and what the listing says of the file. while the
-/// pointer scrubs it (`scrub`, 0 to 1 across), a line marks the place and the frame shown is named.
-fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, on: bool, pictures: Option<&Card>, scrub: Option<f32>) {
+/// card), with `outline` round it; a sequence's marks at the top right; then the name and what the listing says of
+/// the file. while the pointer scrubs it (`scrub`, 0 to 1 across), a line marks the place and the frame shown is named.
+fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, outline: (f32, Color32), pictures: Option<&Card>, scrub: Option<f32>) {
     let picture = Rect::from_min_size(area.min, Vec2::new(area.width(), thumb));
     match pictures.and_then(|c| c.shown(scrub)) {
         Some((frame, shown)) => {
@@ -1650,7 +1680,7 @@ fn draw_card(painter: &Painter, area: Rect, thumb: f32, entry: &Entry, on: bool,
             painter.galley(Pos2::new(picture.center().x - galley.size().x / 2.0, top_of(painter, &galley, picture.center().y)), galley, PLAIN_TEXT);
         }
     }
-    painter.rect_stroke(picture, 0.0, if on { (2.0, FG) } else { (1.0, LINE) }, StrokeKind::Outside);
+    painter.rect_stroke(picture, 0.0, outline, StrokeKind::Outside);
     if let Kind::Sequence { missing, .. } = &entry.kind {
         // from the right: the missing frames, a fault in amber, then the sequence's own mark
         let mut right = picture.right() - 4.0;
@@ -2076,6 +2106,60 @@ mod tests {
         assert_eq!(state.widths.side, 150.0, "a double click puts it back");
     }
 
+    /// what is selected where the keys act is drawn brightly, and what is selected on the way there dimly, in the
+    /// columns and in the grid; where the keys act and nothing is selected, the column is outlined. a press on a row
+    /// gives the keys to its column, and a press on a card to the grid.
+    #[test]
+    fn the_current_item_and_the_way_to_it_are_drawn_apart() {
+        let place = std::env::temp_dir().join("eyepiece-no-such-marks");
+        let (r, shots) = (place.join("r"), place.join("r").join("shots"));
+        let mut state = State::new(Some(r.clone()), Vec::new(), None);
+        state.nav = Nav::new(&r, std::slice::from_ref(&place));
+        let entry = |dir: &Path, name: &str, kind| Entry { name: name.into(), path: dir.join(name), kind, size: Some(10), modified: None, away: false };
+        let listings = || [(place.clone(), vec![entry(&place, "r", Kind::Folder)]), (r.clone(), vec![entry(&r, "shots", Kind::Folder), entry(&r, "a.mov", Kind::Clip)]), (shots.clone(), vec![entry(&shots, "c.mov", Kind::Clip), entry(&shots, "d.mov", Kind::Clip)])];
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        // a pass over fig. 28's window, the folders listed as above: the fill of the row each name is on, the
+        // outlines of the selected cards, and whether a column or the grid is outlined
+        let seen = |state: &mut State| {
+            for (folder, entries) in listings() {
+                state.nav.listings.insert(folder, Ok(entries));
+            }
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                state.draw(ui, ui.max_rect());
+            });
+            out.textures_delta.clear();
+            let rects: Vec<&egui::epaint::RectShape> = out.shapes.iter().filter_map(|s| if let egui::Shape::Rect(r) = &s.shape { Some(r) } else { None }).collect();
+            let fill = |name: &str| {
+                let texts = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some(t) } else { None });
+                texts.filter(|t| t.galley.text() == name).find_map(|t| rects.iter().find(|r| r.rect.height() == ROW && r.rect.contains(t.pos + Vec2::new(1.0, t.galley.size().y / 2.0))).map(|r| r.fill))
+            };
+            let fills = ["r", "shots", "a.mov", "c.mov", "d.mov"].map(fill);
+            let cards: Vec<Color32> = rects.iter().filter(|r| r.stroke.width == 2.0).map(|r| r.stroke.color).collect();
+            (fills, cards, rects.iter().any(|r| r.stroke.color == RING))
+        };
+        let press = |state: &mut State, key| {
+            state.nav.key(key, Mods::default(), 2);
+            state.nav.settle();
+        };
+        let (on, path) = (Some(ROW_ON), Some(PLACE_ON));
+        // at the start the keys are in the folder's column, where nothing is selected
+        assert_eq!(seen(&mut state), ([path, None, None, None, None], vec![], true));
+        press(&mut state, Key::Down);
+        assert_eq!(seen(&mut state), ([path, on, None, None, None], vec![], false));
+        press(&mut state, Key::Right);
+        assert_eq!(seen(&mut state), ([None, path, None, on, None], vec![CARD_PATH], false), "the place's column has given way");
+        press(&mut state, Key::Right);
+        assert_eq!(seen(&mut state), ([None, path, None, path, None], vec![FG], false));
+        state.click(Click::Row(2, shots.join("d.mov"), false));
+        assert_eq!(seen(&mut state), ([None, path, None, None, on], vec![CARD_PATH], false));
+        state.click(Click::Card(shots.join("c.mov")));
+        assert_eq!(seen(&mut state), ([None, path, None, path, None], vec![FG], false));
+        state.click(Click::Pick(shots.join("d.mov"), false, nav::Focus::Columns));
+        assert_eq!(seen(&mut state), ([None, path, None, on, on], vec![CARD_PATH, CARD_PATH], false));
+    }
+
     /// shift picks a run of videos from the one last pressed, control one more or one less, and the videos picked
     /// open together in the order the folder lists them. a plain press lets them go.
     #[test]
@@ -2085,13 +2169,14 @@ mod tests {
         let clip = |name: &str| Entry { name: name.into(), path: folder.join(name), kind: Kind::Clip, size: Some(10), modified: None, away: false, link: false };
         state.nav.listings.insert(folder.clone(), Ok(["a.mov", "b.mov", "c.mov", "d.mov"].map(clip).into()));
         let at = |name: &str| folder.join(name);
+        let grid = nav::Focus::Grid;
         state.click(Click::Card(at("b.mov")));
-        state.click(Click::Pick(at("d.mov"), true));
+        state.click(Click::Pick(at("d.mov"), true, grid));
         assert_eq!(state.picked, [at("b.mov"), at("c.mov"), at("d.mov")]);
         assert_eq!(state.nav.card().map(|card| card.path.clone()), Some(at("d.mov")));
-        state.click(Click::Pick(at("c.mov"), false));
+        state.click(Click::Pick(at("c.mov"), false, grid));
         assert_eq!(state.picked, [at("b.mov"), at("d.mov")]);
-        state.click(Click::Pick(at("a.mov"), false));
+        state.click(Click::Pick(at("a.mov"), false, grid));
         state.click(Click::OpenPicked);
         assert!(matches!(&state.chosen, Some(Chosen::PlayFiles(files)) if *files == [at("a.mov"), at("b.mov"), at("d.mov")]));
         state.click(Click::Card(at("c.mov")));

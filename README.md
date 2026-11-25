@@ -109,6 +109,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 
 - **the sidebar** lists places, volumes and recent folders.
 - **columns** lead to the folder. its videos are **cards**: move the pointer across one to scrub its preview.
+- the keys act in one column or in the cards, as in finder's column view. what is selected there is lit; the folders on the way are dim.
 - **the address** shows the path. press it, or **ctrl+L**, to type one.
 - **shift+click** or **ctrl+click** picks several videos to play as a played folder.
 - **right-click** a folder, a video or the empty area for what can be done with it: open, play, reveal, copy path and more.
@@ -191,11 +192,11 @@ in the browser, letters select names instead of running commands:
 
 | key | does |
 |---|---|
-| ↑ · ↓ | move in the last column |
-| → · ← | enter a folder, or move into the cards · go back out |
-| arrows, in the cards | move card by card. ← from a row's first card goes back to the columns |
+| ↑ · ↓ | move in the column. with nothing selected, ↓ takes the first and ↑ the last |
+| → · ← | into a folder, on what was selected there, else its first; from a video, into the cards · back to the column before |
+| arrows, in the cards | card by card, over the ends of rows; ↑ · ↓ a row. ← from the first card goes back to the column |
 | home · end | first / last |
-| enter | open the selected card, or play the videos picked |
+| enter | open the selected card or folder, or play the videos picked |
 | shift+enter | open folder: play the folder |
 | ctrl+shift+enter | play the folder with its subfolders |
 | backspace | up a folder |
