@@ -494,11 +494,14 @@ mod tests {
     fn the_row_of_tools_does_what_it_says() {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
-        // the pointer at the top brings the controls up, and the row down under the strip; it stays while the pointer
-        // is on the row
+        // the row stands under the strip's place, the controls up or not: where it is with them away, it is with them
+        // up, so it never moves from under the pointer
+        drive(&mut ui, &[(320.0, 300.0, None)]);
+        let away = ui.markup.row.expect("the row of tools is up");
         drive(&mut ui, &[(320.0, 20.0, None)]);
         std::thread::sleep(std::time::Duration::from_millis(300));
         drive(&mut ui, &[(320.0, 20.0, None)]);
+        assert_eq!(ui.markup.row, Some(away));
         // a click `along` from the row's left edge (or, negative, from its right), on the middle of its items
         let mut press = |along: f32| {
             let row = ui.markup.row.expect("the row of tools is up");

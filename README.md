@@ -4,7 +4,7 @@ a video review player for video professionals: extremely fast, lightweight, and 
 
 [a tridant system](https://tridant.io)
 
-![eyepiece playing a 4K clip, with its tabs along the top, the bar of controls along the bottom and the timebar under it](docs/images/hero.png)
+![eyepiece with a clip up, its tabs along the top, the bar of controls along the bottom and the timebar under it](docs/images/hero.png)
 
 ## why eyepiece
 
@@ -86,7 +86,7 @@ in development, with no release. the mac build opens its window, plays clips (wi
 - **pan** by dragging the picture, as far as its edge, or with **alt** and the arrows, an eighth of the window at a time.
 - **the navigator** stands at the lower left while the picture is zoomed past the window: a small plan of the whole picture with the part in view marked. press or drag in it to bring that part to the middle of the window. it is plain while the pointer moves and faint when it rests.
 
-![the picture at 1600%, the pixel grid showing, the zoom chip naming the pixel under the pointer, and the navigator at the lower left](docs/images/zoom-navigator.png)
+![the picture at 1200%, the pixel grid showing, the zoom chip naming the pixel under the pointer, and the navigator at the lower left](docs/images/zoom-navigator.png)
 
 ### guides
 
@@ -166,7 +166,7 @@ the browser shows when eyepiece starts with no file and in a new tab; **O** lays
 - an mkv, a webm or a fragmented mp4 must be read through to count its frames, so its card stays plain until you open it.
 - posters and previews are kept in the system's cache folder (`%LOCALAPPDATA%\eyepiece\cache\previews`), 2 GB at most, and nowhere near your media.
 
-![the browser on a folder of clips: the sidebar, the address, the folder's column, the cards and the metadata column](docs/images/browser.png)
+![the browser on a folder of clips: the address with back, forward and read again, the folders' columns, the cards and the metadata column](docs/images/browser.png)
 
 ### screenshots and markup
 

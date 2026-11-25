@@ -1050,10 +1050,11 @@ impl Ui {
             }
             _ => self.flash = None,
         }
-        // markup mode says it is on with its row of tools, at the top middle as the chips stand, whether the controls
-        // are up or not
+        // markup mode says it is on with its row of tools, at the top middle as the chips stand, under the strip's
+        // place whether the strip is up or not: a row that moved down as the strip came up ran from the pointer on its
+        // way to it
         if self.markup.on {
-            self.markup.tools(ui, full.center().x, full.top() + 10.0 + STRIP * alpha, actions);
+            self.markup.tools(ui, full.center().x, full.top() + 10.0 + STRIP, actions);
             self.markup.field(ui, full, actions);
         }
         // the metadata panel, pinned: at the right under the chips, whether the controls are up or not
