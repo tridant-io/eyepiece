@@ -32,6 +32,7 @@ use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS};
 const PIECE: usize = 1 << 16;
 const STOPPED: &str = "stopped";
 const UNSIGNED: &str = "this build is not signed: install updates by hand";
+const NOT_SIGNED: &str = "it is not signed";
 /// win32's codes, as an io error carries them
 const SHARING_VIOLATION: i32 = 32;
 const ACCESS_DENIED: i32 = 5;
@@ -48,7 +49,8 @@ pub(super) fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
 
 /// downloads the files of `release` that `install` does not already hold as they are, each on its own, into the
 /// update's folder under the os cache folder. each file's size and sha-256 are counted as it lands, and a file that
-/// does not match, or stops coming, is set aside there as `<name>.failed`, never removed. `progress` hears the bytes
+/// does not match, or stops coming, is set aside there as `<name>.failed`, where only that file's next failure
+/// replaces it. `progress` hears the bytes
 /// come so far and the bytes to come in all; `stop`, once set, ends it at the next piece. a file already downloaded
 /// whole is not asked for again.
 pub fn download(release: &Release, install: &Path, progress: &mut dyn FnMut(u64, u64), stop: &AtomicBool) -> Result<(), String> {
@@ -136,6 +138,9 @@ fn apply_from(release: &Release, staged: &Path, install: &Path, from: Version, r
     if release.version <= from {
         return Err(format!("{} is not newer than {from}", release.version));
     }
+    // what a failed try set aside goes first, so the next try finds the names free. what is still held stays, and
+    // is refused below
+    tidy(install);
     let files = changed(release, install)?;
     verify(staged, &files)?;
     signed_alike(&files, staged, running, signer_of)?;
@@ -337,7 +342,7 @@ struct Signer {
 /// same root. a running program that is not signed (a developer build) cannot say whose a new one must be, so it
 /// takes none
 fn signed_alike(files: &[&Asset], staged: &Path, running: &Path, signer_of: &dyn Fn(&Path) -> Result<Signer, String>) -> Result<(), String> {
-    let ours = signer_of(running).map_err(|_| UNSIGNED.to_string())?;
+    let ours = signer_of(running).map_err(|why| if why == NOT_SIGNED { UNSIGNED.to_string() } else { format!("this build's own signature cannot be checked, {why}: install updates by hand") })?;
     let code = |name: &str| name.rsplit_once('.').is_some_and(|(_, kind)| kind.eq_ignore_ascii_case("exe") || kind.eq_ignore_ascii_case("dll"));
     for asset in files.iter().filter(|a| code(&a.name)) {
         let not_ours = |why: &str| format!("{} is not signed by {}: {why}", asset.name, ours.name);
@@ -373,7 +378,7 @@ fn signer_of(path: &Path) -> Result<Signer, String> {
     let verdict = unsafe { WinVerifyTrust(alone, &mut action, &mut data as *mut WINTRUST_DATA as *mut c_void) };
     let signer = match verdict {
         0 => unsafe { read_signer(data.hWVTStateData) },
-        code if code == TRUST_E_NOSIGNATURE.0 => Err("it is not signed".to_string()),
+        code if code == TRUST_E_NOSIGNATURE.0 => Err(NOT_SIGNED.to_string()),
         code => Err(format!("its signature does not hold (0x{:08x})", code as u32)),
     };
     // the verdict's state is held until it is closed, whatever the verdict
@@ -653,8 +658,12 @@ mod tests {
         drop(held);
         assert_eq!(why, Err("avcodec-63.dll is in use by another program. everything was put back.".to_string()));
         assert_eq!((install.read("eyepiece.exe"), install.read("avcodec-63.dll")), (b"program 0.2.1".to_vec(), b"codecs 0.2.1".to_vec()));
-        // the new program that had gone in is set aside, for tidy
+        // the new program that had gone in is set aside
         assert_eq!(install.read("eyepiece.exe.old-0.3.0"), b"program 0.3.0");
+        // and try again, now nothing holds it, takes that away first
+        assert_eq!(apply_from(&release, &staged.0, &install.0, OLD, Path::new("running"), &tridant), Ok(2));
+        assert_eq!(install.names(), ["avcodec-63.dll", "avcodec-63.dll.old-0.2.1", "eyepiece.exe", "eyepiece.exe.old-0.2.1"]);
+        assert_eq!((install.read("eyepiece.exe"), install.read("avcodec-63.dll")), (b"program 0.3.0".to_vec(), b"codecs 0.3.0, longer".to_vec()));
         assert_eq!(tidy(&install.0), Vec::<String>::new());
         install.clear(&["eyepiece.exe", "avcodec-63.dll"]);
         staged.clear(&["eyepiece.exe", "avcodec-63.dll"]);
@@ -694,8 +703,11 @@ mod tests {
         assert_eq!(try_it(&tridant), "avcodec-63.dll does not match the release's size and checksum");
         staged.put("avcodec-63.dll", b"codecs 0.3.0, longer");
         assert_eq!(try_it(&|_| Err("it is not signed".into())), UNSIGNED);
+        // left by the update before, and still held by the player it replaced
         install.put("eyepiece.exe.old-0.2.1", b"from an update before");
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(install.0.join("eyepiece.exe.old-0.2.1")).unwrap();
         assert_eq!(try_it(&tridant), "eyepiece.exe.old-0.2.1 is left from an earlier update: start eyepiece again, then update");
+        drop(held);
         let same = super::super::read("version = 0.2.1\ndate = 2026-11-24\nfile = eyepiece.exe · 1 · e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "https://example.invalid/").unwrap();
         assert_eq!(apply_from(&same, &staged.0, &install.0, OLD, Path::new("running"), &tridant), Err("0.2.1 is not newer than 0.2.1".to_string()));
         assert_eq!(apply_from(&release, &staged.0, Path::new(r"C:\"), OLD, Path::new("running"), &tridant), Err(r"C:\ is not a folder eyepiece updates".to_string()));
@@ -725,8 +737,12 @@ mod tests {
         assert_eq!(as_(Err("it is not signed".into())), Err("avcodec-63.dll is not signed by Tridant, Inc.: it is not signed".to_string()));
         assert_eq!(as_(Ok(signer("Someone Else", "root 2020"))), Err("avcodec-63.dll is not signed by Tridant, Inc.: its signer is Someone Else".to_string()));
         assert_eq!(as_(Ok(signer("Tridant, Inc.", "another root"))), Err("avcodec-63.dll is not signed by Tridant, Inc.: its certificate comes from another authority".to_string()));
-        let unsigned = signed_alike(&files, staged, running, &|path| if path == running { Err("it is not signed".into()) } else { tridant(path) });
-        assert_eq!(unsigned, Err(UNSIGNED.to_string()));
+        let ours = |why: &'static str| signed_alike(&files, staged, running, &|path| if path == running { Err(why.into()) } else { tridant(path) });
+        assert_eq!(ours(NOT_SIGNED), Err(UNSIGNED.to_string()));
+        assert_eq!(
+            ours("its signature does not hold (0x800b010a)"),
+            Err("this build's own signature cannot be checked, its signature does not hold (0x800b010a): install updates by hand".to_string())
+        );
     }
 
     #[test]
@@ -735,17 +751,20 @@ mod tests {
         assert_eq!(signer_of(&std::env::current_exe().unwrap()).err(), Some("it is not signed".to_string()));
     }
 
-    /// the signer of a signed file, through wintrust, as the update reads it. the file is EYEPIECE_SIGNED, such as
-    /// dist\eyepiece\eyepiece.exe after scripts\package.ps1:
-    /// `cargo test a_signed_file_names_its_signer -- --ignored --nocapture`
+    /// the signers of signed files, through wintrust, as the update reads them, and that they are one signer to it:
+    /// the files of EYEPIECE_SIGNED, separated by `;`, such as dist\eyepiece\eyepiece.exe after scripts\package.ps1
+    /// and a build signed on another day, whose certificate is another:
+    /// `cargo test signed_files_name_their_signer -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn a_signed_file_names_its_signer() {
-        let path = PathBuf::from(std::env::var_os("EYEPIECE_SIGNED").expect("EYEPIECE_SIGNED names a signed file"));
-        let signer = signer_of(&path).unwrap();
-        println!("{}: {}, a subject of {} bytes, a root of {} bytes", path.display(), signer.name, signer.subject.len(), signer.root.len());
-        let again = signer_of(&path).unwrap();
-        assert!(!signer.name.is_empty() && signer.subject == again.subject && signer.root == again.root);
+    fn signed_files_name_their_signer() {
+        let paths = std::env::var("EYEPIECE_SIGNED").expect("EYEPIECE_SIGNED names signed files");
+        let signers: Vec<Signer> = paths.split(';').map(|path| signer_of(Path::new(path)).unwrap()).collect();
+        for (path, signer) in paths.split(';').zip(&signers) {
+            println!("{path}: {}, a subject of {} bytes, a root of {} bytes", signer.name, signer.subject.len(), signer.root.len());
+        }
+        assert!(!signers[0].name.is_empty());
+        assert!(signers.iter().all(|s| s.subject == signers[0].subject && s.root == signers[0].root), "not one signer");
     }
 
     #[test]

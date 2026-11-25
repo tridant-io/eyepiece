@@ -43,9 +43,10 @@ foreach ($f in $files) {
 }
 $exe = Join-Path $Dist 'eyepiece.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "no eyepiece.exe in $Dist`: run scripts\package.ps1 first" }
-# the program's user agent carries its version: a program built from another version is caught here
+# the program's user agent carries its version: a program built from another version is caught here. so is one whose
+# player never calls src\update, as the build leaves out code nothing calls
 if ([Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($exe)).IndexOf("eyepiece/$version") -lt 0) {
-    throw "$exe is not eyepiece $version`: run scripts\package.ps1 again"
+    throw "$exe does not say it is eyepiece $version (eyepiece/$version is not in it): it was built from another version, so run scripts\package.ps1 again, or its player does not call src\update yet"
 }
 
 $kind = ''

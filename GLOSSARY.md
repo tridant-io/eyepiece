@@ -73,7 +73,7 @@ _Avoid_: title bar, tab bar, header
 _Avoid_: manifest alone (cargo's is Cargo.toml), checksums, SHA256SUMS
 
 **set aside**:
-what an update does with an installed file it replaces: renamed `<name>.old-<version>` beside it, since a running program's files cannot be written over, and removed by its exact name at the next start. a download that failed is set aside too, as `<name>.failed` in the update's folder, and never removed.
+what an update does with an installed file it replaces: renamed `<name>.old-<version>` beside it, since a running program's files cannot be written over, and removed by its exact name at the next start or the next try. a download that failed is set aside too, as `<name>.failed` in the update's folder, which only that file's next failure replaces.
 _Avoid_: backup, deleted, moved to trash
 
 ## Flagged ambiguities
