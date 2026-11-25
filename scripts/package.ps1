@@ -1,6 +1,6 @@
 # builds the player and puts everything it needs to run in dist\eyepiece: the program, the four ffmpeg libraries it
-# loads, their license, and the third-party notices. the program is signed with azure artifact signing, the way
-# tridant's other apps are.
+# loads, their license, and the third-party notices. the program and the four libraries are signed with azure artifact
+# signing, the way tridant's other apps are.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1            build, test, package, sign
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -Install   and copy it to %LOCALAPPDATA%\Programs\eyepiece
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -NoSign    for a machine without the signing setup
@@ -60,9 +60,12 @@ if (-not $NoSign) {
     $signtool = Find-Newest 'signtool.exe' @((Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'), (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\ArtifactSigningClientTools'))
     $dlib = Find-Newest 'Azure.CodeSigning.Dlib.dll' @((Join-Path ${env:ProgramFiles(x86)} 'Microsoft\ArtifactSigningClientTools'), (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.artifactsigning.client'))
     $meta = Join-Path $PSScriptRoot 'artifact-signing.json'
+    # the four ffmpeg libraries with the program, so an update can prove each is tridant's (adr 0007). the player
+    # never checks them as it loads them, so a user's own ffmpeg still runs, as the lgpl wants
+    $signed = @($exe) + @(Get-ChildItem -LiteralPath $dist -Filter '*.dll' | ForEach-Object FullName)
     # the certificate behind a signature lives three days; the timestamp keeps the signature valid after that
-    Invoke-Checked 'signing' { & $signtool sign /fd SHA256 /tr 'http://timestamp.acs.microsoft.com' /td SHA256 /dlib $dlib /dmdf $meta $exe | Out-Null }
-    Invoke-Checked 'checking the signature' { & $signtool verify /pa $exe | Out-Null }
+    Invoke-Checked 'signing' { & $signtool sign /fd SHA256 /tr 'http://timestamp.acs.microsoft.com' /td SHA256 /dlib $dlib /dmdf $meta @signed | Out-Null }
+    Invoke-Checked 'checking the signatures' { & $signtool verify /pa @signed | Out-Null }
     $sig = Get-AuthenticodeSignature $exe
     Write-Host "[package] signed: $($sig.Status), $($sig.SignerCertificate.Subject)"
 }
