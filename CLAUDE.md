@@ -1,6 +1,6 @@
 # eyepiece
 
-a review player for vfx and install content. the design is `docs/design/plan.html`; what the owner settled is its section 10. read it before changing behavior.
+a video review player for video professionals: extremely fast, lightweight, and only what you need. the design is `docs/design/plan.html`; what the owner settled is its section 10. read it before changing behavior.
 
 use the terms in `GLOSSARY.md` and read the ADRs in `docs/adr/` for the area you touch.
 
@@ -15,6 +15,7 @@ use the terms in `GLOSSARY.md` and read the ADRs in `docs/adr/` for the area you
 ## ui rules
 
 - copy is lowercase, american spelling: color, center.
+- mono (ibm plex mono) only for titles and numbers: headings, values, file names and paths, key caps. every sentence, note, message, tooltip, button and menu word is archivo; a sentence with numbers in it is archivo throughout (the owner's word, 2026-11-24).
 - the owner's keys are fixed: F/G step, shift+F/G first/last, O open, N new tab, [ ] tabs, 0/1/2 fit/1:1/2x, P fullscreen, esc. add aliases, never move these.
 - no accent color on the tab strip or the control bar. the accent (orange) is only for sliders, switches and the focused field inside menus. amber marks a fault in a file and nothing else.
 - anything that changes what you see (speed, zoom, mirror, a single channel) leaves a chip on screen.

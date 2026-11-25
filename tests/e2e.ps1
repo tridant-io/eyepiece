@@ -652,8 +652,11 @@ $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt'
 Confirm-That 'a folder''s name typed into the address goes into that folder' ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
 # a press on a folder of the address goes to it: here the one above the folder shown. the names are 6.9 a letter in
 # the address's type, from 108 in (after the three buttons), with 20.7 of " / " between them; the line's middle is
-# 18 under the strip
+# 18 under the strip. the window is made wide enough for the whole address, which is otherwise cut short from the
+# left to leave room for the buttons at its right
+function Set-Wide { [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 1700, 700, 0x0006); Start-Sleep -Milliseconds 400 }
 Start-Player
+Set-Wide
 Start-Sleep -Milliseconds 1000
 $names = $shots -split '\\'
 $x = 150 + 108; foreach ($part in $names[0..($names.Count - 3)]) { $x += $part.Length * 6.9 + 20.7 }
@@ -673,17 +676,19 @@ $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt'
 Confirm-That 'after a path that is not there, the address goes to a whole path typed into it' ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
 # back and forward, the first two buttons at the left of the address: the browser goes along the folders it has
 # shown. here from the tree into shots (typed) and to the tree again by its place in the address; two steps back and
-# one forward end in shots, whichever way they are asked for
+# two forward end in the tree, whichever way they are asked for
 function Test-Retrace([string]$by, [scriptblock]$back, [scriptblock]$forward) {
     Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
     Start-Player
+    Set-Wide
     Start-Sleep -Milliseconds 1000
     Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Char 'shots'; Send-Key 0x0D; Start-Sleep -Milliseconds 800
     Click-At $crumb (32 + 18); Start-Sleep -Milliseconds 800
-    & $back; Start-Sleep -Milliseconds 500; & $back; Start-Sleep -Milliseconds 500; & $forward; Start-Sleep -Milliseconds 800
+    # the tree, shots, the tree: two back and two forward end in the tree only if each went one folder along
+    & $back; Start-Sleep -Milliseconds 500; & $back; Start-Sleep -Milliseconds 500; & $forward; Start-Sleep -Milliseconds 500; & $forward; Start-Sleep -Milliseconds 800
     Stop-Player
     $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
-    Confirm-That "two steps back and one forward by $by end in the folder between" ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
+    Confirm-That "two steps back and two forward by $by end where they began" ($kept -contains "browser_folder = $tree") "the settings say: $($kept -match 'browser_folder')"
 }
 Test-Retrace 'the address''s buttons' { Click-At 171 50 } { Click-At 203 50 }
 Test-Retrace 'alt with left and right' { Send-Key 0x25 1 2 } { Send-Key 0x27 1 2 }
@@ -709,16 +714,16 @@ foreach ($made in $late, (Split-Path $late), (Split-Path (Split-Path $late)), $f
 }
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'the read-again button, f5 and control + R each show a folder made since the last listing' ($kept -contains "browser_folder = $late") "the settings say: $($kept -match 'browser_folder')"
-# what the browser shows of a folder is chosen at the address's right end and kept: the button's label is 14 letters
-# of 6.9, in a box 10 from the window's right with 10 and 25 round it; its list opens 4 under it, rows of 26 after 4
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiecesettings.txt') -Value "browser_folder = $tree", 'mute = on'
+# what the browser shows of a folder is chosen at the address's right end and kept: its button stands 10 from the
+# window's right, a little over 100 wide, so 66 in from there is on it; its list opens 4 under it, rows of 26 after 4
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
 Start-Player
 Start-Sleep -Milliseconds 1000
-$view = (Get-Width) - 10 - (10 + 14 * 6.9 + 25) / 2
-Click-At $view 50; Start-Sleep -Milliseconds 500
-Click-At $view (32 + 18 + 13.75 + 4 + 4 + 26 * 2.5); Start-Sleep -Milliseconds 500
+$viewAt = (Get-Width) - 10 - 66
+Click-At $viewAt 50; Start-Sleep -Milliseconds 500
+Click-At $viewAt (32 + 18 + 13.75 + 4 + 4 + 26 * 2.5); Start-Sleep -Milliseconds 500
 Stop-Player
-$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiecesettings.txt')
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'the view chosen at the address''s right end is kept between runs' ($kept -contains 'browser_view = list') "the settings say: $($kept -match 'browser_view')"
 # copy and paste in the field go by the clipboard, which is this pc's own: the check is left out when it holds more
 # than plain text, which a test could not put back, and what it held is put back after
@@ -920,7 +925,7 @@ Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: 
 [void][EyepieceE2e]::PostMessage($script:h, 0x233, [EyepieceDrop]::Files($media), [IntPtr]::Zero)
 Start-Sleep -Milliseconds 1500; Send-Key 0x20
 Assert-Title 'a folder dropped on the window plays as a played folder' ' . clip \d+ of \d+'
-Send-Key 0xDB; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: the clip that was up is still there, on its frame' 2 3
+Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: the clip that was up is still there, on its frame' 2 3
 [void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 400
 $before = Get-Title
 Start-Again 'a launch with no file exits at once' @{}

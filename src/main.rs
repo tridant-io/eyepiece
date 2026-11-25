@@ -1,4 +1,4 @@
-//! eyepiece: a review player for vfx and install content.
+//! eyepiece: a video review player for video professionals. extremely fast, lightweight, and only what you need.
 //! usage: eyepiece [file]
 
 // no console window behind the player in a release build

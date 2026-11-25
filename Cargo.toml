@@ -3,7 +3,7 @@ name = "eyepiece"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "a review player for vfx and install content"
+description = "a video review player for video professionals: extremely fast, lightweight, and only what you need"
 
 # the gate programs under spike/ are their own packages and are never built with the player
 [workspace]

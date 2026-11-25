@@ -75,14 +75,14 @@ pub fn heading_button(ui: &mut egui::Ui, text: &str, button: &str) -> bool {
     heading(ui, text, &[]);
     let rect = ui.min_rect();
     let last = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 16.0), rect.max);
-    let galley = ui.painter().layout_no_wrap(button.to_string(), font(MONO_MEDIUM, 10.0), FG);
+    let galley = ui.painter().layout_no_wrap(button.to_string(), font(SANS, 11.5), FG);
     let frame = Rect::from_min_max(Pos2::new(last.right() - galley.size().x - 14.0, last.center().y - 9.0), Pos2::new(last.right(), last.center().y + 9.0));
     let response = ui.interact(frame, ui.scope_id().with((text, button)), Sense::click());
     if response.hovered() {
         ui.painter().rect_filled(frame, 0.0, HOVER);
     }
     ui.painter().rect_stroke(frame, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-    ui.painter().galley(Pos2::new(frame.left() + 7.0, text_top(ui.painter(), font(MONO_MEDIUM, 10.0), frame.center().y)), galley, FG);
+    ui.painter().galley(Pos2::new(frame.left() + 7.0, text_top(ui.painter(), font(SANS, 11.5), frame.center().y)), galley, FG);
     response.clicked()
 }
 
@@ -91,12 +91,13 @@ pub fn heading_button(ui: &mut egui::Ui, text: &str, button: &str) -> bool {
 pub fn rows(ui: &mut egui::Ui, groups: &[Vec<Row>]) {
     const NAME: f32 = 86.0;
     ui.spacing_mut().item_spacing.y = 5.0;
-    let line = |text: &str, color: Color32, width: f32| {
+    let line = |text: &str, color: Color32, width: f32, words: bool| {
         let mut job = LayoutJob::default();
         job.wrap.max_width = width;
         // long paths have no spaces to break at
         job.wrap.break_anywhere = !text.contains(' ');
-        job.append(text, 0.0, TextFormat { font_id: font(MONO, 11.5), color, line_height: Some(11.5 * 1.35), ..Default::default() });
+        let font_id = if words { font(SANS, 12.0) } else { font(MONO, 11.5) };
+        job.append(text, 0.0, TextFormat { font_id, color, line_height: Some(11.5 * 1.35), ..Default::default() });
         job
     };
     for (i, group) in groups.iter().enumerate() {
@@ -110,8 +111,8 @@ pub fn rows(ui: &mut egui::Ui, groups: &[Vec<Row>]) {
                 Tone::Fault => (format!("! {}", fact.value), AMBER),
                 Tone::Assumed => (fact.value.clone(), DIM),
             };
-            let name = ui.painter().layout_job(line(fact.label, DIM, NAME));
-            let value = ui.painter().layout_job(line(&value, color, ui.available_width() - NAME - 10.0));
+            let name = ui.painter().layout_job(line(fact.label, DIM, NAME, false));
+            let value = ui.painter().layout_job(line(&value, color, ui.available_width() - NAME - 10.0, fact.tone != Tone::Plain));
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), name.size().y.max(value.size().y)), Sense::hover());
             ui.painter().galley(rect.min, name, DIM);
             ui.painter().galley(Pos2::new(rect.left() + NAME + 10.0, rect.top()), value, color);
@@ -156,7 +157,7 @@ pub fn buttons(ui: &mut egui::Ui, name: &str, items: &[(&str, &str, bool)]) -> O
     let (mut x, mut clicked) = (rect.left(), None);
     for (i, (label, key, on)) in items.iter().enumerate() {
         let color = if *on { ON_CHOSEN } else { FG };
-        let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), color);
+        let galley = painter.layout_no_wrap(label.to_string(), font(SANS, 12.0), color);
         let key_width = if key.is_empty() { 0.0 } else { painter.layout_no_wrap(key.to_string(), font(MONO_MEDIUM, 10.0), color).size().x + 10.0 + 7.0 };
         let button = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(9.0 + galley.size().x + key_width + 9.0, rect.height()));
         let response = ui.interact(button, ui.scope_id().with((name, i)), Sense::click());
@@ -166,7 +167,7 @@ pub fn buttons(ui: &mut egui::Ui, name: &str, items: &[(&str, &str, bool)]) -> O
             painter.rect_filled(button, 0.0, HOVER);
         }
         painter.rect_stroke(button, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-        let text_at = Pos2::new(button.left() + 9.0, text_top(&painter, font(MONO_MEDIUM, 11.0), button.center().y));
+        let text_at = Pos2::new(button.left() + 9.0, text_top(&painter, font(SANS, 12.0), button.center().y));
         let text_right = text_at.x + galley.size().x;
         painter.galley(text_at, galley, color);
         if !key.is_empty() {

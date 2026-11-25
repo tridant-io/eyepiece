@@ -4,7 +4,7 @@
 
 use super::icons::{self, Icon};
 use super::widgets::{CHOSEN, ON_CHOSEN};
-use super::{font, keys, text_top, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SOLID};
+use super::{font, keys, text_top, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID};
 use crate::event::Key;
 use crate::markup::{Mark, Marks, Placing, Point, Shape, Tool, INKS};
 use crate::timecode::Timecode;
@@ -195,7 +195,7 @@ impl Markup {
             Words("done"),
         ];
         let painter = ui.painter().clone();
-        let words = |text: &str| painter.layout_no_wrap(text.to_string(), font(MONO_MEDIUM, 11.5), FG);
+        let words = |text: &str| painter.layout_no_wrap(text.to_string(), font(SANS, 12.0), FG);
         let wide = |item: &Item| match item {
             Pick(..) | Undo | Clear => TOOL,
             Ink(_) => SWATCH,
@@ -239,7 +239,7 @@ impl Markup {
                     }
                 }
                 Words(text) => {
-                    painter.galley(Pos2::new(rect.left() + 8.0, text_top(&painter, font(MONO_MEDIUM, 11.5), rect.center().y)), words(text), FG);
+                    painter.galley(Pos2::new(rect.left() + 8.0, text_top(&painter, font(SANS, 12.0), rect.center().y)), words(text), FG);
                 }
                 Rule => {}
             }
@@ -553,7 +553,7 @@ mod tests {
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let has = |words: &str, family: &str, size: f32| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, size), words));
             assert!(has(&caption("wall_main_v012.mov", 742, 0, Timecode::parse("01:00:00;00", 24, 24), Some((24000, 1001)), (1920, 1080)), MONO_MEDIUM, CAPTION_TEXT));
-            assert!(has("save image done", MONO_MEDIUM, 11.5));
+            assert!(has("save image done", SANS, 12.0));
             assert!(has("type, then enter", TEXT_FONT, TEXT_SIZE));
         });
         out.textures_delta.clear();

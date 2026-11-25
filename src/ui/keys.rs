@@ -1,7 +1,7 @@
 //! every command that has a key, in one table. the table of keys (`?`, fig. 21), the right-click menu and the tooltips
 //! on the strip's and the bar's buttons are all read from it, so they say the same. it holds only keys that work.
 
-use super::{font, text_top, widgets, DIM, FG, HOVER, MONO, MONO_MEDIUM, SANS};
+use super::{font, text_top, widgets, DIM, FG, HOVER, MONO_MEDIUM, SANS};
 use crate::event::{Key, Mods};
 use egui::{Align2, Color32, Pos2, Rect, Sense, Vec2};
 
@@ -217,7 +217,8 @@ pub fn line(key: Key, mods: Mods) -> Option<(String, String)> {
 pub fn table(ui: &egui::Ui, full: Rect) {
     let painter = ui.painter();
     painter.rect_filled(full, 0.0, SHADE);
-    let (keys, words) = (font(MONO_MEDIUM, 11.0), font(MONO, 11.0));
+    // the keys mono, what they do in archivo (the owner's rule: mono for titles and numbers only)
+    let (keys, words) = (font(MONO_MEDIUM, 11.0), font(SANS, 12.0));
     let laid: Vec<_> = lines().into_iter().map(|(k, w)| (painter.layout_no_wrap(k, keys.clone(), FG), painter.layout_no_wrap(w.to_string(), words.clone(), DIM))).collect();
     // a column's words start where its keys end (12 past the longest, which the design's keys never come near) and
     // it is as wide as its longest words

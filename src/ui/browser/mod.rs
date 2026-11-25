@@ -668,7 +668,7 @@ impl State {
         // metadata column came in: the owner saw it flash, 2026-11-24.)
         let names = [(View::Both, "list + gallery"), (View::Gallery, "gallery"), (View::List, "list")];
         let now = self.nav.view;
-        let label = painter.layout_no_wrap(names.iter().find(|(view, _)| *view == now).map_or("", |(_, name)| name).to_string(), font(MONO, 11.5), FG);
+        let label = painter.layout_no_wrap(names.iter().find(|(view, _)| *view == now).map_or("", |(_, name)| name).to_string(), font(SANS, 12.0), FG);
         let size = Vec2::new(1.0 + 9.0 + label.size().x + 8.0 + 7.0 + 9.0 + 1.0, 27.5);
         let view = Rect::from_min_size(Pos2::new(rect.right() - 10.0 - size.x, middle - size.y / 2.0), size);
         let over_view = ui.rect_contains_pointer(view);
@@ -692,7 +692,7 @@ impl State {
                         ui.painter().rect_filled(row, 0.0, HOVER);
                     }
                     let on = *to == now;
-                    text(ui.painter(), row.left() + 10.0, row.center().y, name, font(if on { MONO_MEDIUM } else { MONO }, 11.5), if on { FG } else { DIM }, row.width() - 20.0);
+                    text(ui.painter(), row.left() + 10.0, row.center().y, name, font(if on { "sans-semibold" } else { SANS }, 12.0), if on { FG } else { DIM }, row.width() - 20.0);
                     if response.clicked() {
                         clicks.push((Click::View(*to), None));
                     }
@@ -706,7 +706,7 @@ impl State {
         }
         let mut right = view.left() - 6.0;
         if self.nav.cards().nth(1).is_some() {
-            let label = painter.layout_no_wrap("open folder".to_string(), font(MONO, 11.5), FG);
+            let label = painter.layout_no_wrap("open folder".to_string(), font(SANS, 12.0), FG);
             let keys = painter.layout_no_wrap("shift + enter".to_string(), font(MONO_MEDIUM, 9.5), DIM);
             let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
             let play = Rect::from_min_size(Pos2::new(right - size.x, middle - size.y / 2.0), size);
@@ -1010,14 +1010,14 @@ impl State {
         if self.nav.volume == Volume::Network {
             let asked = self.previews.contains(&folder);
             let reads: usize = self.nav.entries(&folder).iter().filter(|e| nav::makes_pictures(Volume::Network, e, true)).map(nav::files_read).sum();
-            let ask = (!asked && reads > 0).then(|| painter.layout_no_wrap(previews_label(reads), font(MONO, 11.5), FG));
+            let ask = (!asked && reads > 0).then(|| painter.layout_no_wrap(previews_label(reads), font(SANS, 12.0), FG));
             let (head, rest) = network_note(asked, self.asked.iter().any(|f| f.parent() == Some(folder.as_path())));
             let button_size = ask.as_ref().map(|label| Vec2::new(label.size().x + 20.0, 11.5 * 1.5 + 14.0));
             let mut job = LayoutJob::default();
             job.wrap.max_width = rect.width() - 28.0 - 3.0 - 24.0 - button_size.map_or(0.0, |s| s.x + 14.0);
-            let format = |family: &str, color| TextFormat { font_id: font(family, 11.5), color, line_height: Some(11.5 * 1.5), ..Default::default() };
-            job.append(head, 0.0, format(MONO_MEDIUM, FG));
-            job.append(&rest, 0.0, format(MONO, DIM));
+            let format = |family: &str, color| TextFormat { font_id: font(family, 12.0), color, line_height: Some(12.0 * 1.5), ..Default::default() };
+            job.append(head, 0.0, format("sans-semibold", FG));
+            job.append(&rest, 0.0, format(SANS, DIM));
             let galley = painter.layout_job(job);
             // the text and the button are centered on each other
             let inside = galley.size().y.max(button_size.map_or(0.0, |s| s.y));
@@ -1047,7 +1047,7 @@ impl State {
         if self.grid_folder != folder {
             (self.grid_folder, self.grid_scroll, self.revealed) = (folder.to_path_buf(), 0.0, None);
         }
-        let say = |words: &str| text(&painter, rect.left() + 14.0, rect.top() + 14.0 + NAME / 2.0, words, font(MONO, 11.5), DIM, rect.width() - 28.0);
+        let say = |words: &str| text(&painter, rect.left() + 14.0, rect.top() + 14.0 + NAME / 2.0, words, font(SANS, 12.5), DIM, rect.width() - 28.0);
         let entries = match self.nav.listings.get(folder) {
             None => {
                 say("reading…");
@@ -1140,13 +1140,13 @@ impl State {
         let mut y = rect.top() + 14.0;
         text(&painter, left, y + NAME / 2.0, "this folder cannot be read", font(MONO_MEDIUM, 11.5), FG, width);
         y += NAME + 6.0;
-        let galley = painter.layout(why.to_string(), font(MONO, 11.5), DIM, width);
+        let galley = painter.layout(why.to_string(), font(SANS, 12.5), DIM, width);
         let height = galley.size().y;
         painter.galley(Pos2::new(left, y), galley, DIM);
         y += height + 14.0;
         let mut x = left;
         for (i, (place, _)) in self.places.iter().filter(|(p, _)| p.group == Group::Known).enumerate() {
-            let label = painter.layout_no_wrap(place.name.clone(), font(MONO_MEDIUM, 11.0), FG);
+            let label = painter.layout_no_wrap(place.name.clone(), font(SANS, 12.0), FG);
             let size = Vec2::new(label.size().x + 18.0, 25.0);
             if x > left && x + size.x > left + width {
                 (x, y) = (left, y + size.y + 6.0);
@@ -1183,7 +1183,7 @@ impl State {
         let acts = [first].into_iter().chain(third.filter(|_| !many));
         for (i, (label, click)) in acts.enumerate() {
             let strong = i == 0;
-            let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), if strong { ON_STRONG } else { FG });
+            let galley = painter.layout_no_wrap(label.to_string(), font(SANS, 12.0), if strong { ON_STRONG } else { FG });
             let button_rect = Rect::from_min_size(Pos2::new(x, foot), Vec2::new(galley.size().x + 18.0, 25.0));
             if button(ui, &painter, button_rect, ("brw-act", i), galley, strong) {
                 clicks.push((click, None));
@@ -1431,7 +1431,9 @@ fn listed_facts(entry: &Entry) -> Vec<Row> {
 /// the metadata column's facts, each label beside its value, with a rule between groups. a value's first part is
 /// bright and what follows its first " · " dim; a fault is amber, an assumption dim. returns where they end.
 fn rows(painter: &Painter, left: f32, mut y: f32, width: f32, groups: &[Vec<Row>]) -> f32 {
+    // names and values mono; what the file does not say, and a fault, are sentences, in archivo
     let format = |color| TextFormat { font_id: font(MONO, 11.5), color, line_height: Some(META_LINE), ..Default::default() };
+    let words = |color| TextFormat { font_id: font(SANS, 12.0), color, line_height: Some(META_LINE), ..Default::default() };
     for (g, group) in groups.iter().enumerate() {
         if g > 0 {
             painter.rect_filled(Rect::from_min_size(Pos2::new(left, y + 2.0), Vec2::new(width, 1.0)), 0.0, LINE);
@@ -1445,8 +1447,8 @@ fn rows(painter: &Painter, left: f32, mut y: f32, width: f32, groups: &[Vec<Row>
             let mut value = LayoutJob::default();
             value.wrap.max_width = width - 96.0;
             match row.tone {
-                Tone::Fault => value.append(&format!("! {}", row.value), 0.0, format(AMBER)),
-                Tone::Assumed => value.append(&row.value, 0.0, format(DIM)),
+                Tone::Fault => value.append(&format!("! {}", row.value), 0.0, words(AMBER)),
+                Tone::Assumed => value.append(&row.value, 0.0, words(DIM)),
                 Tone::Plain => match row.value.split_once(" · ") {
                     Some((first, rest)) => {
                         value.append(first, 0.0, format(FG));
@@ -1568,13 +1570,14 @@ mod tests {
         ctx.set_fonts(super::super::fonts());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let has = |family: &str, words: &str| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 11.5), words));
-            assert!(["PLACES", "PINNED IN EXPLORER", "VOLUMES", "RECENT", "net", "open", "reveal", "read metadata"].iter().all(|w| has(MONO_MEDIUM, w)));
+            assert!(["PLACES", "PINNED IN EXPLORER", "VOLUMES", "RECENT", "net"].iter().all(|w| has(MONO_MEDIUM, w)));
+            assert!(["open", "reveal", "read metadata", "open selected", "open folder", "list + gallery"].iter().all(|w| has(SANS, w)));
             assert!(has(SANS, &recent_name(Path::new(r"D:\delivery_2026-11-20\wall"), |n| n.len() < 12)) && has(SANS, "system (C:)"));
             for (previews, opened) in [(false, false), (false, true), (true, false)] {
                 let (head, rest) = network_note(previews, opened);
-                assert!(has(MONO_MEDIUM, head) && has(MONO, &rest), "{head}{rest}");
+                assert!(has("sans-semibold", head) && has(SANS, &rest), "{head}{rest}");
             }
-            assert!(has(MONO, &previews_label(300)) && has(MONO, &previews_label(1)));
+            assert!(has(SANS, &previews_label(300)) && has(SANS, &previews_label(1)));
         });
         out.textures_delta.clear();
     }

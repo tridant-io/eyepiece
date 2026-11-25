@@ -919,7 +919,7 @@ impl Ui {
         let mut left = full.left() + 10.0;
         let linear = model.linear.then(|| vec![("linear".to_string(), FG), (" · shown through srgb".to_string(), DIM)]);
         for parts in [seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)]), linear].into_iter().flatten() {
-            left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0).right() + 8.0;
+            left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0, MONO_MEDIUM).right() + 8.0;
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
         // with the controls away, what a key did is said at the lower left for a moment (the design's fig. 09): the
@@ -953,7 +953,7 @@ impl Ui {
         let low = self.navigator(ui, full, low, model, now, actions).map_or(low, |navigator| navigator.top() - 8.0);
         match &self.flash {
             Some((parts, until)) if now < *until => {
-                chip(ui, Pos2::new(full.left() + 10.0, low), Align2::LEFT_BOTTOM, parts, 1.0);
+                chip(ui, Pos2::new(full.left() + 10.0, low), Align2::LEFT_BOTTOM, parts, 1.0, MONO_MEDIUM);
                 ui.ctx().request_repaint_after(Duration::from_secs_f64(until - now));
             }
             _ => self.flash = None,
@@ -1109,7 +1109,7 @@ impl Ui {
                 parts.push((format!("{r} {g} {b}"), FG));
             }
         }
-        chip(ui, right_top, Align2::RIGHT_TOP, &parts, alpha);
+        chip(ui, right_top, Align2::RIGHT_TOP, &parts, alpha, MONO_MEDIUM);
     }
 
     /// the strip along the top: the tabs, and the window's own buttons. it is the title bar: a drag on it moves the
@@ -1491,7 +1491,7 @@ impl Ui {
         let corner = Pos2::new(if left { button.left() } else { button.right() }, if low { full.bottom() - (1.0 + ROW + TIME) - 7.0 } else { full.top() + STRIP + 7.0 });
         let anchor = Align2([if left { egui::Align::Min } else { egui::Align::Max }, if low { egui::Align::Max } else { egui::Align::Min }]);
         let key = if key.is_empty() { key } else { format!(" · {key}") };
-        chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0);
+        chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0, SANS);
     }
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
@@ -1600,16 +1600,16 @@ fn cut_middle(painter: &egui::Painter, name: &str, font_id: FontId, color: Color
 fn toast(ui: &egui::Ui, full: Rect, said: &str) {
     let (done, rest) = said.split_once(" · ").map_or((said, ""), |(done, rest)| (done, rest));
     let mut job = LayoutJob::default();
-    job.append(done, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color: FG, ..Default::default() });
+    job.append(done, 0.0, TextFormat { font_id: font(SANS, 12.5), color: FG, ..Default::default() });
     if !rest.is_empty() {
-        job.append(&format!(" · {rest}"), 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color: DIM, ..Default::default() });
+        job.append(&format!(" · {rest}"), 0.0, TextFormat { font_id: font(SANS, 12.5), color: DIM, ..Default::default() });
     }
     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
     let galley = painter.layout_job(job);
     let rect = Align2::CENTER_BOTTOM.anchor_size(Pos2::new(full.center().x, full.bottom() - 64.0), galley.size() + Vec2::new(24.0, 18.0));
     painter.rect_filled(rect, 0.0, SOLID);
     painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-    painter.galley(Pos2::new(rect.left() + 12.0, text_top(&painter, font(MONO_MEDIUM, 11.5), rect.center().y)), galley, FG);
+    painter.galley(Pos2::new(rect.left() + 12.0, text_top(&painter, font(SANS, 12.5), rect.center().y)), galley, FG);
 }
 
 /// a tab whose file did not open: its name and why, in the middle.
@@ -1618,7 +1618,7 @@ fn message(ui: &egui::Ui, area: Rect, title: &str, why: &str) {
     painter.rect_filled(area, 0.0, MESSAGE);
     let width = (area.width() - 40.0).min(460.0);
     let title = painter.layout(title.to_string(), font("sans-semibold", 15.0), FG, width);
-    let why = painter.layout(why.to_string(), font(MONO, 12.0), DIM, width);
+    let why = painter.layout(why.to_string(), font(SANS, 13.0), DIM, width);
     let top = area.center().y - (title.size().y + 8.0 + why.size().y) / 2.0;
     let under = top + title.size().y + 8.0;
     painter.galley(Pos2::new(area.center().x - title.size().x / 2.0, top), title, FG);
@@ -1669,18 +1669,21 @@ fn carries_sound(model: &Model) -> bool {
     }
 }
 
-/// a chip: a few words in a dark box, placed by one of its corners. returns the box.
-fn chip(ui: &egui::Ui, corner: Pos2, anchor: Align2, parts: &[(String, Color32)], alpha: f32) -> Rect {
+/// a chip: a few words in a dark box, placed by one of its corners, its first part in `first`'s type and the rest
+/// mono: a tooltip's words are archivo and its key mono, and the chips on the picture, which say values, are mono
+/// throughout. returns the box.
+fn chip(ui: &egui::Ui, corner: Pos2, anchor: Align2, parts: &[(String, Color32)], alpha: f32, first: &str) -> Rect {
+    let in_type = |i: usize| if i == 0 && first == SANS { font(SANS, 12.0) } else { font(MONO_MEDIUM, 11.0) };
     let mut job = LayoutJob::default();
-    for (text, color) in parts {
-        job.append(text, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.0), color: color.gamma_multiply(alpha), ..Default::default() });
+    for (i, (text, color)) in parts.iter().enumerate() {
+        job.append(text, 0.0, TextFormat { font_id: in_type(i), color: color.gamma_multiply(alpha), ..Default::default() });
     }
     let painter = ui.painter();
     let galley = painter.layout_job(job);
     let rect = anchor.anchor_size(corner, galley.size() + Vec2::new(16.0, 12.0));
     painter.rect_filled(rect, 0.0, CHIP.gamma_multiply(alpha));
     painter.rect_stroke(rect, 0.0, (1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
-    painter.galley(Pos2::new(rect.left() + 8.0, text_top(painter, font(MONO_MEDIUM, 11.0), rect.center().y)), galley, FG);
+    painter.galley(Pos2::new(rect.left() + 8.0, text_top(painter, in_type(0), rect.center().y)), galley, FG);
     rect
 }
 
@@ -1747,7 +1750,7 @@ fn stamp(frame: usize, first: usize, clock: Option<Timecode>, timecode: bool) ->
 /// a line of trouble with the amber edge: the one place amber is used, for a fault in the file. returns its box.
 fn banner(ui: &egui::Ui, at: Pos2, width: f32, text: &str) -> Rect {
     let painter = ui.painter();
-    let galley = painter.layout(text.to_string(), font(MONO, 11.5), DIM, width - 24.0);
+    let galley = painter.layout(text.to_string(), font(SANS, 12.5), DIM, width - 24.0);
     let rect = Rect::from_min_size(at, galley.size() + Vec2::new(22.0, 16.0));
     painter.rect_filled(rect, 0.0, BANNER);
     painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);

@@ -88,11 +88,11 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .dec h3{grid-column:2}
 .dec p{grid-column:2;max-width:76ch}
 .dec .rec{grid-column:2;font-size:14.5px;color:var(--ink)}
-.dec .rec::before{content:"recommend";font:500 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-right:10px}
+.dec .rec::before{content:"decided";font:500 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-right:10px}
 
 /* ---------- the mocks: drawn at the design's px, no script. a frame scrolls sideways when the page is narrower ---------- */
 .mx{overflow-x:auto;min-width:0}
-.m{position:relative;color:var(--pl-fg);font:400 12.5px/1.3 var(--sans);user-select:none;-webkit-user-select:none;flex:none}
+.m{position:relative;color:var(--pl-fg);font:400 12.5px/1.3 var(--sans);font-variant-numeric:tabular-nums;user-select:none;-webkit-user-select:none;flex:none}
 .m svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:square;display:block;flex:none}
 .m b{font-weight:inherit}
 .m kbd{font:500 10px/1 var(--mono);padding:2px 4px;min-width:0;background:none;border:1px solid var(--pl-line);border-radius:3px;color:var(--pl-dim)}
@@ -124,21 +124,41 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 /* new on the strip: the gear, and the update button beside it */
 .gear{width:32px;display:flex;align-items:center;justify-content:center;color:var(--pl-fg)}
 .gear.on,.upd.on{background:rgba(255,255,255,.1)}
-.upd{align-self:center;height:22px;display:flex;align-items:center;padding:0 9px;margin-right:4px;border:1px solid var(--pl-line);font:500 11px/1 var(--mono);color:var(--pl-fg)}
+.upd{align-self:center;height:22px;display:flex;align-items:center;padding:0 9px;margin-right:4px;border:1px solid var(--pl-line);font:500 12px/1 var(--sans);color:var(--pl-fg)}
 /* macos: the system's own buttons over the strip's left 78 */
 .lights{width:78px;flex:none;display:flex;align-items:center;gap:8px;padding-left:12px}
 .lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.3)}
 .lights i:nth-child(2){background:#febc2e} .lights i:nth-child(3){background:#28c840}
-.chip{position:absolute;font:500 11px/1 var(--mono);background:rgba(0,0,0,.72);color:var(--pl-fg);padding:6px 8px;border:1px solid var(--pl-line);white-space:nowrap}
-.chip em{font-style:normal;color:var(--pl-dim)}
+.chip{position:absolute;font:500 12px/1 var(--sans);background:rgba(0,0,0,.72);color:var(--pl-fg);padding:6px 8px;border:1px solid var(--pl-line);white-space:nowrap}
+.chip em{font:500 11px/1 var(--mono);font-style:normal;color:var(--pl-dim)}
 /* new on the strip: help, and the tridant mark with its card */
 .qb{width:32px;display:flex;align-items:center;justify-content:center;color:var(--pl-fg)}
 .qb.on{background:rgba(255,255,255,.1)}
 .mark{width:32px;display:flex;align-items:center;justify-content:center;color:var(--pl-dim)}
 .mark.on{color:var(--pl-fg)}
 .m svg.st{width:14px;height:14px;display:block;fill:currentColor;stroke:currentColor;stroke-width:4;stroke-linejoin:miter;stroke-miterlimit:8}
-.tcard{position:absolute;display:flex;flex-direction:column;gap:8px;padding:9px 11px;background:rgba(0,0,0,.72);border:1px solid var(--pl-line);font:500 11px/1 var(--mono);color:var(--pl-fg);white-space:nowrap}
+.tcard{position:absolute;display:flex;align-items:center;gap:12px;padding:10px 14px 10px 10px;background:rgba(0,0,0,.72);border:1px solid var(--pl-line);font:500 12px/1 var(--sans);color:var(--pl-fg);white-space:nowrap}
+.tcard .tl{display:flex;flex-direction:column;gap:8px}
+.tcard .v{font:500 11.5px/1 var(--mono)}
 .tcard em{font-style:normal;color:var(--pl-dim)}
+/* the card's star: the kit's medium cut at 40, centered on the star's own middle so it turns in place */
+.m svg.cstar{width:40px;height:40px;display:block;flex:none;fill:currentColor;stroke:currentColor;stroke-width:4;stroke-linejoin:miter;stroke-miterlimit:8;overflow:visible}
+.cstar use{transform-box:view-box;transform-origin:33.1px 41.1px;animation:cstar-boot .7s 1 both,cstar-index 3.6s 1.2s infinite}
+/* boot as tridant.io's hero: two indexed stops from -150 deg at 55%, then out to full. ease is out-expo; every stop locks dead */
+@keyframes cstar-boot{
+  0%{transform:rotate(-150deg) scale(.55);animation-timing-function:cubic-bezier(.16,1,.3,1)}
+  21.4%{transform:rotate(-60deg) scale(.55)}
+  30%{transform:rotate(-60deg) scale(.55);animation-timing-function:cubic-bezier(.16,1,.3,1)}
+  48.6%{transform:rotate(0deg) scale(.55)}
+  57.1%{transform:rotate(0deg) scale(.55);animation-timing-function:cubic-bezier(.16,1,.3,1)}
+  91.4%,100%{transform:rotate(0deg) scale(1)}
+}
+/* one 120 deg throw in 360 ms; at 120 the star looks as at 0, so the jump back each cycle cannot be seen */
+@keyframes cstar-index{
+  0%{transform:rotate(0deg);animation-timing-function:cubic-bezier(.16,1,.3,1)}
+  10%,100%{transform:rotate(120deg)}
+}
+@media (prefers-reduced-motion: reduce){ .cstar use{animation:none} }
 
 /* the settings panel: 760 x 500, a sidebar of pages and the page */
 .set{width:760px;height:500px;display:grid;grid-template-columns:176px minmax(0,1fr);background:var(--pl-solid);border:1px solid var(--pl-line);box-shadow:0 10px 28px rgba(0,0,0,.5);overflow:hidden;position:relative;z-index:3}
@@ -152,9 +172,9 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .ph>b{font:600 14px/1 var(--sans);color:var(--pl-fg);margin-right:auto}
 .xb{width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--pl-dim)}
 .pb{flex:1 1 auto;min-height:0;overflow:hidden;padding:2px 20px 8px;display:flex;flex-direction:column;position:relative}
-.pf{height:40px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-top:1px solid var(--pl-line);font:400 10.5px/1 var(--mono);color:#777}
+.pf{height:40px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-top:1px solid var(--pl-line);font:400 11.5px/1.3 var(--sans);color:#8a8a8a}
 .pf .quiet{margin-right:auto}
-.quiet{font:500 11px/1 var(--mono);color:var(--pl-dim);text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.28)}
+.quiet{font:500 12px/1 var(--sans);color:var(--pl-dim);text-decoration:underline;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.28)}
 .gl{margin:14px 0 2px;font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#777}
 .r{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:3px 16px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.07)}
 .r:last-child{border-bottom:0}
@@ -168,7 +188,7 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .sw::after{content:"";position:absolute;left:2px;top:2px;width:8px;height:8px;background:var(--pl-dim)}
 .sw.on{border-color:var(--pl-accent)} .sw.on::after{left:14px;background:var(--pl-accent)}
 .seg{display:flex;border:1px solid var(--pl-line)}
-.seg span{height:26px;display:flex;align-items:center;padding:0 11px;font:500 11px/1 var(--mono);border-right:1px solid var(--pl-line);color:var(--pl-dim);white-space:nowrap}
+.seg span{height:26px;display:flex;align-items:center;padding:0 11px;font:500 12px/1 var(--sans);border-right:1px solid var(--pl-line);color:var(--pl-dim);white-space:nowrap}
 .seg span:last-child{border-right:0}
 .seg span.on{background:#ececec;color:#111}
 .fld{display:flex;align-items:center;gap:4px;border:1px solid var(--pl-line);padding:0 7px;height:26px;font:500 11.5px/1 var(--mono);color:var(--pl-dim);white-space:nowrap}
@@ -176,7 +196,7 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .fld.f{border-color:var(--pl-accent)}
 .fld.f b::after{content:"";display:inline-block;width:1px;height:13px;background:var(--pl-fg);margin-left:1px;vertical-align:-2px}
 .fld.off{opacity:.45}
-.bt{height:26px;display:flex;align-items:center;gap:7px;padding:0 9px;border:1px solid var(--pl-line);font:500 11px/1 var(--mono);color:var(--pl-fg);white-space:nowrap}
+.bt{height:26px;display:flex;align-items:center;gap:7px;padding:0 9px;border:1px solid var(--pl-line);font:500 12px/1 var(--sans);color:var(--pl-fg);white-space:nowrap}
 .bt.fill{background:#ececec;border-color:#ececec;color:#111}
 .bt.off{color:#5f5f5f}
 .tag{font:500 9px/1 var(--mono);letter-spacing:.1em;border:1px solid #555;color:#888;padding:3px 4px;text-transform:uppercase}
@@ -187,7 +207,7 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .rng u{position:absolute;top:0;width:14px;height:14px;border-radius:50%;background:var(--pl-accent);margin-left:-7px}
 .meter{width:120px;height:4px;background:rgba(255,255,255,.2);position:relative;display:block}
 .meter i{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.55)}
-.lnk{color:var(--pl-fg);text-decoration:underline dotted;text-underline-offset:3px;font:500 11px/1 var(--mono)}
+.lnk{color:var(--pl-fg);text-decoration:underline dotted;text-underline-offset:3px;font:500 12px/1 var(--sans)}
 .scrollbar{position:absolute;right:3px;width:4px;background:rgba(255,255,255,.22);border-radius:2px}
 
 /* about */
@@ -196,39 +216,39 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .who .nm{font:600 22px/1 var(--sans);color:var(--pl-fg);letter-spacing:-.005em}
 .who .vr{font:500 12px/1 var(--mono);color:var(--pl-fg);margin-top:9px}
 .who .vr i{font-style:normal;color:var(--pl-dim)}
-.who .bd{font:400 11px/1 var(--mono);color:var(--pl-dim);margin-top:6px}
+.who .bd{font:400 12px/1.35 var(--sans);color:var(--pl-dim);margin-top:6px}
 .sys{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--pl-dim);margin-top:9px}
 .sys b{color:var(--pl-fg)}
 .m svg.star{width:11px;height:11px;display:block;fill:var(--pl-dim);stroke:var(--pl-dim);stroke-width:4;stroke-linejoin:miter;stroke-miterlimit:8}
 .m svg.wm{width:69px;height:12px;display:block;fill:#e2e8f4;stroke:none;overflow:visible}
 .ub{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:center;border:1px solid var(--pl-line);padding:11px 12px}
 .ub .l{font-size:12.5px;color:var(--pl-fg)}
-.ub .n{grid-column:1;font:400 11px/1.3 var(--mono);color:var(--pl-dim)}
+.ub .n{grid-column:1;font:400 11.5px/1.35 var(--sans);color:var(--pl-dim)}
 .ub .c{grid-column:2;grid-row:1 / span 2;display:flex;gap:6px}
 .links{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.foot{margin-top:auto;display:flex;align-items:flex-end;justify-content:space-between;padding-top:12px;font:400 10.5px/1 var(--mono);color:var(--pl-dim)}
+.foot{margin-top:auto;display:flex;align-items:flex-end;justify-content:space-between;padding-top:12px;font:400 11.5px/1 var(--sans);color:var(--pl-dim)}
 
 /* the update modal */
 .mod{width:440px;background:var(--pl-solid);border:1px solid var(--pl-line);box-shadow:0 10px 28px rgba(0,0,0,.5);display:flex;flex-direction:column;position:relative;z-index:3}
 .mod .mh{padding:18px 20px 0;display:flex;flex-direction:column;gap:7px}
 .mod .mh b{font:600 15px/1.25 var(--sans);color:var(--pl-fg)}
-.mod .mh span{font:400 11px/1.4 var(--mono);color:var(--pl-dim)}
+.mod .mh span{font:400 12px/1.4 var(--sans);color:var(--pl-dim)}
 .mod .mb{padding:14px 20px 0;display:flex;flex-direction:column;gap:10px}
 .mod h6{margin:0;font:500 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--pl-dim);display:flex;justify-content:space-between;align-items:center}
 .mod h6 .lnk{letter-spacing:0;text-transform:none}
 .notes{display:grid;grid-template-columns:58px minmax(0,1fr);gap:6px 8px;margin:0}
 .notes dt{font:500 10px/1.45 var(--mono);letter-spacing:.04em;color:var(--pl-dim)}
 .notes dd{margin:0;font-size:12px;line-height:1.35;color:var(--pl-fg)}
-.mod .note{font:400 11px/1.45 var(--mono);color:var(--pl-dim)}
+.mod .note{font:400 12px/1.45 var(--sans);color:var(--pl-dim)}
 .mod .note b{color:var(--pl-fg);font-weight:500}
 .mod .mf{padding:16px 20px 18px;display:flex;gap:8px;align-items:center;justify-content:flex-end}
 .mod .mf .note{margin-right:auto}
 .prog{height:4px;background:rgba(255,255,255,.2);position:relative}
 .prog i{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.55)}
-.steps{display:grid;grid-template-columns:96px minmax(0,1fr);gap:6px 10px;margin:0;font:400 11px/1.35 var(--mono)}
+.steps{display:grid;grid-template-columns:96px minmax(0,1fr);gap:6px 10px;margin:0;font:400 12px/1.35 var(--sans)}
 .steps dt{color:var(--pl-dim)} .steps dd{margin:0;color:#6d6d6d}
 .steps .now{color:var(--pl-fg)} .steps dd.done{color:var(--pl-dim)}
-.fail{border:1px solid var(--pl-line);border-left:2px solid var(--pl-dim);padding:9px 11px;font:400 11.5px/1.5 var(--mono);color:var(--pl-dim)}
+.fail{border:1px solid var(--pl-line);border-left:2px solid var(--pl-dim);padding:9px 11px;font:400 12px/1.5 var(--sans);color:var(--pl-dim)}
 .fail b{color:var(--pl-fg);font-weight:500}
 .mods{display:grid;grid-template-columns:440px 440px;gap:24px;align-items:start}
 
@@ -236,16 +256,17 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .find{display:flex;align-items:center;gap:8px;padding:12px 0 10px}
 .find .fld{flex:1}
 .find .fld b{flex:1}
-.txt{flex:1 1 auto;min-height:0;position:relative;border:1px solid var(--pl-line);background:#0f0f0f;padding:9px 14px 9px 11px;overflow:hidden;font:400 10px/1.55 var(--mono);color:var(--pl-dim);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
-.txt b{color:var(--pl-fg);font-weight:500}
+.txt{flex:1 1 auto;min-height:0;position:relative;border:1px solid var(--pl-line);background:#0f0f0f;padding:9px 14px 9px 11px;overflow:hidden;font:400 11px/1.55 var(--sans);color:var(--pl-dim);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+.txt b{color:var(--pl-fg);font:500 10.5px/1.55 var(--mono)}
+.txt .v{font:400 10.5px/1.55 var(--mono)}
 .txt mark{background:rgba(255,255,255,.22);color:var(--pl-fg)}
 .txt mark.cur{background:#ececec;color:#111}
 
 /* keys */
 .kcols{display:grid;grid-template-columns:1fr 1fr;gap:0 26px;padding-top:4px}
 .kcols h6{margin:12px 0 4px;font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#777}
-.kr{display:grid;grid-template-columns:104px minmax(0,1fr);font:400 11px/17px var(--mono);color:var(--pl-dim);white-space:nowrap}
-.kr b{font-weight:500;color:var(--pl-fg)}
+.kr{display:grid;grid-template-columns:104px minmax(0,1fr);font:400 11.5px/17px var(--sans);color:var(--pl-dim);white-space:nowrap}
+.kr b{font:500 10.5px/17px var(--mono);color:var(--pl-fg)}
 
 /* display: what the background choices look like */
 .bgs{display:flex;gap:14px;flex-wrap:nowrap}
@@ -253,11 +274,11 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 .mini{width:160px;height:120px;position:relative;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px rgba(255,255,255,.16)}
 .mini svg{width:160px;height:90px;display:block}
 .mini .chip{top:6px;left:6px;font-size:9.5px;padding:4px 5px}
-.bgs .cap{font:400 10px/1.3 var(--mono);color:#8a8a8a}
+.bgs .cap{font:400 11px/1.3 var(--sans);color:#8a8a8a}
 .checker{background:repeating-conic-gradient(#5a5a5a 0 25%,#8c8c8c 0 50%) 0 0/16px 16px}
 .find .n{font:400 11px/1 var(--mono);color:var(--pl-dim);white-space:nowrap}
 .txt .rule{display:block;height:1px;background:rgba(255,255,255,.14);margin:2px 0}
-.lic{margin-top:12px;font:400 11px/1.45 var(--mono);color:var(--pl-dim)}
+.lic{margin-top:12px;font:400 12px/1.45 var(--sans);color:var(--pl-dim)}
 .intro{padding-top:14px;font-size:12.5px;line-height:1.45;color:var(--pl-fg);max-width:500px}
 .feat{display:grid;grid-template-columns:1fr 1fr;gap:12px 22px;margin-top:16px}
 .feat b{display:block;font:600 12px/1.3 var(--sans);color:var(--pl-fg);margin-bottom:3px}
@@ -267,7 +288,6 @@ td.g{font:500 11px/1.9 var(--mono);letter-spacing:.14em;text-transform:uppercase
 p,li{overflow-wrap:break-word}
 .hint,ul.plain .mono{overflow-wrap:anywhere}
 .kcols>div:last-child .kr{grid-template-columns:100px minmax(0,1fr)}
-.kr{font-size:10.5px}
 .kcols h6{margin-top:10px}
 .knote{padding:12px 0 2px;font-size:11px;line-height:1.4;color:var(--pl-dim)}
 @media (prefers-reduced-motion: reduce){ *{transition:none!important} }
@@ -316,27 +336,29 @@ p,li{overflow-wrap:break-word}
 
 <header class="mast">
   <div class="mast-line">
-    <span class="eyebrow"><b>tridant</b> · eyepiece · design for approval</span>
-    <span class="eyebrow">section 11 of the plan · draft 2026-11-24 · nothing here is built</span>
+    <span class="eyebrow"><b>tridant</b> · eyepiece · section 11 of the plan</span>
+    <span class="eyebrow">approved 2026-11-24 · being built</span>
   </div>
 </header>
 
 <section id="settings">
   <div class="sh"><span class="tab">11</span><h2>Settings, about and updates</h2></div>
-  <p class="lede">your ask, 2026-11-24: a gear for the app's settings, at the top right on a mac and beside minimize on windows. a sidebar of pages, general and about first, the open-source notices the law asks for, and "a tridant system" on the about page. and, once the repo is public, a check for new releases at launch that never asks by itself: an <b>update</b> button beside the gear, a modal with the new version, and update or cancel. this section draws all of it before any of it is coded, so you can check the features first.</p>
+  <p class="lede">your ask, 2026-11-24: a gear for the app's settings, at the top right on a mac and beside minimize on windows. a sidebar of pages, general and about first, the open-source notices the law asks for, and "a tridant system" on the about page. and, once the repo is public, a check for new releases at launch that never asks by itself: an <b>update</b> button beside the gear, a modal with the new version, and update or cancel. this section drew all of it before any of it was coded. you approved it on 2026-11-24, with two changes made here: the app's description, and mono kept for titles and numbers only.</p>
   <p>everything below follows the plan's rules: no accent on the strip, orange only on switches, sliders and the focused field, amber only for a fault in a file, a chip for anything that changes the picture, and your keys where they are. figures go on from section 05's fig. 31, so this section starts at <b>fig. 32</b>. the mocks are drawn at the design's own pixels; on a narrow screen each frame scrolls sideways on its own.</p>
 
   <div class="stack">
-    <h3>decided for this draft, each yours to overrule</h3>
+    <h3>decided for this draft, approved 2026-11-24</h3>
     <div class="scroll"><table>
       <tr><th>what</th><th>as drawn</th><th>fig.</th></tr>
       <tr><td>where settings live</td><td>a panel drawn inside the player's window, over whatever is up, as the table of keys is. not a second os window. about 760 × 500 at the design's scale: pages at the left, the page at the right. esc, its close mark or a press outside it closes it; it scrolls when the window is smaller.</td><td class="mono">33</td></tr>
       <tr><td>how it opens</td><td>the gear, and <kbd>ctrl</kbd> + <kbd>,</kbd> (<kbd>cmd</kbd> + <kbd>,</kbd> on a mac). a new key; none of yours moves.</td><td class="mono">32</td></tr>
       <tr><td>the strip's right end</td><td>left to right: <b>update</b> (only when there is one), <b>?</b>, the gear, the tridant mark; then on windows minimize, maximize and close. on macos, where the system's buttons hold the left end, the mark is the last thing at the right.</td><td class="mono">32</td></tr>
       <tr><td>an update is out</td><td>a quiet <b>update</b> text button, first in that row: a 1 px outline in the line color, the foreground's ink, no accent. nothing else says so: no dialog, no toast, no badge.</td><td class="mono">32</td></tr>
-      <tr><td>the tridant mark</td><td>the brand's small star, in the strip's dim ink, brighter under the pointer. resting on it shows a card that stays while the pointer is on the mark or the card: "a tridant system", the version and short commit, and tridant.io as a link. a press on the mark opens about.</td><td class="mono">32</td></tr>
+      <tr><td>the tridant mark</td><td>the brand's small star, in the strip's dim ink, brighter under the pointer. resting on it shows a card that stays while the pointer is on the mark or the card: the star, larger and moving as on tridant.io, then "eyepiece 0.1.0", "a tridant system" and tridant.io as a link. the commit stays on about. a press on the mark opens about.</td><td class="mono">32</td></tr>
       <tr><td>help</td><td>the <b>?</b> button and the <kbd>?</kbd> key open a help panel, built as settings is: "keys", the table of keys that <kbd>?</kbd> brings up over the clip today, and "what eyepiece does": what it is, its basic features, the links and the license.</td><td class="mono">39, 40</td></tr>
       <tr><td>settings pages, in order</td><td>general, about, playback, display, browser, screenshots, open-source notices. keys moved to help. the version stands at the foot of the sidebar and on about.</td><td class="mono">33–38</td></tr>
+      <tr><td>type</td><td>mono only for titles and numbers (headings, values, file names and paths, key caps); every sentence, label and button in archivo. app-wide, the owner's word, 2026-11-24.</td><td class="mono">32–40</td></tr>
+      <tr><td>what eyepiece is, in one line</td><td>"a video review player for video professionals: extremely fast, lightweight, and only what you need." the owner's word, 2026-11-24.</td><td class="mono">34, 40</td></tr>
       <tr><td>saving</td><td>a change takes effect at once and goes into settings.txt. no save button. each page has a quiet "reset this page" at its foot.</td><td class="mono">33</td></tr>
       <tr><td>the update check</td><td>at launch, off the drawing thread, after the first frame. one unauthenticated GET of the repo's latest release, at most once a launch and once a day. no account, no telemetry; nothing sent but the request, as <span class="mono">eyepiece/&lt;version&gt;</span>. offline or refused: silent, tried at the next launch. a switch turns it off; about has "check now".</td><td class="mono">33, 34</td></tr>
       <tr><td>the modal</td><td>the version pair, the release date, at most three short lines of what changed and a link to the full notes; then update or cancel. update downloads, checks, puts the new build in place and restarts on the same tabs. any failure leaves the installed version as it was and says why.</td><td class="mono">35</td></tr>
@@ -361,7 +383,7 @@ p,li{overflow-wrap:break-word}
               <span class="mark on"><svg class="st"><use href="#star"/></svg></span>
               <div class="wb"><i class="w1"></i><i class="w2"></i><i class="w3"></i></div>
             </div>
-            <div class="tcard" style="top:38px;right:120px"><span><em>a</em> tridant <em>system</em></span><span><em>eyepiece</em> 0.1.0 <em>· 308cb2be</em></span><span class="lnk">tridant.io</span></div>
+            <div class="tcard" style="top:38px;right:120px"><svg class="cstar" viewBox="-12.9 -4.9 92 92" aria-hidden="true"><use href="#star" width="80.1" height="82.2"/></svg><span class="tl"><span class="v">eyepiece 0.1.0</span><span><em>a</em> tridant <em>system</em></span><span class="lnk">tridant.io</span></span></div>
           </div>
         </div>
         <div>
@@ -411,20 +433,20 @@ p,li{overflow-wrap:break-word}
           </div>
         </div>
       </div></div></div>
-      <figcaption><span class="fn">fig. 32 · the strip's right end</span><span>left to right: <b>update</b> when a newer release is out, <b>?</b> for help, the gear for settings, and the tridant mark; on windows the system's three buttons follow. on macos the system's buttons hold the strip's left 78 (as built, 2026-11-24), so the mark is the last thing at the right. update is outlined in the line color with the foreground's ink, and the mark is in the strip's dim ink, brighter under the pointer: no accent anywhere, as the strip's rule asks. nothing else says there is an update. resting on ? or the gear names it and its key in a chip, as every strip button does; resting on the mark brings up its card, which stays while the pointer is on the mark or on the card, so its link can be pressed. a press on the mark opens about. none of the four scrolls with the tabs. <b>the mark's cut:</b> the brand kit's small star, medium cut (star-medium.svg, "for small sizes"), drawn 14 × 14 in a 32 box. the kit keeps the wordmark for nav, footer and document sizes and never locks it to the star below display sizes; in a 32-high strip the wordmark would stand under 10 px tall and take a tab's room, so the star stands for it here and the wordmark appears alone on about (fig. 34). versions and the commit are examples.</span></figcaption>
+      <figcaption><span class="fn">fig. 32 · the strip's right end</span><span>left to right: <b>update</b> when a newer release is out, <b>?</b> for help, the gear for settings, and the tridant mark; on windows the system's three buttons follow. on macos the system's buttons hold the strip's left 78 (as built, 2026-11-24), so the mark is the last thing at the right. update is outlined in the line color with the foreground's ink, and the mark is in the strip's dim ink, brighter under the pointer: no accent anywhere, as the strip's rule asks. nothing else says there is an update. resting on ? or the gear names it and its key in a chip, as every strip button does; resting on the mark brings up its card, which stays while the pointer is on the mark or on the card, so its link can be pressed. a press on the mark opens about. none of the four scrolls with the tabs. <b>the mark's cut:</b> the brand kit's small star, medium cut (star-medium.svg, "for small sizes"), drawn 14 × 14 in a 32 box. the kit keeps the wordmark for nav, footer and document sizes and never locks it to the star below display sizes; in a 32-high strip the wordmark would stand under 10 px tall and take a tab's room, so the star stands for it here and the wordmark appears alone on about (fig. 34). <b>the card</b> holds the same star at 40, then "eyepiece 0.1.0", "a tridant system" and tridant.io; the commit is left to about. at 40 it is still the medium cut, the one the kit's starmark.ts names for nav, footer, cards and ui chrome, in the foreground's ink. <b>it moves as tridant.io's hero star does</b> (StarHero.astro): when the card comes up it boots, turning in from −150° in two quick stops at 55% of its size, then growing to full, 700 ms in all. while the card stays it plays the site's short machine-tool moves (a 120° throw, a retract and redeploy, the arms sharpened and returned: 360 to 2600 ms each) in shuffled order, with a still hold of 1.6 to 4.4 s between them, looping for as long as the card is up. every move eases out fast and stops dead at a multiple of 120°, where the star looks as it did, with no overshoot. it settles and stops when the card goes, and stands still under reduced motion. the site drives the star's own formula each frame (the arms' sharpness and spread, its scale and turn), and the native build should too; the mock fakes the boot with a turn and a scale, and a 120° throw every 3.6 s, in css. it draws only while the card is up, so a paused player still redraws nothing. versions are examples.</span></figcaption>
     </figure>
   </div>
 
   <div class="scroll"><table>
     <tr><th>part</th><th>size, in the design's px</th><th>type</th><th>ink</th></tr>
-    <tr><td>update</td><td>22 high, centered on the strip, 9 in at each side, 4 left of ?.</td><td>ibm plex mono 500, 11</td><td>text <span class="mono">#ededed</span>, outline 1 px <span class="mono">rgba(255,255,255,.13)</span>, no fill. hover and open: white at 10%.</td></tr>
+    <tr><td>update</td><td>22 high, centered on the strip, 9 in at each side, 4 left of ?.</td><td>archivo 500, 12</td><td>text <span class="mono">#ededed</span>, outline 1 px <span class="mono">rgba(255,255,255,.13)</span>, no fill. hover and open: white at 10%.</td></tr>
     <tr><td>?</td><td>32 × 32, the same box as <b>+</b>. a 16 × 16 question mark, stroke 1.4, square ends, its dot drawn as the info icon's.</td><td>—</td><td><span class="mono">#ededed</span>. pressed, or while help is open: white at 10% behind it.</td></tr>
     <tr><td>gear</td><td>32 × 32. the icon 16 × 16, stroke 1.4, square ends, eight teeth and a hub: drawn new in the hand of the design's icons.</td><td>—</td><td><span class="mono">#ededed</span>. pressed, or while settings is open: white at 10%.</td></tr>
     <tr><td>tridant mark</td><td>32 × 32; the star 14 × 14 in its middle, fill and stroke together as the kit asks.</td><td>—</td><td><span class="mono">#9c9c9c</span>, the strip's dim ink; <span class="mono">#ededed</span> under the pointer. never the brand's colors here.</td></tr>
-    <tr><td>its card</td><td>under the strip, its right edge on the mark's, 6 below the strip. three lines 8 apart, 9 in at the top and bottom, 11 at the sides.</td><td>mono 500, 11</td><td>as a chip: black at 72%, 1 px line. dim words, bright values, the link underlined dotted as the folder count on a tab is.</td></tr>
+    <tr><td>its card</td><td>under the strip, its right edge on the mark's, 6 below the strip. the star 40 × 40 at the left, 10 in; 12 to its right, three lines 8 apart: "eyepiece 0.1.0", "a tridant system", "tridant.io". no commit here: it stays on about, where a bug report needs it.</td><td>"eyepiece 0.1.0" in ibm plex mono 500, 11.5, as a title and a number; the rest archivo 500, 12, tabular figures</td><td>as a chip: black at 72%, 1 px line. the star and "tridant" in <span class="mono">#ededed</span>, "a" and "system" dim, as tridant.io sets the line; the link underlined dotted as the folder count on a tab is.</td></tr>
     <tr><td>windows</td><td>minimize, maximize and close stay 40 each at the right edge. the three new boxes take 96, and update about 64 more, from the tabs' room.</td><td>—</td><td>—</td></tr>
     <tr><td>macos</td><td>the mark flush right, its star 9 in from the edge, about as far in as the first system button is from the left.</td><td>—</td><td>the system's buttons keep the system's own colors; nothing of ours is colored.</td></tr>
-    <tr><td>hints</td><td>half a second after the pointer comes onto a button, a chip under the strip, right-aligned to it: "help ?", "settings ctrl ," ("cmd ," on a mac). update's says "eyepiece 0.3.0 is out".</td><td>mono 500, 11</td><td>as every chip</td></tr>
+    <tr><td>hints</td><td>half a second after the pointer comes onto a button, a chip under the strip, right-aligned to it: "help ?", "settings ctrl ," ("cmd ," on a mac). update's says "eyepiece 0.3.0 is out".</td><td>archivo 500, 12; the key in mono 500, 11, as a key cap</td><td>as every chip</td></tr>
   </table></div>
 
   <div class="figs">
@@ -486,7 +508,7 @@ p,li{overflow-wrap:break-word}
                   <div class="nm">eyepiece</div>
                   <div class="vr">0.1.0 <i>· 308cb2be</i></div>
                   <div class="bd">built 2026-11-24 · windows x64</div>
-                  <div class="bd">a review player for vfx and install content</div>
+                  <div class="bd">a video review player for video professionals: extremely fast, lightweight, and only what you need.</div>
                   <div class="sys"><span>a <b>tridant</b> system</span><svg class="star"><use href="#star"/></svg></div>
                 </div>
               </div>
@@ -508,7 +530,7 @@ p,li{overflow-wrap:break-word}
           </div>
         </div>
       </div></div></div>
-      <figcaption><span class="fn">fig. 34 · about</span><span>the program's icon (assets/icon/eyepiece.png), its name in archivo semibold, lowercase, as the mark's notes ask, then the version and short commit, when and for what it was built, and one line on what it is. "a tridant system" is the brand's line, all lowercase, with "tridant" brighter and the small star after it, as on tridant.io; a press on it opens tridant.io. the wordmark stands alone at the foot, apart from that line: the kit never locks the two together below display sizes. it is the kit's night ink (<span class="mono">#e2e8f4</span>), the one place in the window where a brand color appears. the update line says what the last check found and offers check now; under the panel, its other states. a failed check at launch shows only here, and only if you look. the license named is the recommendation in "for you to decide"; legal names keep their capitals. versions, the commit and times are examples.</span></figcaption>
+      <figcaption><span class="fn">fig. 34 · about</span><span>the program's icon (assets/icon/eyepiece.png), its name in archivo semibold, lowercase, as the mark's notes ask, then the version and short commit, when and for what it was built, and the one line on what it is: a video review player for video professionals, extremely fast, lightweight, and only what you need. "a tridant system" is the brand's line, all lowercase, with "tridant" brighter and the small star after it, as on tridant.io; a press on it opens tridant.io. the wordmark stands alone at the foot, apart from that line: the kit never locks the two together below display sizes. it is the kit's night ink (<span class="mono">#e2e8f4</span>), the one place in the window where a brand color appears. the update line says what the last check found and offers check now; under the panel, its other states. a failed check at launch shows only here, and only if you look. the license named is the one decided in 11a; legal names keep their capitals. versions, the commit and times are examples.</span></figcaption>
     </figure>
 
     <figure class="wide">
@@ -605,8 +627,8 @@ section 4 gives each license text once, worded as the parts ship it, with the co
 
 eyepiece reads and decodes video with ffmpeg (https://ffmpeg.org). Copyright (C) 2000-2026 FFmpeg Project.
 license: <mark class="cur">LGPL</mark> version 3 or later, as the build itself says. the text is ffmpeg-LICENSE.txt beside this file.
-version: n9.0.2-62-gac1c6e003f-20261123, the windows build made by https://github.com/BtbN/FFmpeg-Builds, downloaded from https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-<mark>lgpl</mark>-shared-9.0.zip
-source: https://git.ffmpeg.org/ffmpeg.git at commit ac1c6e003f. the scripts that made the build are at https://github.com/BtbN/FFmpeg-Builds.
+version: <span class="v">n9.0.2-62-gac1c6e003f-20261123</span>, the windows build made by https://github.com/BtbN/FFmpeg-Builds, downloaded from https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-<mark>lgpl</mark>-shared-9.0.zip
+source: https://git.ffmpeg.org/ffmpeg.git at commit <span class="v">ac1c6e003f</span>. the scripts that made the build are at https://github.com/BtbN/FFmpeg-Builds.
 
 ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll beside it, which eyepiece loads from its own folder when it starts. you may replace them with ffmpeg built your own way, changed or not: build release 9.0, or a later one whose libraries keep the same major versions (the number in each file name), as shared libraries and put your files in place of these. eyepiece needs nothing else to use them.<i class="scrollbar" style="top:6px;height:14px"></i></div>
             </div>
@@ -614,7 +636,7 @@ ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll
           </div>
         </div>
       </div></div></div>
-      <figcaption><span class="fn">fig. 36 · open-source notices</span><span>the text of the THIRD-PARTY-NOTICES.txt that ships beside the program, followed by ffmpeg-LICENSE.txt, which holds the lgpl's own words: read from those files when the page opens, so it is always what was installed, never a copy built in. it covers ffmpeg under the lgpl with the note that its libraries are separate files you may replace, every crate built in with its license, and the two typefaces under the open font license. the field finds as you type: the current match in white, the others lit. reveal the file shows it selected in explorer or finder. a build run from the source tree has no such file beside it, and the page says so. shown: the real start of the 0.1.0 windows file, its hard-wrapped lines reflowed to the panel and its rules of = drawn as a line; the match count is an example.</span></figcaption>
+      <figcaption><span class="fn">fig. 36 · open-source notices</span><span>the text of the THIRD-PARTY-NOTICES.txt that ships beside the program, followed by ffmpeg-LICENSE.txt, which holds the lgpl's own words: read from those files when the page opens, so it is always what was installed, never a copy built in. it covers ffmpeg under the lgpl with the note that its libraries are separate files you may replace, every crate built in with its license, and the two typefaces under the open font license. the field finds as you type: the current match in white, the others lit. reveal the file shows it selected in explorer or finder. a build run from the source tree has no such file beside it, and the page says so. shown: the real start of the 0.1.0 windows file, its hard-wrapped lines reflowed to the panel and its rules of = drawn as a line; the match count is an example. the text is a document, so it is set in archivo; only its headings and version strings stay mono.</span></figcaption>
     </figure>
 
     <figure class="wide">
@@ -792,7 +814,7 @@ ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll
           <div class="page">
             <div class="ph"><b>what eyepiece does</b><kbd>?</kbd><kbd>esc</kbd><span class="xb"><svg class="i" viewBox="0 0 16 16"><use href="#xm"/></svg></span></div>
             <div class="pb">
-              <div class="intro">a review player for vfx and install content. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.</div>
+              <div class="intro">a video review player for video professionals: extremely fast, lightweight, and only what you need. it opens a clip at once, steps one true frame at a time, shows true pixels, and says exactly what the file is.</div>
               <div class="feat">
                 <div><b>opens what review needs</b><span>hap, notchlc, prores, h.264, hevc and vp9, and numbered stills as one clip</span></div>
                 <div><b>one true frame at a time</b><span>steps, a timebar with pictures, frames or the file's own timecode</span></div>
@@ -810,7 +832,7 @@ ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll
           </div>
         </div>
       </div></div></div>
-      <figcaption><span class="fn">fig. 40 · help, what eyepiece does</span><span>what it is in two sentences, the readme's own, then its basic features in eight short lines, the links (github for the source, issues for a problem, the releases page for the notes, and tridant.io), and one line naming the license with a link to its text. about keeps its own github link and license line (fig. 34). every link opens the system's browser; the player itself sends nothing. the features are what the readme says is built today, worded short, and change with it.</span></figcaption>
+      <figcaption><span class="fn">fig. 40 · help, what eyepiece does</span><span>what it is in two sentences, the first of them the owner's (2026-11-24), then its basic features in eight short lines, the links (github for the source, issues for a problem, the releases page for the notes, and tridant.io), and one line naming the license with a link to its text. about keeps its own github link and license line (fig. 34). every link opens the system's browser; the player itself sends nothing. the features are what the readme says is built today, worded short, and change with it.</span></figcaption>
     </figure>
   </div>
   <div class="stack">
@@ -904,7 +926,7 @@ ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll
       <tr><td>6 · clean up</td><td>once the new version's first frame is up, it removes each .old file by its exact name, from the list the update wrote, one at a time; then the zip, SHA256SUMS.txt and what is left of the unpacked files, one at a time by name. never a folder, never a wildcard, never recursive. it refuses if the install folder or the update folder resolves to nothing, a drive root or a home folder, as the cache's eviction does. a file still held is tried at the next start; the empty folders stay.</td><td>the old bundle is a folder, so the player never deletes it: it is moved to the trash. the zip and SHA256SUMS.txt are removed one at a time.</td></tr>
       <tr><td>if 0.3.0 never shows a frame</td><td>its .old files are still there, and renaming them back is 0.2.1 again. this version does not do that by itself.</td><td>0.2.1 is in the trash, to put back.</td></tr>
     </table></div>
-    <p class="hint">the sha-256 comes from the same release as the build, so it catches a broken download, not a hostile one; the signature is what proves the build is tridant's. on windows only the program carries one today, which is why signing the four dlls is in the table below.</p>
+    <p class="hint">the sha-256 comes from the same release as the build, so it catches a broken download, not a hostile one; the signature is what proves the build is tridant's. on windows only the program carries one today, which is why the four dlls are now signed too (11a).</p>
   </div>
 
   <div class="stack">
@@ -937,30 +959,24 @@ ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll
 </section>
 
 <section id="decide-11">
-  <div class="sh"><span class="tab">11a</span><h2>For you to decide</h2></div>
+  <div class="sh"><span class="tab">11a</span><h2>Decided</h2></div>
+  <p class="lede">your word, 2026-11-24: every recommendation stands. each row is now the decision, with the alternative kept as one line of context.</p>
   <div class="dec">
-    <div><h3>the license for the public repo <span class="pill warn">to confirm with counsel</span></h3>
-      <p>you asked for one where people can use it but not redistribute it under their own name, and it must stay credited to tridant. four candidates, as far as i understand them:</p>
-      <div class="scroll" style="grid-column:2"><table>
-        <tr><th>license</th><th>what it does</th><th>what it does not do</th></tr>
-        <tr><td>common public attribution license 1.0 (CPAL-1.0, osi-approved)</td><td>anyone may use, change and redistribute, and every copy and every changed version must show the original developer's attribution (name, phrase, link and logo) in its own interface. it is built on the mozilla public license 1.1, so changed files stay under it.</td><td>a fork may still carry another product name beside that credit.</td></tr>
-        <tr><td>apache-2.0 plus a trademark notice</td><td>anyone may use, change and redistribute, keeping the copyright and NOTICE text. the names and logos "eyepiece" and "tridant" are not licensed, so a fork must rename itself.</td><td>the credit survives only in the notices file, not on screen.</td></tr>
-        <tr><td>functional source license 1.1 (FSL-1.1-Apache-2.0), which another tridant app already uses</td><td>free to use, change and redistribute for anything but a competing product. becomes apache-2.0 after two years.</td><td>says nothing special about credit.</td></tr>
-        <tr><td>a source-available license for unchanged copies only</td><td>allows use and redistribution of unchanged copies only: the only kind that truly forbids redistribution under another name.</td><td>not open source, and github and the package indexes will label it so.</td></tr>
-      </table></div>
-      <p>whichever is chosen, ffmpeg's lgpl libraries stay separate files under their own license, as today.</p>
-      <p class="rec">CPAL-1.0. it is the one that keeps "a tridant system" and the mark on screen in every copy, which is the credit you described. the about page (fig. 34) is where its attribution would stand.</p></div>
-    <div><h3>the legal name</h3><p>written "Tridant Inc." in two LICENSE files of other tridant repos, and "Tridant, Inc." on the code-signing certificate and in the id service.</p><p class="rec">"Tridant, Inc.", as the certificate has it, everywhere.</p></div>
-    <div><h3>the mac bundle, signing and notarization</h3><p>the mac updater depends on all three and none exists yet. the readme says mac builds will be signed with a personal developer id for now; the updater pins the identity it checks, so changing it later means one release that both identities can accept.</p><p class="rec">tridant's own developer id from the first public mac build. mac updates wait for the bundle; windows can ship first.</p></div>
-    <div><h3>how windows installs</h3><p>today the package step copies the files into %LOCALAPPDATA%\Programs\eyepiece. an installer could do the same into the same folder with a start menu entry and an uninstall entry; one that installs into program files would need an admin prompt for every update.</p><p class="rec">keep the per-user folder. a zip for the first install, or a small installer into that same folder later.</p></div>
-    <div><h3>sign the ffmpeg dlls</h3><p>only eyepiece.exe is signed today, so on windows the update can prove only the program is tridant's.</p><p class="rec">sign all four with the same certificate at package time. the player never checks them when it loads them, so a user's own ffmpeg still runs, as the lgpl wants.</p></div>
-    <div><h3>who cuts a release, and from where</h3><p>a script on the dev machine using the github cli, where the signing setup already is, or ci, which would need the signing secrets in github and a windows runner.</p><p class="rec">a script here: tests, build, sign, zip, SHA256SUMS.txt, then <span class="mono">gh release create</span> with the notes; the mac leg on the mac build machine over ssh. ci later, if ever.</p></div>
-    <div><h3>version numbering</h3><p>Cargo.toml says 0.1.0. tags would be vX.Y.Z, compared number by number. the first build that can update itself has to be installed by hand: nothing before it ever hears of an update.</p><p class="rec">keep 0.1.0 for the private builds; the first public one is 0.2.0 and carries the updater.</p></div>
-    <div><h3>about: second, or last</h3><p>you said general and about first. most apps put about last.</p><p class="rec">keep it second, as you asked.</p></div>
-    <div><h3>the release notes in the modal</h3><p>drawn: the version pair, the date, at most three lines and a link to the full notes. the alternative is the full notes inside the modal. the other tridant apps keep their update dialogs to a decision and a link.</p><p class="rec">three lines and the link.</p></div>
-    <div><h3>a file opens playing</h3><p>your ask, and the default drawn. it applies to every way a file opens: the command line, a drop, a second launch, the browser. a reload on change keeps playing or paused as it was.</p><p class="rec">on, with the switch in general.</p></div>
-    <div><h3>a chip for the letterbox color</h3><p>no pixel of the picture changes, so the rule does not call for one. a gray surround does change how a picture reads.</p><p class="rec">no chip. say if you want one.</p></div>
-    <div><h3>ffmpeg's source with public downloads</h3><p>the notices point at ffmpeg's source by commit and at the build scripts. attaching the exact source archive to each release that changes ffmpeg is the safer reading of the lgpl.</p><p class="rec">attach it, and put the question to counsel with the license.</p></div>
+    <div><h3>the license: CPAL-1.0 <span class="pill warn">to confirm with counsel</span></h3>
+      <p>weighed against apache-2.0 with a trademark notice (the credit only in the notices file), FSL-1.1-Apache-2.0 (nothing special about credit) and a source-available license for unchanged copies (not open source).</p>
+      <p class="rec">the common public attribution license 1.0. its exhibit b names the attribution: copyright notice "Copyright (c) 2026 Tridant, Inc.", attribution phrase "a tridant system", attribution url https://tridant.io, and as the graphic image the tridant mark. under the license's section 14, every copy and every derivative must show that attribution in its user interface, so the tridant mark can never be removed from a derivative of the app; the license says so, as you asked. it stands on about (fig. 34) and on the strip (fig. 32).</p>
+      <p>names and marks ("eyepiece", "tridant", the tridant mark) are trademarks and are not licensed by it; a TRADEMARKS.md beside the LICENSE sets that out. ffmpeg's lgpl libraries stay separate files under their own license.</p></div>
+    <div><h3>the legal name</h3><p>also written "Tridant Inc." in two LICENSE files of other tridant repos.</p><p class="rec">"Tridant, Inc.", as the code-signing certificate has it, everywhere.</p></div>
+    <div><h3>the mac bundle, signing and notarization</h3><p>none of the three exists yet; the readme planned a personal developer id for now, and the updater pins the identity it checks.</p><p class="rec">tridant's own developer id from the first public mac build. mac updates wait for the bundle; windows ships first.</p></div>
+    <div><h3>how windows installs</h3><p>an installer into program files would need an admin prompt for every update.</p><p class="rec">the per-user folder, %LOCALAPPDATA%\Programs\eyepiece, as today: a zip for the first install, and later perhaps a small installer into that same folder.</p></div>
+    <div><h3>the ffmpeg dlls are signed</h3><p>only eyepiece.exe is signed today, so the update could prove only the program is tridant's.</p><p class="rec">all four are signed with the same certificate at package time. the player never checks them when it loads them, so a user's own ffmpeg still runs, as the lgpl wants.</p></div>
+    <div><h3>who cuts a release, and from where</h3><p>ci was the alternative; it would need the signing secrets in github and a windows runner.</p><p class="rec">a script on the dev machine: tests, build, sign, zip, SHA256SUMS.txt, then <span class="mono">gh release create</span> with the notes; the mac leg on the mac build machine over ssh.</p></div>
+    <div><h3>version numbering</h3><p>the first build that can update itself has to be installed by hand: nothing before it ever hears of an update.</p><p class="rec">0.1.0 stays the private line; the first public build is 0.2.0 and carries the updater. tags are vX.Y.Z, compared number by number.</p></div>
+    <div><h3>about goes second</h3><p>most apps put about last.</p><p class="rec">second, as you asked.</p></div>
+    <div><h3>the release notes in the modal</h3><p>the alternative was the full notes inside the modal.</p><p class="rec">the version pair, the date, at most three lines and a link to the full notes.</p></div>
+    <div><h3>a file opens playing</h3><p>today a file opens paused on its first frame.</p><p class="rec">on by default for every way a file opens (the command line, a drop, a second launch, the browser), with the switch in general. a reload on change keeps playing or paused as it was.</p></div>
+    <div><h3>no chip for the letterbox color</h3><p>a gray surround changes how a picture reads, but no pixel of the picture changes.</p><p class="rec">no chip.</p></div>
+    <div><h3>ffmpeg's source with public downloads</h3><p>the notices point at ffmpeg's source by commit and at the build scripts.</p><p class="rec">each release that changes ffmpeg carries its exact source archive. the question goes to counsel with the license.</p></div>
   </div>
 </section>
 
@@ -969,7 +985,7 @@ ffmpeg is not part of eyepiece.exe. it is the separate files av*.dll and sw*.dll
   <p class="lede">from a read of the repository as it stands. each is a finding, with what it asks for.</p>
   <div class="scroll"><table>
     <tr><th>finding</th><th>what it asks for</th></tr>
-    <tr><td>there is no LICENSE file, and Cargo.toml names none</td><td>the license from 11a, as LICENSE and in Cargo.toml.</td></tr>
+    <tr><td>there is no LICENSE file, and Cargo.toml names none</td><td>CPAL-1.0 from 11a, as LICENSE with its exhibit b filled in and named in Cargo.toml, and TRADEMARKS.md beside it.</td></tr>
     <tr><td>the phase 0 working notes and the plan's sections 09 and 10 describe your machines and private setup</td><td>edit them, or leave them out of the public repo.</td></tr>
     <tr><td>the readme is written for this project's own work, not for an outside reader</td><td>a rewrite, self-contained, with screenshots and every feature explained, as you asked separately.</td></tr>
     <tr><td>the commit history carries the author's personal email, private machine names in commit subjects and session links in commit trailers</td><td>start the public repo from a fresh history in a new repository; the present one stays private.</td></tr>
