@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = "a video review player for video professionals: extremely fast, lightweight, and only what you need"
+license = "CPAL-1.0"
 
 # the gate programs under spike/ are their own packages and are never built with the player
 [workspace]
