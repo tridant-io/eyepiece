@@ -18,8 +18,6 @@ mod settings;
 mod shot;
 mod timecode;
 mod ui;
-// nothing calls it yet: the update modal wires it in
-#[allow(dead_code, unused_imports)]
 mod update;
 mod view;
 #[cfg(target_os = "macos")]

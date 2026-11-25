@@ -225,7 +225,8 @@ impl Ui {
                 (true, "changes take effect at once")
             }
             (Which::Settings, 1) => {
-                scrolled(ui, body, id, |ui| self.about(ui, body.height(), actions));
+                let check_at_start = s.update_check;
+                scrolled(ui, body, id, |ui| self.about(ui, body.height(), check_at_start, actions));
                 (false, "nothing to reset here")
             }
             (Which::Settings, 2) => {
@@ -285,7 +286,7 @@ impl Ui {
 
     /// about (fig. 34): the program's icon, its name, version and build, what it is and whose, the links, the
     /// license, and the wordmark at the foot. `room` is the body's height, the foot standing at its end when it fits.
-    fn about(&mut self, ui: &mut egui::Ui, room: f32, actions: &mut Vec<Action>) {
+    fn about(&mut self, ui: &mut egui::Ui, room: f32, check_at_start: bool, actions: &mut Vec<Action>) {
         let width = ui.available_width();
         let painter = ui.painter().clone();
         ui.add_space(16.0);
@@ -324,8 +325,10 @@ impl Ui {
         if ui.interact(whose.union(star), ui.scope_id().with("about-system"), Sense::click()).clicked() {
             actions.push(Action::OpenUrl(TRIDANT.to_string()));
         }
-        // the update line (fig. 34) is the updater's, and stands here, between what the program is and its links
-        ui.add_space(14.0 + 12.0);
+        // the update line (fig. 34), between what the program is and its links
+        ui.add_space(14.0);
+        self.update_line(ui, check_at_start, actions);
+        ui.add_space(12.0);
         if let Some(url) = links(ui, "about-links", &[("tridant.io", TRIDANT), ("source on github", SOURCE), ("report a problem", ISSUES), ("release notes", RELEASES)]) {
             actions.push(Action::OpenUrl(url.to_string()));
         }

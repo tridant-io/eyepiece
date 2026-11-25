@@ -69,8 +69,9 @@ pub struct Settings {
     pub controls_after: f32,
     /// the window opens at the size it was left at (`window_size`) when no file gives it one
     pub remember_size: bool,
-    /// eyepiece asks for a newer release when it starts
+    /// eyepiece asks for a newer release when it starts; and when one was last answered, in seconds since 1970
     pub update_check: bool,
+    pub update_checked: Option<u64>,
     /// the picture area's color round a picture of another shape
     pub background: [u8; 3],
     /// the folder the browser starts in; none starts it where it was last (`browser_folder`)
@@ -112,6 +113,7 @@ impl Default for Settings {
             controls_after: 2.4,
             remember_size: true,
             update_check: true,
+            update_checked: None,
             background: [0, 0, 0],
             browser_start: None,
             cache_limit: 2.0,
@@ -137,6 +139,11 @@ impl Settings {
     }
 
     /// writes beside the file and renames over it, so a crash cannot leave half a file. keys this build does not know are kept.
+    /// a check for updates is due: on, and none answered in the last day.
+    pub fn update_due(&self, now: u64) -> bool {
+        self.update_check && self.update_checked.is_none_or(|at| now.saturating_sub(at) >= 24 * 60 * 60)
+    }
+
     pub fn save(&self) -> io::Result<()> {
         self.save_to(&file().ok_or_else(|| io::Error::other("the system names no settings folder"))?)
     }
@@ -168,7 +175,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 31] {
+    fn pairs(&self) -> [(&'static str, String); 32] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -202,6 +209,7 @@ impl Settings {
             ("one_window", word(&SWITCH, self.one_window)),
             ("controls_after", self.controls_after.to_string()),
             ("update_check", word(&SWITCH, self.update_check)),
+            ("update_checked", self.update_checked.map_or(String::new(), |at| at.to_string())),
             ("remember_size", word(&SWITCH, self.remember_size)),
             ("window_size", self.window_size.map_or(String::new(), wxh)),
             ("screenshot_folder", path(&self.screenshot_folder)),
@@ -243,6 +251,7 @@ impl Settings {
             "one_window" => self.one_window = pick(&SWITCH, v)?,
             "controls_after" => self.controls_after = number(v, 1.0, 10.0)?,
             "update_check" => self.update_check = pick(&SWITCH, v)?,
+            "update_checked" => self.update_checked = if v.is_empty() { None } else { Some(v.parse().ok()?) },
             "remember_size" => self.remember_size = pick(&SWITCH, v)?,
             "window_size" => self.window_size = if v.is_empty() { None } else { Some(size(v)?) },
             "screenshot_folder" => self.screenshot_folder = folder(v),
@@ -367,6 +376,7 @@ mod tests {
             controls_after: 6.5,
             remember_size: false,
             update_check: false,
+            update_checked: Some(1_795_000_000),
             background: [0x1e, 0x28, 0x33],
             browser_start: Some(PathBuf::from(r"D:\renders_out")),
             cache_limit: 16.0,

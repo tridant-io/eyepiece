@@ -27,6 +27,19 @@ pub fn name() -> String {
     }
 }
 
+/// an update's restart: waits, up to ten seconds, for the build it replaced to close, which holds the one-window name
+/// until it has.
+pub fn wait_for(pid: u32) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    unsafe {
+        if let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            WaitForSingleObject(process, 10_000);
+            let _ = CloseHandle(process);
+        }
+    }
+}
+
 /// true when a player was already running and took `file` (with none, it only came to the front), so this process
 /// has nothing left to do. false: start normally, as the first player or because the first did not answer.
 pub fn handed_over(file: Option<&str>) -> bool {

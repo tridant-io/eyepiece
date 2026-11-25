@@ -27,6 +27,11 @@ use std::sync::mpsc;
 /// running already, it is handed `first` instead, and this returns with nothing made; unless the settings say one
 /// window is not wanted, and then this one opens a window of its own.
 pub fn run(first: Option<String>) -> Result<(), String> {
+    // started by an update in place of a build still closing: once that one has gone, the one-window name is free
+    if let Some(pid) = std::env::var("EYEPIECE_AFTER").ok().and_then(|pid| pid.parse().ok()) {
+        std::env::remove_var("EYEPIECE_AFTER");
+        instance::wait_for(pid);
+    }
     let settings = crate::settings::Settings::load();
     if settings.one_window && instance::handed_over(first.as_deref()) {
         return Ok(());

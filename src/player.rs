@@ -437,7 +437,7 @@ impl View {
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
-            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks => {}
+            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
         }
     }
 
@@ -1430,6 +1430,125 @@ fn over_picture(pointer: Option<(f32, f32)>, window: (f32, f32), scale: f32) -> 
     pointer.filter(|p| p.1 > 34.0 * scale && p.1 < window.1 - 52.0 * scale)
 }
 
+/// the update, driven from the loop: a look for a newer release on a thread of its own, the download and its
+/// checks on another, and what they find coming back here, for the controls to show (`ui::Updates`). only windows
+/// looks: a mac build's updates come with an app bundle, which is not built yet.
+struct Updating {
+    state: ui::Updates,
+    news: Receiver<News>,
+    send: Sender<News>,
+    stop: Arc<AtomicBool>,
+}
+
+enum News {
+    Checked(Result<Option<crate::update::Release>, String>),
+    Came(u64, u64),
+    Checking,
+    Done(Result<usize, String>),
+}
+
+/// the folder the program runs from, which an update puts its files into
+fn install() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("eyepiece cannot find itself: {e}"))?;
+    exe.parent().map(Path::to_path_buf).ok_or_else(|| "eyepiece runs from no folder".to_string())
+}
+
+fn seconds_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+impl Updating {
+    fn new() -> Updating {
+        let (send, news) = mpsc::channel();
+        Updating { state: ui::Updates::Unchecked, news, send, stop: Arc::new(AtomicBool::new(false)) }
+    }
+
+    fn check(&mut self, wake: &Sender<Event>) {
+        if cfg!(not(windows)) || matches!(self.state, ui::Updates::Checking | ui::Updates::Found(..)) {
+            return;
+        }
+        self.state = ui::Updates::Checking;
+        let (send, wake) = (self.send.clone(), wake.clone());
+        std::thread::spawn(move || {
+            let _ = send.send(News::Checked(crate::update::check(env!("CARGO_PKG_VERSION"))));
+            let _ = wake.send(Event::Wake);
+        });
+    }
+
+    fn start(&mut self, wake: &Sender<Event>) {
+        let ui::Updates::Found(release, applying) = &mut self.state else { return };
+        if !matches!(applying, ui::Applying::No | ui::Applying::Failed(_)) {
+            return;
+        }
+        *applying = ui::Applying::Downloading(0, release.files.iter().map(|f| f.size).sum());
+        self.stop.store(false, Ordering::Relaxed);
+        let (release, send, wake, stop) = (release.clone(), self.send.clone(), wake.clone(), self.stop.clone());
+        std::thread::spawn(move || {
+            let tell = |news| {
+                let _ = send.send(news);
+                let _ = wake.send(Event::Wake);
+            };
+            let mut said = Instant::now();
+            let done = install().and_then(|install| {
+                // what has come is said a few times a second, not for every piece
+                crate::update::download(&release, &install, &mut |came, all| {
+                    if said.elapsed() >= Duration::from_millis(100) {
+                        said = Instant::now();
+                        tell(News::Came(came, all));
+                    }
+                }, &stop)?;
+                tell(News::Checking);
+                crate::update::apply(&release, &install, env!("CARGO_PKG_VERSION"))
+            });
+            tell(News::Done(done));
+        });
+    }
+
+    /// takes in what the threads found. true once a release is in place, and the new build is to be started.
+    fn take(&mut self, settings: &mut Settings) -> bool {
+        let mut restart = false;
+        while let Ok(news) = self.news.try_recv() {
+            match news {
+                News::Checked(found) => {
+                    if found.is_ok() {
+                        settings.update_checked = Some(seconds_now());
+                    }
+                    self.state = match found {
+                        Ok(Some(release)) => ui::Updates::Found(release, ui::Applying::No),
+                        Ok(None) => ui::Updates::Current(window::clock()),
+                        Err(why) => {
+                            eprintln!("eyepiece: no answer on updates: {why}");
+                            ui::Updates::Failed(window::clock())
+                        }
+                    };
+                }
+                News::Came(came, all) => {
+                    if let ui::Updates::Found(_, applying @ ui::Applying::Downloading(..)) = &mut self.state {
+                        *applying = ui::Applying::Downloading(came, all);
+                    }
+                }
+                News::Checking => {
+                    if let ui::Updates::Found(_, applying) = &mut self.state {
+                        *applying = ui::Applying::Checking;
+                    }
+                }
+                News::Done(done) => {
+                    if let ui::Updates::Found(_, applying) = &mut self.state {
+                        // stopped by its cancel: back to where it was before, with nothing to say
+                        *applying = match done {
+                            Ok(_) => ui::Applying::Restarting,
+                            Err(_) if self.stop.load(Ordering::Relaxed) => ui::Applying::No,
+                            Err(why) => ui::Applying::Failed(why),
+                        };
+                        restart = matches!(applying, ui::Applying::Restarting);
+                    }
+                }
+            }
+        }
+        restart
+    }
+}
+
 /// runs the player until its window closes. `settings` is what was kept between runs, read before the window was
 /// made; it is written back after. `first` is the file given at the start, with its clip already opened or the
 /// reason it did not.
@@ -1504,6 +1623,23 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     if let Some(said) = folder.and_then(|folder| tabs.play_folder_or_ask(&gpu, &folder, &wake, true, &mut asked_folder)) {
         toast = say(said);
     }
+    // more files given at launch, as an update's restart gives the files that were open: each in a tab of its own
+    for path in std::env::args().skip(2) {
+        tabs.open(&gpu, path, &wake, false);
+    }
+    let mut updating = Updating::new();
+    // what an update set aside the last time is let go now, once this build runs in its place
+    if cfg!(windows) {
+        if let Ok(install) = install() {
+            std::thread::spawn(move || {
+                for left in crate::update::tidy(&install) {
+                    eprintln!("eyepiece: {left}");
+                }
+            });
+        }
+    }
+    // the look for a newer release waits for a frame to have reached the display
+    let mut looked = false;
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
     let (mut pointer, mut scale) = (None, window::scale(window));
     // the picture area fills a display; the pointer is shown (it hides in fullscreen while the controls are away)
@@ -1550,6 +1686,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             // a panel up has the keys first (`Ui::panel_key`): help's go on to the player once it has closed, settings'
             // wait. a field in it being typed into takes them instead
             let panel_took = match &event {
+                Event::Key { key, .. } if ui.update_up() => {
+                    if *key == Key::Escape {
+                        ui.update_escape();
+                    }
+                    true
+                }
                 Event::Key { key, mods } if !ui.typing() => ui.panel_key(*key, *mods),
                 _ => false,
             };
@@ -1798,6 +1940,26 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
             toast = None;
         }
+        if !looked && gpu.reached() {
+            looked = true;
+            if settings.update_due(seconds_now()) {
+                updating.check(&wake);
+            }
+        }
+        if updating.take(settings) {
+            // the new build starts on the files open now, and waits for this one to have closed
+            let args: Vec<std::ffi::OsString> = tabs.all.iter().filter_map(|tab| tab.path.clone()).map(Into::into).collect();
+            std::env::set_var("EYEPIECE_AFTER", std::process::id().to_string());
+            match install().and_then(|install| crate::update::relaunch(&install, &args)) {
+                Ok(()) => window::close(window),
+                Err(why) => {
+                    if let ui::Updates::Found(_, applying) = &mut updating.state {
+                        *applying = ui::Applying::Failed(why);
+                    }
+                }
+            }
+        }
+        ui.set_updates(updating.state.clone());
         let out = {
             let tab = &tabs.all[tabs.up];
             // a clip on its way: what to say of it once it is slow, and that one is coming at all
@@ -1856,6 +2018,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         }
         for action in &out.actions {
             match action {
+                Action::CheckUpdates => updating.check(&wake),
+                Action::StartUpdate => updating.start(&wake),
+                Action::StopUpdate => updating.stop.store(true, Ordering::Relaxed),
                 Action::NewTab => tabs.new_tab(),
                 Action::SelectTab(to) => tabs.select(*to),
                 Action::GoClip(to) => tabs.go_item(*to, Why::Stepped, &gpu, &wake),

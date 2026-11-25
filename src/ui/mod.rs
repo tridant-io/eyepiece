@@ -9,9 +9,11 @@ mod keys;
 mod markup;
 mod menus;
 mod panel;
+mod update;
 mod widgets;
 
 pub use markup::{caption, saved};
+pub use update::{Applying, Updates};
 
 use crate::event::{Key, Mods};
 use crate::markup::{Mark, Marks};
@@ -345,6 +347,10 @@ pub enum Action {
     Settings(Box<Settings>),
     /// this page in the system's browser, or this file in the program the system opens it with
     OpenUrl(String),
+    /// look for a newer release now; put the one found in place; stop that while it downloads
+    CheckUpdates,
+    StartUpdate,
+    StopUpdate,
 }
 
 /// what one pass over the controls produced.
@@ -452,6 +458,9 @@ pub struct Ui {
     mark_left: Option<f64>,
     card: Option<(f64, u64)>,
     card_rect: Rect,
+    /// what the player knows of updates, and whether the update's modal is up
+    updates: Updates,
+    update_open: bool,
     /// the brand's drawings and the program's icon, as textures
     pictures: brand::Pictures,
     /// the system asks for less motion: nothing moves by itself
@@ -520,6 +529,8 @@ impl Ui {
             mark_left: None,
             card: None,
             card_rect: Rect::NOTHING,
+            updates: Updates::default(),
+            update_open: false,
             pictures: brand::Pictures::default(),
             still: false,
             hinted: None,
@@ -882,6 +893,7 @@ impl Ui {
         }
         // the settings or help panel, over whatever is up
         self.panel_over(ui, full, screen, actions);
+        self.update_modal(ui, full, actions);
         if let Some(said) = screen.toast {
             toast(ui, full, said);
         }
@@ -1234,6 +1246,8 @@ impl Ui {
             self.hint(&response, tip);
         }
         self.mark(ui, &painter, Rect::from_min_size(Pos2::new(x + 2.0 * PLUS, strip.top()), Vec2::new(PLUS, STRIP - 1.0)), actions);
+        // a newer release's quiet button, left of help, from the tabs' room
+        let x = x - self.update_button(ui, strip, x);
         for (i, (name, action)) in [("close", Action::Close), ("maximize", Action::ToggleMaximize), ("minimize", Action::Minimize)].into_iter().enumerate().take(ours) {
             let rect = Rect::from_min_size(Pos2::new(strip.right() - (i + 1) as f32 * WINDOW_BUTTON, strip.top()), Vec2::new(WINDOW_BUTTON, STRIP - 1.0));
             let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
