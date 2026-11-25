@@ -158,6 +158,11 @@ impl Browser {
         }
     }
 
+    /// the folder shown is listed and holds no video or still: a screenshot may be written there, never beside media.
+    pub fn clear_of_media(&self) -> bool {
+        self.state.as_ref().is_some_and(|state| matches!(state.nav.listings.get(&state.nav.main().folder), Some(Ok(_))) && state.nav.cards().next().is_none())
+    }
+
     /// how wide its parts are: kept between runs.
     pub fn widths(&self) -> Widths {
         self.state.as_ref().map_or(self.widths, |state| state.widths)

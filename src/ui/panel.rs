@@ -243,7 +243,8 @@ impl Ui {
                 (true, "reset keeps the recent folders and the cache")
             }
             (Which::Settings, 5) => {
-                let shows = self.browser.folder().to_path_buf();
+                // never a folder of media: screenshots are not written beside it
+                let shows = Some(self.browser.folder().to_path_buf()).filter(|_| self.browser.clear_of_media());
                 scrolled(ui, body, id, |ui| screenshots(ui, s, shows, actions));
                 (true, "the screenshot menu has the same three switches")
             }
@@ -528,13 +529,13 @@ fn measure(clear: bool) -> mpsc::Receiver<Measured> {
 }
 
 /// screenshots (fig. 38). there is no folder picker: the folder can be the one the browser shows, `shows`
-fn screenshots(ui: &mut egui::Ui, s: &mut Settings, shows: PathBuf, actions: &mut Vec<Action>) {
+fn screenshots(ui: &mut egui::Ui, s: &mut Settings, shows: Option<PathBuf>, actions: &mut Vec<Action>) {
     let mut rows = Rows::default();
     ui.add_space(6.0);
     let folder = s.screenshot_folder.clone().unwrap_or_else(crate::shot::folder);
     let shown = folder.display().to_string();
-    match rows.row(ui, "shots", "folder", Some(Note::Path(&shown)), &[Part::Button("use the folder the browser shows", !shows.as_os_str().is_empty()), Part::Button("reveal", true)]) {
-        Some((0, _)) => s.screenshot_folder = Some(shows),
+    match rows.row(ui, "shots", "folder", Some(Note::Path(&shown)), &[Part::Button("use the folder the browser shows", shows.is_some()), Part::Button("reveal", true)]) {
+        Some((0, _)) => s.screenshot_folder = shows,
         Some((1, _)) => actions.push(Action::Reveal(folder)),
         _ => {}
     }

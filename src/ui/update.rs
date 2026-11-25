@@ -37,6 +37,8 @@ pub enum Applying {
 /// the modal's width, and the picture behind it darkened as behind a panel
 const WIDTH: f32 = 440.0;
 const SHADE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 153);
+/// the column a change's kind stands in, before its words
+const KIND: f32 = 66.0;
 /// a failure's edge: gray, since amber is kept for a fault in a file
 const EDGE: Color32 = Color32::from_rgb(0x77, 0x77, 0x77);
 
@@ -131,8 +133,8 @@ impl Ui {
             let inner = WIDTH - 40.0;
             let painter = ui.painter().clone();
             let current = super::panel::VERSION;
-            // what the modal says, top to bottom: (galley, room above it)
-            let mut lines: Vec<(Arc<Galley>, f32)> = Vec::new();
+            // what the modal says, top to bottom: (galley, room above it, and a change's kind at its left)
+            let mut lines: Vec<(Arc<Galley>, f32, Option<Arc<Galley>>)> = Vec::new();
             let (title, sub) = match &applying {
                 Applying::No => (format!("eyepiece {} is available", release.version), format!("you have {current} · released {} · {} in all", release.date, megabytes(release.files.iter().map(|f| f.size).sum()))),
                 Applying::Downloading(..) => (format!("updating to {}", release.version), format!("from {current} · the player behind keeps playing")),
@@ -140,35 +142,32 @@ impl Ui {
                 Applying::Restarting => (format!("restarting into {}", release.version), "a moment. nothing to press.".to_string()),
                 Applying::Failed(_) => ("the update did not finish".to_string(), format!("{current} is still installed as it was.")),
             };
-            lines.push((painter.layout_no_wrap(title, font("sans-semibold", 15.0), FG), 0.0));
-            lines.push((words(&painter, &sub, 12.0, DIM, inner), 6.0));
+            lines.push((painter.layout_no_wrap(title, font("sans-semibold", 15.0), FG), 0.0, None));
+            lines.push((words(&painter, &sub, 12.0, DIM, inner), 6.0, None));
             let mut notes_at = None;
             match &applying {
                 Applying::No => {
                     notes_at = Some(lines.len());
                     for (kind, text) in release.notes.iter().take(3) {
-                        let mut job = LayoutJob::default();
-                        job.wrap.max_width = inner;
-                        job.append(&format!("{kind:<9}"), 0.0, TextFormat { font_id: font(MONO_MEDIUM, 10.5), color: DIM, ..Default::default() });
-                        job.append(text, 0.0, TextFormat { font_id: font(SANS, 12.0), color: FG, line_height: Some(12.0 * 1.45), ..Default::default() });
-                        lines.push((painter.layout_job(job), 6.0));
+                        let kind = painter.layout_no_wrap(kind.clone(), font(MONO_MEDIUM, 10.5), DIM);
+                        lines.push((words(&painter, text, 12.0, FG, inner - KIND), 6.0, Some(kind)));
                     }
                     if release.notes.len() > 3 {
-                        lines.push((words(&painter, &format!("and {} more in the release notes.", release.notes.len() - 3), 12.0, DIM, inner), 8.0));
+                        lines.push((words(&painter, &format!("and {} more in the release notes.", release.notes.len() - 3), 12.0, DIM, inner), 8.0, None));
                     }
                     let what = format!("update downloads it from github, checks it is Tridant, Inc.'s, puts it in place of {current} and starts it again on the files open now.");
-                    lines.push((words(&painter, &what, 12.0, DIM, inner), 14.0));
+                    lines.push((words(&painter, &what, 12.0, DIM, inner), 14.0, None));
                 }
-                Applying::Downloading(done, all) => lines.push((words(&painter, &format!("download {} of {}", megabytes(*done), megabytes(*all)), 12.0, FG, inner), 22.0)),
-                Applying::Checking => lines.push((words(&painter, "its sha-256 against the release's list, and tridant's signature", 12.0, FG, inner), 22.0)),
+                Applying::Downloading(done, all) => lines.push((words(&painter, &format!("download {} of {}", megabytes(*done), megabytes(*all)), 12.0, FG, inner), 22.0, None)),
+                Applying::Checking => lines.push((words(&painter, "its sha-256 against the release's list, and tridant's signature", 12.0, FG, inner), 22.0, None)),
                 Applying::Restarting => {}
                 Applying::Failed(why) => {
-                    lines.push((words(&painter, why, 12.0, FG, inner - 14.0), 14.0));
-                    lines.push((words(&painter, "the update button stays on the strip. try again now, or any time.", 12.0, DIM, inner), 14.0));
+                    lines.push((words(&painter, why, 12.0, FG, inner - 14.0), 14.0, None));
+                    lines.push((words(&painter, "the update button stays on the strip. try again now, or any time.", 12.0, DIM, inner), 14.0, None));
                 }
             }
             let buttons = !matches!(applying, Applying::Checking | Applying::Restarting);
-            let height = 20.0 + lines.iter().map(|(g, above)| g.size().y + above).sum::<f32>() + if buttons { 18.0 + 26.0 } else { 0.0 } + 20.0 + if notes_at.is_some() { 22.0 } else { 0.0 };
+            let height = 8.0 + 20.0 + lines.iter().map(|(g, above, _)| g.size().y + above).sum::<f32>() + if buttons { 18.0 + 26.0 } else { 0.0 } + 20.0 + if notes_at.is_some() { 22.0 } else { 0.0 };
             let rect = Rect::from_center_size(Pos2::new(full.center().x, full.center().y), Vec2::new(WIDTH, height)).round();
             ui.interact(rect, ui.scope_id().with("update-body"), Sense::click());
             painter.add(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(128) }.as_shape(rect, 0.0));
@@ -176,7 +175,7 @@ impl Ui {
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
             let left = rect.left() + 20.0;
             let mut y = rect.top() + 20.0;
-            for (i, (galley, above)) in lines.into_iter().enumerate() {
+            for (i, (galley, above, kind)) in lines.into_iter().enumerate() {
                 if notes_at == Some(i) {
                     // what changed, as the release's notes word it, and the link to all of them
                     y += 14.0;
@@ -188,9 +187,16 @@ impl Ui {
                     if ui.interact(at, ui.scope_id().with("update-notes"), Sense::click()).clicked() {
                         actions.push(Action::OpenUrl(release.page.clone()));
                     }
-                    y += 8.0;
+                    y += 16.0;
                 }
                 y += above;
+                if let Some(kind) = kind {
+                    // the kind stands on the change's first line, by the line's middle
+                    painter.galley(Pos2::new(left, text_top(&painter, font(MONO_MEDIUM, 10.5), y + 12.0 * 1.45 / 2.0)), kind, DIM);
+                    painter.galley(Pos2::new(left + KIND, y), galley.clone(), FG);
+                    y += galley.size().y;
+                    continue;
+                }
                 if matches!(applying, Applying::Failed(_)) && i == 2 {
                     painter.rect_filled(Rect::from_min_size(Pos2::new(left, y - 4.0), Vec2::new(2.0, galley.size().y + 8.0)), 0.0, EDGE);
                     painter.galley(Pos2::new(left + 14.0, y), galley.clone(), FG);
