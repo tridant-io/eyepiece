@@ -452,7 +452,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
             Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
         }
     }
@@ -595,10 +595,10 @@ struct Played {
 }
 
 impl Played {
-    /// a folder's clips, with their headers being read in the background: no reader is started for them and no
-    /// frame read, so a folder of hundreds costs its headers.
-    fn new(title: String, items: Vec<std::path::PathBuf>, wake: &Sender<Event>, local: bool) -> Played {
-        let names: Vec<String> = items.iter().map(|file| file.file_name().map_or_else(|| file.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())).collect();
+    /// a folder's clips, named by their paths from it, with their headers being read in the background: no reader is
+    /// started for them and no frame read, so a folder of hundreds costs its headers.
+    fn new(title: String, folder: &Path, items: Vec<std::path::PathBuf>, wake: &Sender<Event>, local: bool) -> Played {
+        let names: Vec<String> = items.iter().map(|file| folder::name_in(folder, file)).collect();
         if !local {
             return Played { title, at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: None };
         }
@@ -1067,38 +1067,40 @@ impl Tabs {
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let local = browse::volume_of(folder) != browse::Volume::Network;
         let coming = self.open(gpu, first.to_string_lossy().into_owned(), wake, true);
-        (coming.played, coming.play) = (Some(Played::new(title, files.to_vec(), wake, local)), true);
+        (coming.played, coming.play) = (Some(Played::new(title, folder, files.to_vec(), wake, local)), true);
     }
 
     /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player.
-    /// one that had to be asked about is kept in `asking` for a few seconds, and plays when it is asked for again
-    /// in that time.
-    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>, replace: bool, asking: &mut Option<(std::path::PathBuf, Instant)>) -> Option<String> {
-        let asked = asking.take().is_some_and(|(of, until)| of == folder && Instant::now() < until);
-        let said = self.play_folder(gpu, folder, wake, replace, asked)?;
-        *asking = (!asked).then(|| (folder.to_path_buf(), Instant::now() + Duration::from_secs(8)));
+    /// one that had to be asked about is kept in `asking`, with whether its subfolders were asked for too, for a few
+    /// seconds, and plays when it is asked for again in that time.
+    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asking: &mut Option<(std::path::PathBuf, bool, Instant)>) -> Option<String> {
+        let deep = clips.as_ref().is_ok_and(|clips| clips.deep);
+        let asked = asking.take().is_some_and(|(of, walked, until)| of == folder && walked == deep && Instant::now() < until);
+        let said = self.play_folder(gpu, folder, clips, wake, replace, asked)?;
+        *asking = (!asked).then(|| (folder.to_path_buf(), deep, Instant::now() + Duration::from_secs(8)));
         Some(said)
     }
 
-    /// plays a folder in the tab that is up: its clips one after another in name order, from the first, with the
-    /// folder's loop mode. on a network volume it first asks, once, with the count of clips it will open (`asked`
-    /// says that has just been done); there each clip is opened only when it is played. returns what there is to
-    /// say about it.
-    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, wake: &Sender<Event>, replace: bool, asked: bool) -> Option<String> {
-        let listed = browse::list(folder).map_err(|e| e.to_string().to_lowercase());
-        let (items, left_out) = match listed {
-            Ok(entries) => folder::items(&entries),
+    /// plays a folder in the tab that is up: `clips`, its own or with its subfolders', one after another, from the
+    /// first, with the folder's loop mode. on a network volume it first asks, once, with the count of clips it will
+    /// open (`asked` says that has just been done); there each clip is opened only when it is played. returns what
+    /// there is to say about it.
+    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asked: bool) -> Option<String> {
+        let clips = match clips {
+            Ok(clips) => clips,
             Err(why) => return Some(why),
         };
-        let Some(first) = items.first().map(|first| first.to_string_lossy().into_owned()) else { return Some("no video in this folder".into()) };
+        let none = if clips.deep { "no video in this folder or its subfolders" } else { "no video in this folder" };
+        let Some(first) = clips.items.first().map(|first| first.to_string_lossy().into_owned()) else { return Some(none.into()) };
         let network = browse::volume_of(folder) == browse::Volume::Network;
-        if let Some(ask) = folder::ask(browse::volume_of(folder), items.len(), asked) {
+        if let Some(ask) = folder::ask(browse::volume_of(folder), clips.items.len(), clips.deep, asked) {
             return Some(ask);
         }
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        let said = clips.said();
         let coming = self.open(gpu, first, wake, replace);
-        (coming.played, coming.play) = (Some(Played::new(title, items, wake, !network)), true);
-        (left_out > 0).then(|| format!("{left_out} file{} not on this disk left out", if left_out == 1 { " is" } else { "s are" }))
+        (coming.played, coming.play) = (Some(Played::new(title, folder, clips.items, wake, !network)), true);
+        said
     }
 
     /// takes in what has been read of a played folder's clips. once all are read the window is sized to the biggest
@@ -1604,8 +1606,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
     let mut speaker_open = false;
-    // the network folder play was last asked about, and until when asking for it again plays it
-    let mut asked_folder: Option<(std::path::PathBuf, Instant)> = None;
+    // the network folder play was last asked about, with its subfolders or not, and until when asking for it again
+    // plays it
+    let mut asked_folder: Option<(std::path::PathBuf, bool, Instant)> = None;
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone(), playing_now.clone());
     // the clip the spare reader has in hand for the timebar, and the frame last asked of it
@@ -1636,7 +1639,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     if let Some(path) = to_count {
         tabs.open(&gpu, path, &wake, true);
     }
-    if let Some(said) = folder.and_then(|folder| tabs.play_folder_or_ask(&gpu, &folder, &wake, true, &mut asked_folder)) {
+    if let Some(said) = folder.and_then(|folder| tabs.play_folder_or_ask(&gpu, &folder, folder::listed(&folder), &wake, true, &mut asked_folder)) {
         toast = say(said);
     }
     // more files given at launch, as an update's restart gives the files that were open: each in a tab of its own
@@ -1736,7 +1739,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 // a folder dropped on the window or handed over by another launch plays as a played folder, in a tab
                 // of its own as a file gets one (the owner's ask, 2026-11-24)
                 Event::Open(path) if Path::new(&path).is_dir() => {
-                    if let Some(said) = tabs.play_folder_or_ask(&gpu, Path::new(&path), &wake, false, &mut asked_folder) {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, Path::new(&path), folder::listed(Path::new(&path)), &wake, false, &mut asked_folder) {
                         toast = say(said);
                     }
                 }
@@ -1811,8 +1814,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Key { key: key @ (Key::Left | Key::Right), mods } if browsing && (mods.alt || mods.ctrl) => ui.browser_retrace(if key == Key::Left { -1 } else { 1 }),
                 Event::Key { key: key @ (Key::BrowserBack | Key::BrowserForward), .. } if browsing => ui.browser_retrace(if key == Key::BrowserBack { -1 } else { 1 }),
                 Event::Key { key, mods } if browsing && (key == Key::F5 || key == Key::R && mods.ctrl) => ui.browser_refresh(),
-                // in the browser the keys move about it and letters select by name
-                Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key, mods),
+                // in the browser the keys move about it and letters select by name; control + shift + enter plays
+                // the folder with its subfolders
+                Event::Key { key, mods } if browsing && !mods.alt && (!mods.ctrl || key == Key::Enter && mods.shift) => ui.browser_key(key, mods),
                 // the character a command's own press types is not typed. a field being typed into takes every
                 // character: one that comes without a key of its own, after a command chosen with the pointer (undo
                 // from the row of tools), is no command's
@@ -2035,6 +2039,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::Open(path) => {
                     tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, settings.browser_opens_in == settings::Opens::ThisTab);
                 }
+                // the other way, asked for in the browser's right-click menu
+                Action::OpenIn(path, new_tab) => {
+                    tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, !new_tab);
+                }
                 Action::Reveal(file) => window::reveal(file, wake.clone()),
                 Action::OpenUrl(url) => window::open_url(url, wake.clone()),
                 Action::Settings(to) => {
@@ -2092,7 +2100,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::Browse(on) => tabs.tab().browsing = *on,
                 Action::PlayFiles(files) => tabs.play_files(&gpu, files, &wake),
                 Action::PlayFolder(folder) => {
-                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, &wake, true, &mut asked_folder) {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, folder::listed(folder), &wake, true, &mut asked_folder) {
+                        toast = say(said);
+                    }
+                }
+                // walked by the browser, off this thread
+                Action::PlayTree(folder, clips) => {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, clips.clone(), &wake, true, &mut asked_folder) {
                         toast = say(said);
                     }
                 }

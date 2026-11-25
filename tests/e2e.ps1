@@ -838,6 +838,73 @@ foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), (Join-Path $t
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
+# ---- a folder played with its subfolders: its own clips first, then each subfolder's in name order, depth first.
+# z_own.mov comes first though it sorts after the folders; the two 01_dusk.mov are told apart by their frames (dome's
+# is prores, 4). a junction back to the top is not gone into: it would loop. control + shift + enter plays it, and so
+# does the browser's right-click menu, on the folder shown and on a folder's row
+$nest = Join-Path $env:APPDATA 'nest'; $dome = Join-Path $nest 'dome'; $inner = Join-Path $dome 'inner'; $wall = Join-Path $nest 'wall'
+$nestCopies = [ordered]@{ (Join-Path $nest 'z_own.mov') = 'hap_64.mov'; (Join-Path $dome '01_dusk.mov') = 'prores_64.mov'; (Join-Path $inner 'b.mov') = 'hapq_64.mov'; (Join-Path $wall '01_dusk.mov') = 'hap_64.mov' }
+New-Item -ItemType Directory $nest, $dome, $inner, $wall | Out-Null
+foreach ($to in $nestCopies.Keys) { Copy-Item -LiteralPath (Join-Path $media $nestCopies[$to]) -Destination $to }
+$loop = Join-Path $nest 'loop'
+New-Item -ItemType Junction -Path $loop -Target $nest | Out-Null
+Confirm-That 'the tree has a junction back to its top' ((Get-Item -LiteralPath $loop).LinkType -eq 'Junction') "$loop is $((Get-Item -LiteralPath $loop).LinkType)"
+function Get-ClipOf([int]$count) { if ((Get-Title) -match " . clip (\d) of $count") { [int]$Matches[1] } else { 0 } }
+function Go-First([int]$count) { foreach ($i in 1..($count + 1)) { if ((Get-ClipOf $count) -eq 1) { break }; Send-Key 0x27 1 4; Start-Sleep -Milliseconds 500 } }
+# the browser in the tree's top, in a window of known size with nothing selected: no metadata column, and the main
+# area after as many columns as fit, its path line 18 under the address
+function Start-Nest {
+    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $nest", 'mute = on', 'play_on_open = off'
+    Start-Player
+    [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 1240, 800, 0x0006)
+    Start-Sleep -Milliseconds 1000
+    $script:mainLeft = 150 + 168 * [math]::Max(1, [math]::Floor(((Get-Width) - 150 - 360) / 168))
+}
+Start-Nest
+Send-Key 0x0D 1 5; Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'control + shift + enter plays the folder with its subfolders, and not through the junction' ' . clip [1-4] of 4( . \d+ held at cuts)?$'
+Go-First 4
+Assert-Title 'the folder''s own clip is first' '^z_own\.mov . \d / 3 . .* . clip 1 of 4'
+Send-Key 0x27 1 4; Assert-Title 'then the first subfolder''s' '^01_dusk\.mov . \d / 4 . .* . clip 2 of 4'
+Send-Key 0x27 1 4; Assert-Title 'then the folder in it' '^b\.mov . .* . clip 3 of 4'
+Send-Key 0x27 1 4; Assert-Title 'then the next subfolder''s, of the same name' '^01_dusk\.mov . \d / 3 . .* . clip 4 of 4'
+Stop-Player
+# a right click on the main area's path line is on the folder shown: its menu's second row, 13 into the menu and 24 a
+# row, plays it with its subfolders
+Start-Nest
+RightClick-At ($mainLeft + 30) 86; Click-At ($mainLeft + 90) (86 + 13 + 24 * 1.5)
+Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'play with subfolders, in the right-click menu of the folder shown, plays all four' ' . clip [1-4] of 4( . \d+ held at cuts)?$'
+Stop-Player
+# a right click on a folder's row selects it and offers it: open, play folder, play with subfolders. dome is the first
+# row of the folder shown's column, the last before the main area, rows of 26.25 from 8 under the path line's top
+Start-Nest
+$rowAt = 32 + 36 + 8 + 26.25 / 2
+RightClick-At ($mainLeft - 84) $rowAt; Click-At ($mainLeft - 24) ($rowAt + 13 + 24 * 2.5)
+Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'play with subfolders, in a folder''s right-click menu, plays that folder''s two' ' . clip [12] of 2( . \d+ held at cuts)?$'
+Stop-Player
+# copy path, the fourth row of a video's menu (open, open in a new tab, reveal), puts its path on the clipboard. z_own.mov
+# is the fourth row of the column, after the three folders. the clipboard is put back after, as above
+$held = [System.Windows.Forms.Clipboard]::GetDataObject()
+$more = if ($held) { @($held.GetFormats() | Where-Object { $_ -notin 'System.String', 'UnicodeText', 'Text', 'OEMText', 'Locale' }) } else { @() }
+if ($more.Count -eq 0) {
+    $was = Get-Clipboard -Raw
+    Start-Nest
+    RightClick-At ($mainLeft - 84) ($rowAt + 26.25 * 3); Click-At ($mainLeft - 24) ($rowAt + 26.25 * 3 + 13 + 24 * 3.5)
+    Start-Sleep -Milliseconds 400
+    $copied = Get-Clipboard -Raw
+    Stop-Player
+    if ($was) { Set-Clipboard -Value $was } else { [System.Windows.Forms.Clipboard]::Clear() }
+    Confirm-That 'copy path, in a video''s right-click menu, copies its path' ($copied -eq (Join-Path $nest 'z_own.mov')) "the clipboard held '$copied'"
+} else { Write-Host 'skip  copy path: the clipboard holds more than plain text, which this test would not put back' }
+# the junction first, as a link: removing a directory link removes the link and never what it leads to. then what the
+# section made, file by file, then its folders. nothing recursive
+Write-Host "removing the junction $loop"; [IO.Directory]::Delete($loop)
+foreach ($made in @($nestCopies.Keys) + $inner, $dome, $wall, $nest) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
 # ---- a network folder (fig. 29), through this pc's own share: the browser lists it and reads none of its files, so no
 # poster is made, until the note's button asks for its previews; then its two clips get theirs. the folders are as deep
 # as the columns that fit, so these list only what the test made

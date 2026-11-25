@@ -99,6 +99,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **R** goes round loop all, one and off. **ctrl+←** and **ctrl+→** go to the clip before and after.
 - click the tab to list the clips. a size or rate unlike the first clip's is amber.
 - nothing jumps at a cut: the window is sized once and the next clip is ready.
+- **play with subfolders** (right-click a folder, or **ctrl+shift+enter**) plays its own clips, then each subfolder's, depth first. the list names each by its path from the folder. it stops at 2000 videos or 10000 folders, and says so.
 
 ![a played folder's clip list, odd rates and size in amber](docs/images/played-folder.png)
 
@@ -110,6 +111,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **columns** lead to the folder. its videos are **cards**: move the pointer across one to scrub its preview.
 - **the address** shows the path. press it, or **ctrl+L**, to type one.
 - **shift+click** or **ctrl+click** picks several videos to play as a played folder.
+- **right-click** a folder, a video or the empty area for what can be done with it: open, play, reveal, copy path and more.
 - **network folders are look-only:** names, sizes and dates, until you open a file or press **make previews**.
 - previews are cached in the system's cache folder, never near your media.
 
@@ -195,6 +197,7 @@ in the browser, letters select names instead of running commands:
 | home · end | first / last |
 | enter | open the selected card, or play the videos picked |
 | shift+enter | open folder: play the folder |
+| ctrl+shift+enter | play the folder with its subfolders |
 | backspace | up a folder |
 | letters | select the first name that starts with them (a second's pause starts over) |
 | ctrl+L | type or paste a path into the address |

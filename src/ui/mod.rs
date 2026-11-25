@@ -320,10 +320,14 @@ pub enum Action {
     GoClip(usize),
     /// open this file in the tab that is up
     Open(PathBuf),
+    /// open this file in a new tab (true) or in the tab that is up, whatever the settings say
+    OpenIn(PathBuf, bool),
     /// show this file in the system's own file browser
     Reveal(PathBuf),
     /// play this folder: asked for in the browser
     PlayFolder(PathBuf),
+    /// play this folder with its subfolders: the clips the browser's walk of them found, or why it found none
+    PlayTree(PathBuf, Result<crate::folder::Clips, String>),
     /// play these files one after another: picked together in the browser
     PlayFiles(Vec<PathBuf>),
     /// lay the browser over the clip, or take it away
@@ -883,10 +887,12 @@ impl Ui {
                         self.browser.away();
                         message(ui, body, words, "")
                     }
-                    (None, None) => match self.browser.draw(ui, body) {
+                    (None, None) => match self.browser.draw(ui, body, screen.settings.browser_opens_in == crate::settings::Opens::NewTab) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
+                        Some(browser::Chosen::OpenIn(path, new_tab)) => actions.push(Action::OpenIn(path, new_tab)),
                         Some(browser::Chosen::Reveal(path)) => actions.push(Action::Reveal(path)),
                         Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),
+                        Some(browser::Chosen::PlayTree(folder, clips)) => actions.push(Action::PlayTree(folder, clips)),
                         Some(browser::Chosen::PlayFiles(files)) => actions.push(Action::PlayFiles(files)),
                         Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
                         None => {}
@@ -900,7 +906,8 @@ impl Ui {
         // the settings or help panel, over whatever is up
         self.panel_over(ui, full, screen, actions);
         self.update_modal(ui, full, actions);
-        if let Some(said) = screen.toast {
+        // a folder's subfolders are walked before it plays, which on a share can take a while
+        if let Some(said) = screen.toast.or_else(|| self.browser.walking().then_some("finding the videos in its subfolders…")) {
             toast(ui, full, said);
         }
     }

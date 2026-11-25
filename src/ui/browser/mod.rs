@@ -7,13 +7,14 @@ mod jobs;
 mod nav;
 
 use super::icons::{self, Icon};
-use super::{cut_middle, font, icon_button, text_top, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS};
+use super::{cut_middle, font, icon_button, text_top, widgets, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS};
 use crate::browse::{self, Entry, Group, Kind, Place, View, Volume, Widths};
 use crate::event::{Key, Mods};
+use crate::folder::{self, Clips};
 use crate::media::meta::{Meta, Row, Tone};
 use crate::preview::make::{self, Pictures, Want};
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
-use egui::{Color32, FontId, Galley, Painter, Pos2, Rect, Sense, StrokeKind, Vec2};
+use egui::{Align2, Color32, FontId, Galley, Painter, Pos2, Rect, Sense, StrokeKind, Vec2};
 use jobs::Jobs;
 use nav::{is_card, Listing, Nav};
 use std::collections::{HashMap, HashSet};
@@ -69,15 +70,25 @@ const REST: f64 = 0.15;
 const POLL: Duration = Duration::from_millis(40);
 /// how many recent folders the sidebar keeps
 const RECENT: usize = 5;
+/// the right-click menu: one column of rows as the player's own right-click menu has them, wide enough for the
+/// longest words beside the longest key
+const MENU_WIDTH: f32 = 300.0;
+const MENU_ROW: f32 = 24.0;
+/// what is shown of a folder, as the view's list and the right-click menu name them
+const VIEWS: [(View, &str); 3] = [(View::Both, "list + gallery"), (View::Gallery, "gallery"), (View::List, "list")];
 
 /// what was chosen in the browser
 pub enum Chosen {
     /// open this file, in the tab the browser is in. a sequence is opened by its first file
     Open(PathBuf),
+    /// open this file in a new tab (true) or in the tab the browser is in, whatever the settings say
+    OpenIn(PathBuf, bool),
     /// show this file in the system's own file browser
     Reveal(PathBuf),
     /// play this folder
     PlayFolder(PathBuf),
+    /// play this folder with its subfolders: the clips their walk found, or why it found none
+    PlayTree(PathBuf, Result<Clips, String>),
     /// play these files of one folder, one after another
     PlayFiles(Vec<PathBuf>),
     /// back to the clip under the browser
@@ -114,11 +125,18 @@ impl Browser {
         }
     }
 
-    /// the browser is not on screen: no pictures are wanted.
+    /// the browser is not on screen: no pictures are wanted, its menu goes, and a walk on its way is dropped.
     pub fn away(&mut self) {
         if let Some(state) = &mut self.state {
             state.want(Vec::new());
+            state.menu = None;
+            state.walks.keep_only(|_| false);
         }
+    }
+
+    /// a folder is being walked for its subfolders' clips, to play them.
+    pub fn walking(&self) -> bool {
+        self.state.as_ref().is_some_and(|state| state.walks.busy())
     }
 
     /// the folder the main area shows: kept between runs.
@@ -141,6 +159,15 @@ impl Browser {
     pub fn key(&mut self, key: Key, mods: Mods) {
         let state = self.state();
         state.take_answers();
+        // a key puts the right-click menu away, and esc does nothing more
+        if state.menu.take().is_some() && key == Key::Escape {
+            return;
+        }
+        // control + shift + enter plays the folder shown with its subfolders
+        if key == Key::Enter && mods.shift && mods.ctrl {
+            let shown = state.nav.main().folder.clone();
+            return state.click(Click::PlayTree(shown));
+        }
         // enter opens the videos picked together; any other key lets them go
         if key == Key::Enter && !mods.shift && state.picked.len() > 1 {
             return state.click(Click::OpenPicked);
@@ -219,9 +246,12 @@ impl Browser {
         self.state().wheel += notches;
     }
 
-    /// draws the browser over `area`. returns what was chosen, by key or by pointer.
-    pub fn draw(&mut self, ui: &mut egui::Ui, area: Rect) -> Option<Chosen> {
-        self.state().draw(ui, area)
+    /// draws the browser over `area`. returns what was chosen, by key or by pointer. `new_tab`: the settings open a
+    /// file from here in a tab of its own, so the right-click menu offers this tab as the other place.
+    pub fn draw(&mut self, ui: &mut egui::Ui, area: Rect, new_tab: bool) -> Option<Chosen> {
+        let state = self.state();
+        state.new_tab = new_tab;
+        state.draw(ui, area)
     }
 }
 
@@ -287,7 +317,31 @@ struct State {
     over_edge: bool,
     /// the pass it was last drawn in
     drawn: u64,
+    /// a folder being walked for its subfolders' clips, to play them: one at a time
+    walks: Jobs<Result<Clips, String>>,
+    /// the right-click menu: what it is on and where it was asked for; and where it was last drawn
+    menu: Option<(On, Pos2)>,
+    menu_rect: Rect,
+    /// a path the menu copied, for the clipboard
+    copied: Option<String>,
+    /// the settings open a file from here in a tab of its own
+    new_tab: bool,
 }
+
+/// what the right-click menu is on
+#[derive(Clone, Debug, PartialEq)]
+enum On {
+    /// a file: a video's card, or a file's row in a column
+    File(PathBuf),
+    /// a folder's row in a column
+    Folder(PathBuf),
+    /// the main area away from its cards: the folder it shows
+    Shown(PathBuf),
+}
+
+/// a row of the right-click menu: its words, its key where it has one, what it does, and for a view whether it is the
+/// one shown
+type MenuRow = (&'static str, &'static str, Click, Option<bool>);
 
 /// a press in the browser: what it asks for, done once everything is drawn, and what a double click on the same thing
 /// asks for
@@ -301,9 +355,17 @@ enum Click {
     Enter,
     Card(PathBuf),
     Open(PathBuf),
+    /// in a new tab (true) or in this one, whatever the settings say
+    OpenIn(PathBuf, bool),
     Reveal(PathBuf),
-    PlayFolder,
+    PlayFolder(PathBuf),
+    /// this folder with its subfolders: they are walked first
+    PlayTree(PathBuf),
     Read(PathBuf),
+    /// this path to the clipboard
+    Copy(PathBuf),
+    /// the right-click menu opens on this, at this place
+    Menu(On, Pos2),
     /// the previews of this folder
     Previews(PathBuf),
     /// the address becomes a field to type into; and what was typed there, entered
@@ -449,6 +511,11 @@ impl State {
             widths: Widths::default(),
             over_edge: false,
             drawn: 0,
+            walks: Jobs::new(),
+            menu: None,
+            menu_rect: Rect::NOTHING,
+            copied: None,
+            new_tab: false,
         }
     }
 
@@ -456,13 +523,13 @@ impl State {
     /// played from becomes the newest recent one.
     fn choose(&mut self, chosen: Chosen) {
         match &chosen {
-            Chosen::Open(file) => {
+            Chosen::Open(file) | Chosen::OpenIn(file, _) => {
                 self.asked.insert(file.clone());
                 if let Some(folder) = file.parent() {
                     self.remember(folder.to_path_buf());
                 }
             }
-            Chosen::PlayFolder(folder) => self.remember(folder.clone()),
+            Chosen::PlayFolder(folder) | Chosen::PlayTree(folder, _) => self.remember(folder.clone()),
             Chosen::PlayFiles(files) => {
                 self.asked.extend(files.iter().cloned());
                 if let Some(folder) = files.first().and_then(|file| file.parent()) {
@@ -470,6 +537,10 @@ impl State {
                 }
             }
             Chosen::Reveal(_) | Chosen::Back => {}
+        }
+        // a walk on its way is dropped for anything else asked for: it would play after the user had moved on
+        if !matches!(chosen, Chosen::PlayTree(..) | Chosen::Reveal(_)) {
+            self.walks.keep_only(|_| false);
         }
         self.chosen = Some(chosen);
     }
@@ -535,6 +606,9 @@ impl State {
             self.nav.listings.insert(folder, listing);
         }
         self.read.extend(self.metas.answers());
+        for (folder, clips) in self.walks.answers() {
+            self.choose(Chosen::PlayTree(folder, clips));
+        }
         self.nav.settle();
     }
 
@@ -572,6 +646,7 @@ impl State {
         }
         // after the parts, so an edge takes the pointer before the rows and cards under it
         self.edges(ui, &layout);
+        self.menu(ui, area.shrink(8.0), &mut clicks);
         // a double click acts on what its first press was on, not on what its second one lands on. a press on nothing
         // leaves nothing for one
         let (single, double) = ui.input(|i| {
@@ -593,10 +668,14 @@ impl State {
         for click in clicks {
             self.click(click);
         }
+        // as text copied from a field goes: the window puts it on the system's clipboard
+        if let Some(path) = self.copied.take() {
+            ui.ctx().copy_text(path);
+        }
         if let Some(wait) = self.ask(layout.first, ui.input(|i| i.time)) {
             ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
         }
-        if self.lists.busy() || self.metas.busy() || self.pins.busy() {
+        if self.lists.busy() || self.metas.busy() || self.pins.busy() || self.walks.busy() {
             ui.ctx().request_repaint_after(POLL);
         }
         self.chosen.take()
@@ -625,11 +704,19 @@ impl State {
                 self.choose(Chosen::PlayFiles(files));
             }
             Click::Open(file) => self.choose(Chosen::Open(file)),
+            Click::OpenIn(file, new_tab) => self.choose(Chosen::OpenIn(file, new_tab)),
             Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
-            Click::PlayFolder => self.choose(Chosen::PlayFolder(self.nav.main().folder.clone())),
+            Click::PlayFolder(to) => self.choose(Chosen::PlayFolder(to)),
+            // off the drawing thread, as a folder is listed: played when its answer comes in
+            Click::PlayTree(to) => {
+                self.walks.keep_only(|_| false);
+                self.walks.ask(to, folder::walk);
+            }
             Click::Read(file) => {
                 self.asked.insert(file);
             }
+            Click::Copy(path) => self.copied = Some(path.to_string_lossy().into_owned()),
+            Click::Menu(on, at) => (self.menu, self.view_menu) = (Some((on, at)), false),
             Click::Previews(folder) => {
                 self.previews.insert(folder);
             }
@@ -751,7 +838,7 @@ impl State {
         // at its right, where nothing comes and goes: what is shown of a folder, and open folder where the folder
         // holds more than one video. (as "play folder" it stood at the main area's right, and jumped away when the
         // metadata column came in: the owner saw it flash, 2026-11-24.)
-        let names = [(View::Both, "list + gallery"), (View::Gallery, "gallery"), (View::List, "list")];
+        let names = VIEWS;
         let now = self.nav.view;
         let label = painter.layout_no_wrap(names.iter().find(|(view, _)| *view == now).map_or("", |(_, name)| name).to_string(), font(SANS, 12.0), FG);
         let size = Vec2::new(1.0 + 9.0 + label.size().x + 8.0 + 7.0 + 9.0 + 1.0, 27.5);
@@ -796,7 +883,7 @@ impl State {
             let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
             let play = Rect::from_min_size(Pos2::new(right - size.x, middle - size.y / 2.0), size);
             if button(ui, &painter, play, "brw-play", label, false) {
-                clicks.push((Click::PlayFolder, None));
+                clicks.push((Click::PlayFolder(self.nav.main().folder.clone()), None));
             }
             let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
             painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
@@ -1060,7 +1147,12 @@ impl State {
                 painter.galley(Pos2::new(row.right() - 10.0 - arrow.size().x, top_of(&painter, &arrow, middle)), arrow, GRAY);
             }
             text(&painter, row.left() + 31.0, middle, &entry.name, font(SANS, 12.5), color, room);
-            if ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click()).clicked() {
+            let response = ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click());
+            if response.secondary_clicked() {
+                let on = if folder { On::Folder(entry.path.clone()) } else { On::File(entry.path.clone()) };
+                right_click(ui, &self.picked, Some(Click::Row(at, entry.path.clone(), folder)), on, clicks);
+            }
+            if response.clicked() {
                 // with shift or control held, a video in the folder shown is picked with the others
                 let (shift, more) = self.held;
                 if (shift || more) && is_card(entry) && at + 1 == self.nav.path.len() {
@@ -1077,6 +1169,10 @@ impl State {
     fn main_area(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         let folder = self.nav.main().folder.clone();
+        // under the cards and buttons drawn after it: a right click away from them is on the folder shown
+        if ui.interact(rect, ui.scope_id().with("brw-main"), Sense::click()).secondary_clicked() {
+            right_click(ui, &self.picked, None, On::Shown(folder.clone()), clicks);
+        }
         // the path line: what the folder holds. its name is the address's last word, right over this line, and the
         // button that opens it stands at the address's right
         let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), PATH_LINE));
@@ -1183,6 +1279,9 @@ impl State {
             // the pointer's place across the picture scrubs it
             let scrub = response.hover_pos().map(|p| ((p.x - area.left()) / width).clamp(0.0, 1.0));
             draw_card(&painter, area, thumb, card, at == Some(i) || self.picked.contains(&card.path), pictures, scrub);
+            if response.secondary_clicked() {
+                right_click(ui, &self.picked, Some(Click::Card(card.path.clone())), On::File(card.path.clone()), clicks);
+            }
             if response.clicked() {
                 // with shift or control held the card is picked with the others; a plain press selects it alone
                 let (shift, more) = self.held;
@@ -1308,6 +1407,124 @@ impl State {
         };
         let bottom = rows(&painter, left, picture.bottom() + 10.0, width, groups);
         self.meta_height = bottom - top + 12.0;
+    }
+
+    /// what the right-click menu offers for what it is on: what the browser does with that thing, and only what
+    /// applies to it here (reveal is not offered on a network volume, where explorer would read the folder to show it).
+    fn menu_rows(&self, on: &On) -> Vec<MenuRow> {
+        let local = self.nav.volume != Volume::Network;
+        let reveal = if cfg!(target_os = "macos") { "reveal in finder" } else { "reveal in explorer" };
+        let mut rows: Vec<MenuRow> = Vec::new();
+        match on {
+            On::File(file) => {
+                let Some(entry) = file.parent().and_then(|folder| self.nav.entries(folder).iter().find(|e| &e.path == file)) else { return rows };
+                // one of several picked: enter plays them all, and open is this one alone
+                let many = self.picked.len() > 1 && self.picked.contains(file);
+                if is_card(entry) {
+                    rows.push(("open", if many { "" } else { "enter" }, Click::Open(file.clone()), None));
+                    rows.push((if self.new_tab { "open in this tab" } else { "open in a new tab" }, "", Click::OpenIn(file.clone(), !self.new_tab), None));
+                }
+                if many {
+                    rows.push(("play the picked videos", "enter", Click::OpenPicked, None));
+                }
+                if local && !entry.away {
+                    rows.push((reveal, "", Click::Reveal(file.clone()), None));
+                }
+                rows.push(("copy path", "", Click::Copy(file.clone()), None));
+                if nav::readable(entry) && !nav::reads_metadata(self.nav.volume, entry, self.asked.contains(file)) {
+                    rows.push(("read metadata", "", Click::Read(file.clone()), None));
+                }
+            }
+            On::Folder(folder) | On::Shown(folder) => {
+                let shown = matches!(on, On::Shown(_));
+                if !shown {
+                    rows.push(("open", "right", Click::Enter, None));
+                }
+                // the folder shown is listed: with no video of its own it has nothing to play but its subfolders'
+                if !shown || self.nav.cards().next().is_some() {
+                    rows.push(("play folder", "shift enter", Click::PlayFolder(folder.clone()), None));
+                }
+                rows.push(("play with subfolders", "ctrl shift enter", Click::PlayTree(folder.clone()), None));
+                if shown {
+                    rows.push(("read again", "f5", Click::Refresh, None));
+                }
+                if local {
+                    rows.push((reveal, "", Click::Reveal(folder.clone()), None));
+                }
+                rows.push(("copy path", "", Click::Copy(folder.clone()), None));
+                if !local && !self.previews.contains(folder) {
+                    rows.push(("make previews", "", Click::Previews(folder.clone()), None));
+                }
+                if shown {
+                    rows.extend(VIEWS.map(|(view, words)| (words, "", Click::View(view), Some(view == self.nav.view))));
+                }
+            }
+        }
+        rows
+    }
+
+    /// the right-click menu (the owner's ask, 2026-11-25), drawn as the player's own: at the pointer where it was
+    /// asked for and kept inside `room` by its size when it was last drawn, a row each with its key at the right where
+    /// it has one, and the views after a rule. a row chosen does what it says; that, a press outside it and esc put it
+    /// away.
+    fn menu(&mut self, ui: &egui::Ui, room: Rect, clicks: &mut Vec<Press>) {
+        let Some((on, corner)) = self.menu.clone() else { return };
+        if ui.input(|i| i.pointer.any_pressed()) && !ui.ctx().pointer_latest_pos().is_some_and(|p| self.menu_rect.contains(p)) {
+            self.menu = None;
+            return;
+        }
+        // what it was on is gone from its folder, read again
+        let rows = self.menu_rows(&on);
+        if rows.is_empty() {
+            self.menu = None;
+            return;
+        }
+        let last = self.menu_rect;
+        let at = Pos2::new(corner.x.min(room.right() - last.width()).max(room.left()), corner.y.min(room.bottom() - last.height()).max(room.top()));
+        let mut chosen = None;
+        let drawn = widgets::menu(ui, "brw-menu", at, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let mut ruled = false;
+            for (i, (words, key, click, view)) in rows.into_iter().enumerate() {
+                if view.is_some() && !std::mem::replace(&mut ruled, true) {
+                    let rule = widgets::row(ui, 9.0);
+                    ui.painter().rect_filled(Rect::from_min_size(Pos2::new(rule.left(), rule.center().y), Vec2::new(rule.width(), 1.0)), 0.0, LINE);
+                }
+                let row = widgets::row(ui, MENU_ROW);
+                let response = ui.interact(row, ui.scope_id().with(("brw-menu-row", i)), Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(row, 3.0, HOVER);
+                }
+                let family = if view == Some(true) { "sans-semibold" } else { SANS };
+                let galley = ui.painter().layout_no_wrap(words.to_string(), font(family, 12.0), FG);
+                ui.painter().galley(Pos2::new(row.left() + 6.0, text_top(ui.painter(), font(family, 12.0), row.center().y)), galley, FG);
+                if !key.is_empty() {
+                    widgets::key_cap(ui, Pos2::new(row.right() - 6.0, row.center().y), key, false, DIM);
+                }
+                if response.clicked() {
+                    chosen = Some(click);
+                }
+            }
+        });
+        // a menu of another size than the last is kept inside the room from the next pass
+        if drawn.size() != last.size() {
+            ui.ctx().request_repaint();
+        }
+        self.menu_rect = drawn;
+        if let Some(click) = chosen {
+            self.menu = None;
+            clicks.push((click, None));
+        }
+    }
+}
+
+/// a right click on something the menu can be on: a row or a card is selected first, as a press selects it, unless it
+/// is one of several videos picked together, which stay picked; then the menu opens at the pointer.
+fn right_click(ui: &egui::Ui, picked: &[PathBuf], select: Option<Click>, on: On, clicks: &mut Vec<Press>) {
+    let kept = matches!(&on, On::File(file) if picked.len() > 1 && picked.contains(file));
+    clicks.extend(select.filter(|_| !kept).map(|click| (click, None)));
+    if let Some(at) = ui.ctx().pointer_latest_pos() {
+        clicks.push((Click::Menu(on, at), None));
     }
 }
 
@@ -1621,9 +1838,9 @@ mod tests {
         assert_eq!(when(at), "2023-11-14 22:13 utc");
         assert_eq!(when(UNIX_EPOCH + Duration::from_secs(951_782_400)), "2000-02-29 00:00 utc");
         assert_eq!((short_size(4_820_000_000), short_size(86_000_000), short_size(512)), ("4.82 GB".into(), "86.0 MB".into(), "512 bytes".into()));
-        let clip = Entry { name: "a.mov".into(), path: "a.mov".into(), kind: Kind::Clip, size: Some(4_820_000_000), modified: Some(at), away: false };
+        let clip = Entry { name: "a.mov".into(), path: "a.mov".into(), kind: Kind::Clip, size: Some(4_820_000_000), modified: Some(at), away: false, link: false };
         assert_eq!(spec(&clip), ("4.82 GB · 2023-11-14 22:13 utc".to_string(), false));
-        let seq = Entry { name: "s.[0001-0240].exr".into(), path: "s.0001.exr".into(), kind: Kind::Sequence { first: 1, last: 240, missing: vec![7, 9], pad: 4 }, size: None, modified: None, away: false };
+        let seq = Entry { name: "s.[0001-0240].exr".into(), path: "s.0001.exr".into(), kind: Kind::Sequence { first: 1, last: 240, missing: vec![7, 9], pad: 4 }, size: None, modified: None, away: false, link: false };
         assert_eq!(spec(&seq), ("238 of 240".to_string(), true));
         assert_eq!(listed_facts(&seq)[1].value, "238 of 240 · 2 missing");
         assert_eq!(holds(&[clip, seq]), "1 video · 1 sequence");
@@ -1856,7 +2073,7 @@ mod tests {
     fn shift_and_control_presses_pick_several_videos_to_open_together() {
         let folder = std::env::temp_dir().join("eyepiece-no-such-wall");
         let mut state = State::new(Some(folder.clone()), Vec::new(), None);
-        let clip = |name: &str| Entry { name: name.into(), path: folder.join(name), kind: Kind::Clip, size: Some(10), modified: None, away: false };
+        let clip = |name: &str| Entry { name: name.into(), path: folder.join(name), kind: Kind::Clip, size: Some(10), modified: None, away: false, link: false };
         state.nav.listings.insert(folder.clone(), Ok(["a.mov", "b.mov", "c.mov", "d.mov"].map(clip).into()));
         let at = |name: &str| folder.join(name);
         state.click(Click::Card(at("b.mov")));
@@ -1870,6 +2087,135 @@ mod tests {
         assert!(matches!(&state.chosen, Some(Chosen::PlayFiles(files)) if *files == [at("a.mov"), at("b.mov"), at("d.mov")]));
         state.click(Click::Card(at("c.mov")));
         assert!(state.picked.is_empty());
+    }
+
+    fn listed_entry(folder: &Path, name: &str, kind: Kind) -> Entry {
+        Entry { name: name.into(), path: folder.join(name), kind, size: Some(10), modified: None, away: false, link: false }
+    }
+
+    /// the right-click menu offers what the browser does with what it is on, and only what applies there: a video, a
+    /// file that is none, a folder's row, the folder shown; several videos picked; the settings' other tab; a network
+    /// volume, where nothing is revealed and metadata and previews are asked for. every row fits the menu in its fonts.
+    #[test]
+    fn the_right_click_menu_offers_what_applies_to_what_it_is_on() {
+        let reveal = if cfg!(target_os = "macos") { "reveal in finder" } else { "reveal in explorer" };
+        let rows = |state: &State, on: On| state.menu_rows(&on).into_iter().map(|(words, key, _, view)| (words, key, view)).collect::<Vec<_>>();
+        let folder = std::env::temp_dir().join("eyepiece-no-such-menu");
+        let at = |name: &str| folder.join(name);
+        let mut state = State::new(Some(folder.clone()), Vec::new(), None);
+        let entries = vec![listed_entry(&folder, "dome", Kind::Folder), listed_entry(&folder, "a.mov", Kind::Clip), listed_entry(&folder, "b.mov", Kind::Clip), listed_entry(&folder, "notes.txt", Kind::Other)];
+        state.nav.listings.insert(folder.clone(), Ok(entries));
+        assert_eq!(rows(&state, On::File(at("a.mov"))), [("open", "enter", None), ("open in a new tab", "", None), (reveal, "", None), ("copy path", "", None)]);
+        state.new_tab = true;
+        assert_eq!(rows(&state, On::File(at("a.mov")))[1].0, "open in this tab");
+        state.picked = vec![at("a.mov"), at("b.mov")];
+        assert_eq!(rows(&state, On::File(at("a.mov"))), [("open", "", None), ("open in this tab", "", None), ("play the picked videos", "enter", None), (reveal, "", None), ("copy path", "", None)]);
+        state.picked.clear();
+        assert_eq!(rows(&state, On::File(at("notes.txt"))), [(reveal, "", None), ("copy path", "", None)]);
+        let dome = [("open", "right", None), ("play folder", "shift enter", None), ("play with subfolders", "ctrl shift enter", None), (reveal, "", None), ("copy path", "", None)];
+        assert_eq!(rows(&state, On::Folder(at("dome"))), dome);
+        assert!(matches!(&state.menu_rows(&On::Folder(at("dome")))[2].2, Click::PlayTree(to) if *to == at("dome")));
+        let views = [("list + gallery", "", Some(true)), ("gallery", "", Some(false)), ("list", "", Some(false))];
+        let shown = [("play folder", "shift enter", None), ("play with subfolders", "ctrl shift enter", None), ("read again", "f5", None), (reveal, "", None), ("copy path", "", None)];
+        assert_eq!(rows(&state, On::Shown(folder.clone())), [&shown[..], &views[..]].concat());
+
+        let share = PathBuf::from(r"\\server\share\shots");
+        let mut state = State::new(Some(share.clone()), Vec::new(), None);
+        assert_eq!(state.nav.volume, Volume::Network);
+        state.nav.listings.insert(share.clone(), Ok(vec![listed_entry(&share, "sub", Kind::Folder), listed_entry(&share, "a.mov", Kind::Clip)]));
+        assert_eq!(rows(&state, On::File(share.join("a.mov"))), [("open", "enter", None), ("open in a new tab", "", None), ("copy path", "", None), ("read metadata", "", None)]);
+        state.asked.insert(share.join("a.mov"));
+        assert_eq!(rows(&state, On::File(share.join("a.mov"))).len(), 3, "read, it is not offered again");
+        assert_eq!(rows(&state, On::Folder(share.join("sub"))).last(), Some(&("make previews", "", None)));
+        let shown = [("play folder", "shift enter", None), ("play with subfolders", "ctrl shift enter", None), ("read again", "f5", None), ("copy path", "", None), ("make previews", "", None)];
+        assert_eq!(rows(&state, On::Shown(share.clone())), [&shown[..], &views[..]].concat());
+        state.previews.insert(share.clone());
+        assert!(!rows(&state, On::Shown(share.clone())).iter().any(|(words, ..)| *words == "make previews"));
+        // the folder shown with no video of its own has only its subfolders' to play
+        state.nav.listings.insert(share.clone(), Ok(vec![listed_entry(&share, "sub", Kind::Folder)]));
+        assert_eq!(rows(&state, On::Shown(share.clone()))[0].0, "play with subfolders");
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for (words, key, view) in [&dome[..], &shown[..], &views[..], &[("play the picked videos", "enter", None), ("open in a new tab", "", None), ("open in this tab", "", None), ("read metadata", "", None)]].concat() {
+                let family = if view == Some(true) { "sans-semibold" } else { SANS };
+                assert!(ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 12.0), words) && f.has_glyphs(&font(MONO_MEDIUM, 10.0), key)), "{words} {key}");
+                let wide = ui.painter().layout_no_wrap(words.to_string(), font(family, 12.0), FG).size().x;
+                let cap = if key.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(key.to_string(), font(MONO_MEDIUM, 10.0), DIM).size().x + 10.0 };
+                // the menu's border and padding are 26, the row's insets 6 each side, and 12 at least between
+                assert!(6.0 + wide + 12.0 + cap + 6.0 <= MENU_WIDTH - 26.0, "{words} with {key} does not fit");
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// driven as a person does: a right click on a row selects it and opens the menu at the pointer, and a row of the
+    /// menu does what it says (copy path puts the path on the clipboard, as a field's copy does). a right click on the
+    /// main area away from the cards is on the folder shown and selects nothing; esc puts the menu away and does no
+    /// more, as does a press outside it. control + shift + enter walks the folder shown.
+    #[test]
+    fn a_right_click_selects_what_it_is_on_and_opens_the_menu_there() {
+        let folder = std::env::temp_dir().join("eyepiece-no-such-right");
+        let mut browser = Browser::new(Some(folder.clone()), None);
+        browser.state().nav.listings.insert(folder.clone(), Ok(vec![listed_entry(&folder, "dome", Kind::Folder), listed_entry(&folder, "a.mov", Kind::Clip)]));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0));
+        let mut time = 0.0;
+        let mut pass = |browser: &mut Browser, events: Vec<egui::Event>| {
+            let mut raw = egui::RawInput { time: Some(time), screen_rect: Some(area), ..Default::default() };
+            raw.events = events;
+            let mut out = ctx.run_ui(raw, |ui| {
+                browser.draw(ui, ui.max_rect(), false);
+            });
+            out.textures_delta.clear();
+            time += 0.05;
+            out.platform_output.commands
+        };
+        // the pointer goes there, and the button goes down and comes up, a pass each; then a pass for what it opened
+        let press = |browser: &mut Browser, pass: &mut dyn FnMut(&mut Browser, Vec<egui::Event>) -> Vec<egui::OutputCommand>, at: Pos2, button: egui::PointerButton| {
+            let event = |pressed| egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE };
+            pass(browser, vec![egui::Event::PointerMoved(at)]);
+            pass(browser, vec![event(true)]);
+            let said = pass(browser, vec![event(false)]);
+            pass(browser, Vec::new());
+            pass(browser, Vec::new());
+            said
+        };
+        let layout = |browser: &mut Browser| {
+            let state = browser.state();
+            Layout::new(area, state.nav.drawn(), state.nav.card().is_some(), state.nav.view, state.widths)
+        };
+        // the folder shown is the last column: its rows from 8 under the path line
+        let row = |layout: &Layout, i: usize| Pos2::new(layout.columns.last().unwrap().center().x, PATH_LINE + 8.0 + ROW * (i as f32 + 0.5));
+        let (dome, clip) = (folder.join("dome"), folder.join("a.mov"));
+        let at = row(&layout(&mut browser), 1);
+        press(&mut browser, &mut pass, at, egui::PointerButton::Secondary);
+        assert_eq!(browser.state().nav.card().map(|card| card.path.clone()), Some(clip.clone()), "the row is selected");
+        assert_eq!(browser.state().menu, Some((On::File(clip.clone()), at)));
+        // open, open in a new tab, reveal, copy path: the fourth row, 13 into the menu and 24 a row
+        let said = press(&mut browser, &mut pass, at + Vec2::new(60.0, 13.0 + 24.0 * 3.5), egui::PointerButton::Primary);
+        assert!(said.contains(&egui::OutputCommand::CopyText(clip.to_string_lossy().into_owned())), "copy path copied {said:?}");
+        assert_eq!(browser.state().menu, None);
+
+        let main = layout(&mut browser).main;
+        let away = Pos2::new(main.center().x, main.bottom() - 30.0);
+        press(&mut browser, &mut pass, away, egui::PointerButton::Secondary);
+        assert_eq!(browser.state().menu, Some((On::Shown(folder.clone()), away)));
+        assert_eq!(browser.state().nav.card().map(|card| card.path.clone()), Some(clip.clone()), "the selection stays");
+        browser.key(Key::Escape, Mods::default());
+        assert!(browser.state().menu.is_none() && browser.state().chosen.is_none(), "esc puts the menu away and goes nowhere");
+
+        let at = row(&layout(&mut browser), 0);
+        press(&mut browser, &mut pass, at, egui::PointerButton::Secondary);
+        assert_eq!((browser.state().nav.main().folder.clone(), browser.state().menu.clone()), (dome.clone(), Some((On::Folder(dome.clone()), at))));
+        // the main area shows the folder now, where the columns have moved to give it its own
+        let main = layout(&mut browser).main;
+        press(&mut browser, &mut pass, Pos2::new(main.center().x, main.bottom() - 30.0), egui::PointerButton::Primary);
+        assert_eq!(browser.state().menu, None, "a press outside puts it away");
+        browser.key(Key::Enter, Mods { shift: true, ctrl: true, alt: false });
+        assert!(browser.state().walks.waiting(&dome), "control + shift + enter walks the folder shown");
     }
 
     /// read again, a folder shows what was put in it since, and not before; what was read of its files goes, to be

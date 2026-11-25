@@ -54,6 +54,8 @@ pub struct Entry {
     /// its data is not on this disk (a cloud placeholder, or moved to offline storage): reading it would fetch it.
     /// for a sequence, any of its files
     pub away: bool,
+    /// it stands for another place: a symlink, a junction, a mount point. a cloud folder's own mark is no link
+    pub link: bool,
 }
 
 /// what the browser shows of the folder it is in: its entries as a column beside its videos as cards, the cards
@@ -335,11 +337,14 @@ pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
             continue;
         }
         let modified = meta.modified().ok();
+        // from the listing too: on windows a reparse point that names another place (onedrive's and dropbox's
+        // folders are reparse points that do not)
+        let link = meta.file_type().is_symlink();
         if folder {
-            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified, away });
+            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified, away, link });
         } else {
             let kind = if is_media(&name) { Kind::Clip } else { Kind::Other };
-            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified, away });
+            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified, away, link });
         }
     }
     let mut files = fold_sequences(files);
@@ -487,6 +492,7 @@ fn sequence(before: &str, ext: &str, run: &mut [Frame], files: &[Entry]) -> Opti
         size: Some(members().filter_map(|f| f.size).sum()),
         modified: members().filter_map(|f| f.modified).max(),
         away: members().any(|f| f.away),
+        link: false,
     })
 }
 
@@ -520,18 +526,18 @@ fn split_digits(s: &str) -> (&str, &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// a folder under the temp folder that removes what it made one item at a time, never recursively
-    struct Scratch {
-        dir: PathBuf,
+    pub(crate) struct Scratch {
+        pub(crate) dir: PathBuf,
         /// (path, is a folder), in the order made
-        made: Vec<(PathBuf, bool)>,
+        pub(crate) made: Vec<(PathBuf, bool)>,
     }
 
     impl Scratch {
-        fn new(tag: &str) -> Scratch {
+        pub(crate) fn new(tag: &str) -> Scratch {
             let dir = std::env::temp_dir().join(format!("eyepiece-browse-{tag}-{}", std::process::id()));
             fs::create_dir(&dir).unwrap();
             Scratch { made: vec![(dir.clone(), true)], dir }
@@ -543,11 +549,12 @@ mod tests {
             self.made.push((path, false));
         }
 
-        fn files(&mut self, names: &[&str]) {
+        /// files of ten bytes, `name` a path inside the scratch folder ("dome/a.mov")
+        pub(crate) fn files(&mut self, names: &[&str]) {
             names.iter().for_each(|name| self.file(name, 10));
         }
 
-        fn folder(&mut self, name: &str) {
+        pub(crate) fn folder(&mut self, name: &str) {
             let path = self.dir.join(name);
             fs::create_dir(&path).unwrap();
             self.made.push((path, true));
