@@ -1,7 +1,7 @@
 //! every command that has a key, in one table. help's keys page (`?`, fig. 39), the right-click menu and the tooltips
 //! on the strip's and the bar's buttons are all read from it, so they say the same. it holds only keys that work.
 
-use super::{font, text_top, widgets, DIM, FG, HOVER, SANS};
+use super::{font, text_top, widgets, ACCENT, DIM, FG, HOVER, LINE, SANS};
 use crate::event::{Key, Mods};
 use egui::{Align2, Pos2, Rect, Sense};
 
@@ -154,7 +154,9 @@ const SECTIONS: &[(&str, &[Command])] = &[
 ];
 
 // the right-click menu: as wide as the bar's menus, a row 24 high
-const MENU_WIDTH: f32 = 268.0;
+/// two columns of the design's 268 menu, with a gap between
+const MENU_WIDTH: f32 = 520.0;
+const MENU_GAP: f32 = 16.0;
 const MENU_ROW: f32 = 24.0;
 
 fn commands() -> impl Iterator<Item = &'static Command> {
@@ -211,10 +213,12 @@ pub fn line(key: Key, mods: Mods) -> Option<(String, String)> {
     grouped().into_iter().find(|(on, _)| on.iter().any(|c| c.send == Some((key, mods)))).map(|(on, words)| (words.to_string(), joined(&on)))
 }
 
-/// the right-click menu: every command with its key beside it, in sections, its corner at `corner` and kept inside
-/// `room` by its size when it was `last` drawn; it scrolls when the room is too short. `opened` starts it at its top.
-/// returns where it was drawn, and the key of the row chosen.
-pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool) -> (Rect, Option<(Key, Mods)>) {
+/// the right-click menu: a field that finds a command, then every command with its key beside it, in sections, in two
+/// columns. its corner is at `corner` and it is kept inside `room` by its size when it was `last` drawn; it scrolls
+/// when the room is too short. `opened` starts it at its top with the field empty and taking the keys, so typing at
+/// once finds; `find` is what has been typed. enter runs the first command found. returns where it was drawn, and
+/// the key of the row chosen.
+pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, find: &mut String) -> (Rect, Option<(Key, Mods)>) {
     let at = Pos2::new(corner.x.min(room.right() - last.width()).max(room.left()), corner.y.min(room.bottom() - last.height()).max(room.top()));
     let mut chosen = None;
     let drawn = widgets::menu(ui, "commands", at, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {
@@ -225,29 +229,71 @@ pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool) -
         if opened {
             scroll = scroll.vertical_scroll_offset(0.0);
         }
+        // the field: outlined in the line's color, and in the accent while it has the keys, as a menu's field is
+        let (field, _) = ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 26.0), Sense::hover());
+        let id = egui::Id::unique("commands-find");
+        let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(field.shrink2(egui::Vec2::new(8.0, 5.0))));
+        let edit = inside.add(egui::TextEdit::singleline(find).id(id).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(font(SANS, 12.0)).text_color(FG).hint_text("find a command").desired_width(field.width() - 16.0));
+        if opened {
+            edit.request_focus();
+        }
+        ui.painter().rect_stroke(field, 0.0, (1.0, if edit.has_focus() { ACCENT } else { LINE }), egui::StrokeKind::Inside);
+        let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(10.0);
+        // what is typed finds a command by what it does or by its key
+        let wanted = find.trim().to_lowercase();
+        let found = |c: &Command| c.name.is_some() && c.send.is_some() && (wanted.is_empty() || c.key.to_lowercase().contains(&wanted) || c.name.is_some_and(|n| n.contains(&wanted)));
+        let shown: Vec<(&str, Vec<&Command>)> = SECTIONS.iter().map(|(section, commands)| (*section, commands.iter().filter(|c| found(c)).collect::<Vec<_>>())).filter(|(_, commands)| !commands.is_empty()).collect();
+        if entered {
+            chosen = shown.first().and_then(|(_, commands)| commands.first()).and_then(|c| c.send);
+        }
+        // the sections in two columns, split where the left holds about half the rows; a heading counts as one
+        let weight: Vec<usize> = shown.iter().map(|(_, commands)| commands.len() + 2).collect();
+        let half = weight.iter().sum::<usize>().div_ceil(2);
+        let mut split = 0;
+        let mut taken = 0;
+        while split < shown.len() && taken + weight[split] / 2 < half {
+            taken += weight[split];
+            split += 1;
+        }
+        // what was found is one list, as wide as the menu
+        let split = if wanted.is_empty() { split } else { shown.len() };
         scroll.show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, (section, commands)) in SECTIONS.iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(10.0);
-                }
-                widgets::heading(ui, section, &[]);
-                ui.add_space(4.0);
-                for c in commands.iter() {
-                    let (Some(name), Some(send)) = (c.name, c.send) else { continue };
-                    let row = widgets::row(ui, MENU_ROW);
-                    let response = ui.interact(row, ui.scope_id().with(c.key), Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(row, 3.0, HOVER);
-                    }
-                    let galley = ui.painter().layout_no_wrap(name.to_string(), font(SANS, 12.0), FG);
-                    ui.painter().galley(Pos2::new(row.left() + 6.0, text_top(ui.painter(), font(SANS, 12.0), row.center().y)), galley, FG);
-                    widgets::key_cap(ui, Pos2::new(row.right() - 6.0, row.center().y), c.key, false, DIM);
-                    if response.clicked() {
-                        chosen = Some(send);
-                    }
-                }
+            if shown.is_empty() {
+                ui.label(egui::RichText::new("no command says that").font(font(SANS, 12.0)).color(DIM));
+                return;
             }
+            let column = if split < shown.len() { (ui.available_width() - MENU_GAP) / 2.0 } else { ui.available_width() };
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = MENU_GAP;
+                for part in [&shown[..split], &shown[split..]].into_iter().filter(|part| !part.is_empty()) {
+                    ui.vertical(|ui| {
+                        ui.set_width(column);
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (i, (section, commands)) in part.iter().enumerate() {
+                            if i > 0 {
+                                ui.add_space(10.0);
+                            }
+                            widgets::heading(ui, section, &[]);
+                            ui.add_space(4.0);
+                            for c in commands {
+                                let (Some(name), Some(send)) = (c.name, c.send) else { continue };
+                                let row = widgets::row(ui, MENU_ROW);
+                                let response = ui.interact(row, ui.scope_id().with(c.key), Sense::click());
+                                if response.hovered() {
+                                    ui.painter().rect_filled(row, 3.0, HOVER);
+                                }
+                                let galley = ui.painter().layout_no_wrap(name.to_string(), font(SANS, 12.0), FG);
+                                ui.painter().galley(Pos2::new(row.left() + 6.0, text_top(ui.painter(), font(SANS, 12.0), row.center().y)), galley, FG);
+                                widgets::key_cap(ui, Pos2::new(row.right() - 6.0, row.center().y), c.key, false, DIM);
+                                if response.clicked() {
+                                    chosen = Some(send);
+                                }
+                            }
+                        }
+                    });
+                }
+            });
         });
     });
     (drawn, chosen)

@@ -38,7 +38,7 @@ in development, with no release. the mac build opens its window, plays clips (wi
 3. **step.** **F** and **G**, or **←** and **→**, step one frame back and forward. **shift** with an arrow steps ten. **home** and **end** go to the first and last frame. the wheel scrubs one frame a notch.
 4. **fill the screen.** **P** or a double-click on the picture goes fullscreen, **shift + P** goes fullscreen on the next display, and **esc** comes back.
 5. **the controls** come up when the pointer moves, and go 2.4 s after it rests off them or leaves the window. keys never bring them up. the pin at the far left of the bar keeps them up, and is kept between runs.
-6. **find a key.** **?** opens help on its page of keys. a right-click lists every command with its key, and resting on a button names what it does and its key.
+6. **find a key.** **?** opens help on its page of keys. a right-click lists every command with its key, in two columns under a field: type a few letters of what you want and press enter, or press its row. resting on a button names what it does and its key.
 
 ## features
 

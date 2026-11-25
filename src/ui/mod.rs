@@ -448,6 +448,8 @@ pub struct Ui {
     /// the right-click menu is open, from where it was asked for, and was drawn there last
     commands: Option<Pos2>,
     commands_rect: Rect,
+    /// what has been typed into the right-click menu's field, to find a command
+    commands_find: String,
     /// whether each of the last two presses went to the right-click menu, a menu or a panel, the earlier first
     taken: [bool; 2],
     /// the settings or help panel, while one is up
@@ -523,6 +525,7 @@ impl Ui {
             time_picture: None,
             commands: None,
             commands_rect: Rect::NOTHING,
+            commands_find: String::new(),
             taken: [false; 2],
             panel: None,
             mark_since: None,
@@ -1063,7 +1066,10 @@ impl Ui {
         if let Some(at) = self.commands {
             let chipped = left > full.left() + 10.0 || model.zoomed || model.fault.is_some();
             let room = Rect::from_min_max(Pos2::new(full.left() + 8.0, if chipped { top + 34.0 } else { full.top() + 8.0 }), full.max - Vec2::splat(8.0));
-            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened);
+            if opened {
+                self.commands_find.clear();
+            }
+            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find);
             self.commands_rect = drawn;
             if let Some((key, mods)) = chosen {
                 actions.push(Action::Key(key, mods));
@@ -2390,17 +2396,33 @@ pub(super) mod tests {
     fn a_row_of_the_right_click_menu_sends_its_key_and_nothing_else() {
         use crate::event::Button::Left;
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        // the menu is laid out once unseen, then stands 8 in from the top, too tall for the window: its third row (next
-        // frame) is 89 to 113 down
+        // the menu is laid out once unseen, then stands 8 in from the top, too tall for the window: under its field
+        // (26, and 10 after it), the left column's third row (next frame) is 125 to 149 down
         let mut actions = drive(&mut ui, &right_click(100.0, 60.0));
         assert!(ui.commands.is_some(), "the right click opened the menu");
         // long enough for the right click not to count with the clicks after it
         std::thread::sleep(Duration::from_millis(350));
-        actions.extend(drive(&mut ui, &[(200.0, 101.0, None), (200.0, 101.0, Some((Left, true))), (200.0, 101.0, Some((Left, false)))]));
+        actions.extend(drive(&mut ui, &[(200.0, 137.0, None), (200.0, 137.0, Some((Left, true))), (200.0, 137.0, Some((Left, false)))]));
         assert_eq!(actions, vec![Action::Key(Key::G, keys::NONE)]);
         assert!(ui.commands.is_none(), "the menu closes once a row is chosen");
-        let again = drive(&mut ui, &[(200.0, 101.0, None), (200.0, 101.0, Some((Left, true))), (200.0, 101.0, Some((Left, false)))]);
+        let again = drive(&mut ui, &[(200.0, 137.0, None), (200.0, 137.0, Some((Left, true))), (200.0, 137.0, Some((Left, false)))]);
         assert_eq!(again, vec![]);
+    }
+
+    /// the right-click menu's field has the keys as it opens: what is typed finds the commands that say it, and enter
+    /// runs the first of them.
+    #[test]
+    fn typing_in_the_right_click_menu_finds_a_command_and_enter_runs_it() {
+        let mut ui = Ui::new((900, 700), 1.0, false, None, None);
+        drive(&mut ui, &right_click(100.0, 60.0));
+        assert!(ui.typing(), "the field takes the keys at once");
+        for c in "mirror".chars() {
+            ui.char(c);
+        }
+        drive(&mut ui, &[(5.0, 5.0, None)]);
+        ui.key(Key::Enter, keys::NONE);
+        assert_eq!(drive(&mut ui, &[(5.0, 5.0, None)]), vec![Action::Key(Key::H, keys::NONE)]);
+        assert!(ui.commands.is_none());
     }
 
     /// the right-click menu stands where the right click was made when the window has room for it, and inside the

@@ -294,10 +294,10 @@ Send-Key 0x50; Start-Sleep -Milliseconds 500; Send-Key 0xBF 1 1; Send-Key 0x1B; 
 Confirm-That 'esc over help in fullscreen closes help and stays fullscreen' (-not (Test-Framed)) "framed: $(Test-Framed)"
 Send-Key 0x1B; Start-Sleep -Milliseconds 500
 Confirm-That 'and the next esc leaves fullscreen' (Test-Framed) "framed: $(Test-Framed)"
-# a right click on the picture opens every command, at the pointer; choosing a row does what its key does. the menu
-# is too tall for any window here and scrolls: in a 900 x 700 window, at the end of its list, the mirror row's middle
-# is 459 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges; settings, the
-# last row, is the one below it that is new)
+# a right click on the picture opens every command, at the pointer, in two columns under a field that has the keys:
+# what is typed finds the commands that say it. choosing a row does what its key does. "mirror" leaves one row, its
+# middle 81 under the menu's top at the pointer (13 to the field, which is 26 high, 10 after it, the section's name 16
+# and 4, half a 24-high row)
 [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
 RightClick-At 120 100
 Confirm-That 'a right click opens the menu and chooses nothing' (Test-Framed) "framed: $(Test-Framed)"
@@ -306,12 +306,13 @@ Move-Pointer 200 200
 foreach ($i in 1..40) { [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536 + 0x8000), [IntPtr]0); Start-Sleep -Milliseconds 20 }
 Start-Sleep -Milliseconds 1000
 Assert-Frame 'the wheel over the menu turns its list and does not scrub' 0 3
-Click-At 200 -459; Click-At 200 -459 -Again; Start-Sleep -Milliseconds 500
-Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
+Send-Char 'mirror'; Start-Sleep -Milliseconds 500
+Click-At 200 181; Click-At 200 181 -Again; Start-Sleep -Milliseconds 500
+Assert-Title 'the mirror row its field finds mirrors the picture' ' . mirrored$'
 Confirm-That 'and a click at once on the picture under it makes no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
 Send-Key 0x48; Assert-Frame 'H shows it as the file has it again' 0 3
 # the click after esc is one on the picture, which plays; a second pauses, and home goes back
-RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -459; Click-At 200 -459
+RightClick-At 120 100; Send-Key 0x1B; Click-At 200 181; Click-At 200 181
 Confirm-That 'esc closes the menu: a click where the row was chooses nothing' ((Get-Title) -notmatch 'mirrored') "the title is '$(Get-Title)'"
 Send-Key 0x24; Assert-Frame 'and home is the first frame again' 0 3
 
