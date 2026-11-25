@@ -269,27 +269,35 @@ Confirm-That 'resting on the play button brings its tooltip' ($before -eq 0 -and
 Click-At -256 -32; Move-Pointer 95 -32; Start-Sleep -Milliseconds 900
 Confirm-That 'no tooltip while a menu is open' ((Get-Bright @tip) -eq 0) "bright pixels: $(Get-Bright @tip)"
 Send-Key 0x1B
-# ? (shift + slash) lays the table of keys over the clip. a click takes it away and does nothing else: a double click
-# on the picture over it does not fill the display
-Send-Key 0xBF 1 1; DoubleClick-At $mid[0] $mid[1]; Start-Sleep -Milliseconds 500
-Confirm-That 'a double click over the table of keys only takes it away' (Test-Framed) "framed: $(Test-Framed)"
-# the table is bright keys in the black beside the picture
-$band = 20, 60, 130, 250
+# ? (shift + slash) opens help on its keys page (fig. 39), a panel in the middle of the window: in this 640 x 360 one,
+# the window less 16 each side under the strip, 16 to 624 across and 48 to 344 down. a press outside it closes it and
+# does nothing else: a double click on the picture beside it, 8 in from the left, does not fill the display
+Send-Key 0xBF 1 1; DoubleClick-At 8 $mid[1]; Start-Sleep -Milliseconds 500
+Confirm-That 'a double click beside the help panel only closes it' (Test-Framed) "framed: $(Test-Framed)"
+# the panel is read by its sidebar, at its left, which is in the black beside the picture: of its pages the one that
+# is up, keys, is the only bright type there (the others, its heading and the version are dim)
+$band = 24, 70, 120, 120
 Move-Pointer 300 150; Start-Sleep -Milliseconds 300
 $before = Get-Bright @band
 Send-Key 0xBF 1 1
-Confirm-That '? shows the table of keys' ($before -eq 0 -and (Get-Bright @band) -gt 0) "bright pixels: $before before, $(Get-Bright @band) with it"
+Confirm-That '? opens help on its keys page' ($before -eq 0 -and (Get-Bright @band) -gt 0) "bright pixels: $before before, $(Get-Bright @band) with it"
 Send-Key 0x1B
-Confirm-That 'esc takes it away' ((Get-Bright @band) -eq 0) "bright pixels: $(Get-Bright @band)"
+Confirm-That 'esc closes it' ((Get-Bright @band) -eq 0) "bright pixels: $(Get-Bright @band)"
 Assert-Frame 'and leaves the player as it was' 0 3
-# esc takes the table away before it leaves fullscreen
+# control + , opens settings, read the same way: its first page, general, is the bright one in the sidebar
+Send-Key 0xBC 1 4
+Confirm-That 'control + , opens settings' ((Get-Bright @band) -gt 0) "bright pixels: $(Get-Bright @band)"
+Send-Key 0xBC 1 4
+Confirm-That 'and control + , again closes it' ((Get-Bright @band) -eq 0) "bright pixels: $(Get-Bright @band)"
+# esc closes help before it leaves fullscreen
 Send-Key 0x50; Start-Sleep -Milliseconds 500; Send-Key 0xBF 1 1; Send-Key 0x1B; Start-Sleep -Milliseconds 300
-Confirm-That 'esc over the table in fullscreen takes the table away and stays fullscreen' (-not (Test-Framed)) "framed: $(Test-Framed)"
+Confirm-That 'esc over help in fullscreen closes help and stays fullscreen' (-not (Test-Framed)) "framed: $(Test-Framed)"
 Send-Key 0x1B; Start-Sleep -Milliseconds 500
 Confirm-That 'and the next esc leaves fullscreen' (Test-Framed) "framed: $(Test-Framed)"
 # a right click on the picture opens every command, at the pointer; choosing a row does what its key does. the menu
 # is too tall for any window here and scrolls: in a 900 x 700 window, at the end of its list, the mirror row's middle
-# is 435 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges)
+# is 459 up from the bottom (24-high rows, sections 10 apart, the menu 8 in from the window's edges; settings, the
+# last row, is the one below it that is new)
 [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
 RightClick-At 120 100
 Confirm-That 'a right click opens the menu and chooses nothing' (Test-Framed) "framed: $(Test-Framed)"
@@ -298,12 +306,12 @@ Move-Pointer 200 200
 foreach ($i in 1..40) { [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](-120 * 65536 + 0x8000), [IntPtr]0); Start-Sleep -Milliseconds 20 }
 Start-Sleep -Milliseconds 1000
 Assert-Frame 'the wheel over the menu turns its list and does not scrub' 0 3
-Click-At 200 -435; Click-At 200 -435 -Again; Start-Sleep -Milliseconds 500
+Click-At 200 -459; Click-At 200 -459 -Again; Start-Sleep -Milliseconds 500
 Assert-Title 'its mirror row mirrors the picture' ' . mirrored$'
 Confirm-That 'and a click at once on the picture under it makes no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
 Send-Key 0x48; Assert-Frame 'H shows it as the file has it again' 0 3
 # the click after esc is one on the picture, which plays; a second pauses, and home goes back
-RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -435; Click-At 200 -435
+RightClick-At 120 100; Send-Key 0x1B; Click-At 200 -459; Click-At 200 -459
 Confirm-That 'esc closes the menu: a click where the row was chooses nothing' ((Get-Title) -notmatch 'mirrored') "the title is '$(Get-Title)'"
 Send-Key 0x24; Assert-Frame 'and home is the first frame again' 0 3
 
