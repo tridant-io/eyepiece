@@ -1,5 +1,7 @@
 # Updates read a plain manifest from the latest release, not the GitHub API
 
+From 0.3.0 the manifest names one Windows installer, which the update runs in place of putting files in place itself: see [ADR 0008](0008-windows-releases-are-one-installer-the-update-runs.md). What follows on downloading only the files that changed, and on renaming the installed ones aside, holds for 0.2.x.
+
 The approved design (`docs/design/settings.html`, section 11) had the update check ask `api.github.com` for the latest release, read the JSON answer with a small reader of our own, then download one zip per system and a `SHA256SUMS.txt`, and unpack the zip with the system's `tar`. Before any of it was built that changed: every release carries one more asset, `eyepiece-release.txt`, the release manifest, written in the settings file's `key = value` form by `scripts\release.ps1`. The player reads it from `https://github.com/tridant-io/eyepiece/releases/latest/download/eyepiece-release.txt`, the form GitHub documents for linking to an asset of the latest release ("Linking to releases", docs.github.com), and downloads each file it names on its own, from `releases/download/v<version>/<name>`.
 
 ```text

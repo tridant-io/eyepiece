@@ -1,12 +1,13 @@
-//! updates: a check for a newer release and, on windows, its download, its checks, and putting it in place of the
-//! running build. a release is read from one plain file, its release manifest `eyepiece-release.txt`, which every
-//! release carries as an asset in the settings file's `key = value` form (adr 0007):
+//! updates: a check for a newer release and, on windows, the download of its installer, its checks, and the
+//! installer started in place of the running build (adr 0008). a release is read from one plain file, its release
+//! manifest `eyepiece-release.txt`, which every release carries as an asset in the settings file's `key = value` form
+//! (adr 0007):
 //!
 //! ```text
 //! version = 0.3.0
 //! date = 2026-12-08
 //! notes = added · settings, with a page for each part of the player
-//! file = eyepiece.exe · 6495000 · <the file's sha-256, 64 hex digits>
+//! file = eyepiece-0.3.0-windows-setup.exe · 40635560 · <the file's sha-256, 64 hex digits>
 //! ```
 //!
 //! the manifest is read from `<releases>/latest/download/eyepiece-release.txt`, which github sends on to the newest
@@ -19,11 +20,11 @@ mod mac;
 #[cfg(windows)]
 mod win;
 #[cfg(target_os = "macos")]
-pub use mac::{apply, download, relaunch, tidy};
+pub use mac::{apply, download, relaunch};
 #[cfg(target_os = "macos")]
 use mac as sys;
 #[cfg(windows)]
-pub use win::{apply, download, relaunch, tidy};
+pub use win::{apply, download, relaunch};
 #[cfg(windows)]
 use win as sys;
 
@@ -34,15 +35,13 @@ use std::time::Duration;
 const MANIFEST: &str = "eyepiece-release.txt";
 /// github's releases of the repo: `latest/download/<asset>` is the newest release's, `download/<tag>/<asset>` one's
 const RELEASES: &str = "https://github.com/tridant-io/eyepiece/releases/";
-/// the program among a release's files. a release without it is not one
-const PROGRAM: &str = "eyepiece.exe";
 /// the user agent, and all the player says of itself
 const AGENT: &str = concat!("eyepiece/", env!("CARGO_PKG_VERSION"));
 /// how long a request may go without an answer
 const WAIT: Duration = Duration::from_secs(10);
 /// a manifest is a few hundred bytes: an answer this long is not one
 const MANIFEST_MAX: usize = 64 << 10;
-/// a file of a release larger than this is not one: avcodec, the largest, was 94 MB in dist\eyepiece on 2026-11-24
+/// a file of a release larger than this is not one: the installer of a 0.3.0 build was 40.6 MB on 2026-11-25
 const FILE_MAX: u64 = 1 << 30;
 
 /// a release as its manifest names it
@@ -141,10 +140,17 @@ fn read(text: &str, from: &str) -> Result<Release, String> {
     }
     let version = version.ok_or("the release's manifest names no version")?;
     let date = date.ok_or("the release's manifest has no date")?;
-    if !files.iter().any(|f| f.name == PROGRAM) {
-        return Err(format!("the release's manifest has no {PROGRAM}"));
+    let setup = setup_name(version);
+    if !files.iter().any(|f| f.name == setup) {
+        return Err(format!("the release's manifest has no {setup}"));
     }
     Ok(Release { version, date, notes, files, page: format!("{from}tag/v{version}"), from: from.to_string() })
+}
+
+/// the windows installer of a version, the one file of a release the update takes. a release without its own is not
+/// one, so a manifest cannot have the player run some other program
+fn setup_name(version: Version) -> String {
+    format!("eyepiece-{version}-windows-setup.exe")
 }
 
 /// `name · size · sha-256`
@@ -158,8 +164,7 @@ fn asset(value: &str) -> Option<Asset> {
 }
 
 /// a name a release may give a file: letters, digits, `.`, `-` and `_`, ending .exe, .dll or .txt. never a name
-/// windows keeps for a device, nor one the update's own set-aside names (`<name>.old-<version>`) could be taken for.
-/// it is joined to the install folder as it is, so nothing in it may climb out
+/// windows keeps for a device. it is joined to the update's folder as it is, so nothing in it may climb out
 fn plain(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or_default().to_ascii_lowercase();
     let numbered = stem.len() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem.as_bytes()[3].is_ascii_digit();
@@ -168,21 +173,8 @@ fn plain(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
         && !name.starts_with(['.', '-'])
-        && !name.contains(".old-")
         && !device
         && matches!(kind.as_deref(), Some("exe" | "dll" | "txt"))
-}
-
-/// what the update set a file aside as, beside it: `<name>.old-<version>`
-#[cfg(windows)]
-fn aside(name: &str, version: Version) -> String {
-    format!("{name}.old-{version}")
-}
-
-/// a name `aside` made, and no other
-#[cfg(windows)]
-fn set_aside(name: &str) -> bool {
-    name.rsplit_once(".old-").is_some_and(|(file, version)| plain(file) && Version::parse(version).is_some())
 }
 
 /// digits alone: no sign, no space
@@ -276,8 +268,8 @@ mod tests {
             "notes = added · settings, with a page for each part of the player".into(),
             "notes = fixed · the timebar's picture lagged on long h.264 clips".into(),
             "notes = and 4 smaller fixes".into(),
-            format!("file = eyepiece.exe · 6495000 · {}", SUM.to_uppercase()),
-            format!("file = avformat-63.dll · 19979264 · {SUM}"),
+            format!("file = eyepiece-0.3.0-windows-setup.exe · 42150000 · {}", SUM.to_uppercase()),
+            format!("file = THIRD-PARTY-NOTICES.txt · 60463 · {SUM}"),
             "from_a_later_build = 42".into(),
             "a line with no equals sign".into(),
         ]
@@ -310,18 +302,25 @@ mod tests {
         assert_eq!(sum[..3], [0xe3, 0xb0, 0xc4]);
         assert_eq!(
             release.files,
-            [Asset { name: "eyepiece.exe".into(), size: 6495000, sha256: sum }, Asset { name: "avformat-63.dll".into(), size: 19979264, sha256: sum }]
+            [
+                Asset { name: "eyepiece-0.3.0-windows-setup.exe".into(), size: 42150000, sha256: sum },
+                Asset { name: "THIRD-PARTY-NOTICES.txt".into(), size: 60463, sha256: sum }
+            ]
         );
         assert_eq!(release.page, "https://github.com/tridant-io/eyepiece/releases/tag/v0.3.0");
         #[cfg(windows)]
-        assert_eq!(release.url_of(&release.files[1]), "https://github.com/tridant-io/eyepiece/releases/download/v0.3.0/avformat-63.dll");
+        assert_eq!(release.url_of(&release.files[0]), "https://github.com/tridant-io/eyepiece/releases/download/v0.3.0/eyepiece-0.3.0-windows-setup.exe");
     }
 
     #[test]
     fn a_manifest_without_what_it_needs_is_refused() {
         assert!(with("version", None).unwrap_err().contains("no version"));
         assert!(with("date", None).unwrap_err().contains("no date"));
-        assert!(with("file", None).unwrap_err().contains("no eyepiece.exe"));
+        assert!(with("file", None).unwrap_err().contains("no eyepiece-0.3.0-windows-setup.exe"));
+        // an installer of another version, or another program, is not this release's
+        for line in [format!("file = eyepiece-0.2.9-windows-setup.exe · 1 · {SUM}"), format!("file = eyepiece.exe · 1 · {SUM}"), format!("file = EYEPIECE-0.3.0-WINDOWS-SETUP.EXE · 1 · {SUM}")] {
+            assert!(with("file", Some(&line)).unwrap_err().contains("no eyepiece-0.3.0-windows-setup.exe"), "{line}");
+        }
         assert!(read("", FROM).is_err());
         for line in ["version = 0.3", "version = v0.3.0", "date = 2026-12-8", "date = 08.12.2026", "date ="] {
             let key = line.split(' ').next().unwrap();
@@ -331,7 +330,7 @@ mod tests {
         twice.push("version = 0.4.0".into());
         assert!(reads(&twice).is_err());
         let mut twice = good();
-        twice.push(format!("file = EYEPIECE.EXE · 1 · {SUM}"));
+        twice.push(format!("file = Eyepiece-0.3.0-Windows-Setup.exe · 1 · {SUM}"));
         assert!(reads(&twice).unwrap_err().contains("twice"));
         assert!(offered(b"\xff\xfe", FROM, Version(0, 1, 0)).unwrap_err().contains("not text"));
     }
@@ -354,19 +353,23 @@ mod tests {
             ("18446744073709551616", SUM),
             ("1073741825", SUM),
         ] {
-            let line = format!("file = eyepiece.exe · {size} · {sum}");
+            let line = format!("file = eyepiece-0.3.0-windows-setup.exe · {size} · {sum}");
             assert!(with("file", Some(&line)).is_err(), "{line}");
         }
-        for line in ["file = eyepiece.exe · 6495000".into(), format!("file = eyepiece.exe · 1 · {SUM} · more"), format!("file = eyepiece.exe 1 {SUM}")] {
+        for line in [
+            "file = eyepiece-0.3.0-windows-setup.exe · 6495000".into(),
+            format!("file = eyepiece-0.3.0-windows-setup.exe · 1 · {SUM} · more"),
+            format!("file = eyepiece-0.3.0-windows-setup.exe 1 {SUM}"),
+        ] {
             assert!(with("file", Some(&line)).is_err(), "{line}");
         }
-        assert!(with("file", Some(&format!("file = eyepiece.exe · 0 · {SUM}"))).is_ok(), "an empty file has a size too");
-        assert!(with("file", Some(&format!("file = eyepiece.exe · 1073741824 · {SUM}"))).is_ok());
+        assert!(with("file", Some(&format!("file = eyepiece-0.3.0-windows-setup.exe · 0 · {SUM}"))).is_ok(), "an empty file has a size too");
+        assert!(with("file", Some(&format!("file = eyepiece-0.3.0-windows-setup.exe · 1073741824 · {SUM}"))).is_ok());
     }
 
     #[test]
     fn names_are_plain() {
-        for name in ["eyepiece.exe", "avcodec-63.dll", "THIRD-PARTY-NOTICES.txt", "fonts-IBM-Plex-LICENSE.txt", "swresample_7.DLL"] {
+        for name in ["eyepiece-0.3.0-windows-setup.exe", "eyepiece.exe", "avcodec-63.dll", "THIRD-PARTY-NOTICES.txt", "fonts-IBM-Plex-LICENSE.txt", "swresample_7.DLL"] {
             assert!(plain(name), "{name}");
         }
         let long = format!("{}.dll", "a".repeat(61));
@@ -389,7 +392,6 @@ mod tests {
             "NUL",
             "com1.dll",
             "Lpt9.txt",
-            "avcodec-63.dll.old-0.2.1.dll",
         ] {
             assert!(!plain(name), "{name}");
         }

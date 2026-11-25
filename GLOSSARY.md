@@ -69,11 +69,11 @@ the row of tabs and window buttons at the top of the window, shown on hover. it 
 _Avoid_: title bar, tab bar, header
 
 **release manifest**:
-`eyepiece-release.txt`, the plain `key = value` file every release carries beside its files: the version, the date, a line for each change, and each file with its size and sha-256. the update learns what a release is from it and nothing else (adr 0007).
+`eyepiece-release.txt`, the plain `key = value` file every release carries beside its installer: the version, the date, a line for each change, and the installer with its size and sha-256. the update learns what a release is from it and nothing else (adr 0007, 0008).
 _Avoid_: manifest alone (cargo's is Cargo.toml), checksums, SHA256SUMS
 
 **set aside**:
-what an update does with an installed file it replaces: renamed `<name>.old-<version>` beside it, since a running program's files cannot be written over, and removed by its exact name at the next start or the next try. a download that failed is set aside too, as `<name>.failed` in the update's folder, which only that file's next failure replaces.
+what the update does with a download that failed: renamed `<name>.failed` in the update's folder, which only that file's next failure replaces. (until 0.3.0 the update also set aside each installed file it replaced, as `<name>.old-<version>`; the installer does that work now, adr 0008.)
 _Avoid_: backup, deleted, moved to trash
 
 **panel**:

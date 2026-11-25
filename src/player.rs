@@ -1463,7 +1463,7 @@ enum News {
     Done(Result<usize, String>),
 }
 
-/// the folder the program runs from, which an update puts its files into
+/// the folder the program runs from
 fn install() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("eyepiece cannot find itself: {e}"))?;
     exe.parent().map(Path::to_path_buf).ok_or_else(|| "eyepiece runs from no folder".to_string())
@@ -1644,16 +1644,6 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         tabs.open(&gpu, path, &wake, false);
     }
     let mut updating = Updating::new();
-    // what an update set aside the last time is let go now, once this build runs in its place
-    if cfg!(windows) {
-        if let Ok(install) = install() {
-            std::thread::spawn(move || {
-                for left in crate::update::tidy(&install) {
-                    eprintln!("eyepiece: {left}");
-                }
-            });
-        }
-    }
     // the look for a newer release waits for a frame to have reached the display
     let mut looked = false;
     // where the pointer is, in physical pixels, while it is in the window; and physical pixels for one of the design's
@@ -1964,9 +1954,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             }
         }
         if updating.take(settings) {
-            // the new build starts on the files open now, and waits for this one to have closed
+            // the new build starts on the files open now, once this one has closed
             let args: Vec<std::ffi::OsString> = tabs.all.iter().filter_map(|tab| tab.path.clone()).map(Into::into).collect();
-            std::env::set_var("EYEPIECE_AFTER", std::process::id().to_string());
             match install().and_then(|install| crate::update::relaunch(&install, &args)) {
                 Ok(()) => window::close(window),
                 Err(why) => {

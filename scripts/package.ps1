@@ -1,17 +1,22 @@
 # builds the player and puts everything it needs to run in dist\eyepiece: the program, the four ffmpeg libraries it
 # loads, their license, and the third-party notices. the program and the four libraries are signed with azure artifact
-# signing, the way tridant's other apps are.
+# signing, the way tridant's other apps are. then inno setup makes the windows installer of that folder,
+# dist\eyepiece-<version>-windows-setup.exe (scripts\installer.iss), signed the same way with its uninstaller.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1            build, test, package, sign
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -Install   and copy it to %LOCALAPPDATA%\Programs\eyepiece
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package.ps1 -NoSign    for a machine without the signing setup
 # signing needs AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET in the user's environment, the windows sdk's
-# signtool and microsoft's artifact signing client tools. none of their values is printed. nothing is deleted:
-# files in dist and in the install folder are overwritten in place.
+# signtool and microsoft's artifact signing client tools. none of their values is printed. the installer needs inno
+# setup 6. nothing is deleted: files in dist and in the install folder are overwritten in place.
 param([switch]$Install, [switch]$NoSign)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo 'third_party\ffmpeg'
 if (-not (Test-Path (Join-Path $ffmpeg 'bin\avformat-63.dll'))) { throw 'run scripts\setup.ps1 first' }
+$iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+if (-not (Test-Path -LiteralPath $iscc)) { throw "no inno setup 6 at $iscc" }
+if ([IO.File]::ReadAllText((Join-Path $repo 'Cargo.toml')) -notmatch '(?m)^version = "(\d+\.\d+\.\d+)"') { throw 'Cargo.toml names no version x.y.z' }
+$version = $Matches[1]
 
 function Invoke-Checked {
     param([string]$What, [scriptblock]$Run)
@@ -71,6 +76,17 @@ if (-not $NoSign) {
 }
 $size = [math]::Round((Get-ChildItem $dist -File | Measure-Object Length -Sum).Sum / 1MB, 1)
 Write-Host "[package] $dist ($size MB): $((Get-ChildItem $dist -File | ForEach-Object Name) -join ', ')"
+
+$iss = @("/DVersion=$version")
+if (-not $NoSign) {
+    # inno signs the installer and its uninstaller with this command: $q is a quote to it and $f the file. single
+    # quotes, so powershell leaves them alone
+    $iss += '/DSigned', ('/Sartifact=$q' + $signtool + '$q sign /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib $q' + $dlib + '$q /dmdf $q' + $meta + '$q $f')
+}
+Invoke-Checked 'the installer' { & $iscc /Q @iss (Join-Path $PSScriptRoot 'installer.iss') }
+$setup = Join-Path $repo "dist\eyepiece-$version-windows-setup.exe"
+if (-not $NoSign) { Invoke-Checked 'checking the installer''s signature' { & $signtool verify /pa $setup | Out-Null } }
+Write-Host "[package] $setup ($([math]::Round((Get-Item -LiteralPath $setup).Length / 1MB, 1)) MB)"
 
 if ($Install) {
     $to = Join-Path $env:LOCALAPPDATA 'Programs\eyepiece'

@@ -1,16 +1,17 @@
 //! the update on windows: the request through winhttp, sha-256 through cng, signatures through wintrust, and the
-//! files put in place by renames. a running program and the libraries it loaded cannot be written over, but they can
-//! be renamed: the installed file is set aside as `<name>.old-<version>` and the new one copied in beside it. nothing
-//! is deleted here but those set-aside files, by `tidy`, one at a time by their exact names.
+//! release's installer, which puts the new build in place once this one has ended and starts it again (adr 0008).
+//! nothing is written to the install folder here, and nothing is deleted.
 
-use super::{aside, set_aside, split, Asset, Release, Version, AGENT, PROGRAM, WAIT};
+use super::{setup_name, split, Asset, Release, Version, AGENT, WAIT};
 use crate::preview::{home, safe_root};
 use std::ffi::{c_void, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use windows::core::{w, Error, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE, TRUST_E_NOSIGNATURE};
 use windows::Win32::Networking::WinHttp::{
@@ -26,16 +27,18 @@ use windows::Win32::Security::WinTrust::{
     WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
     WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_NONE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
 };
-use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS};
+use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 /// how much is read or written at a time
 const PIECE: usize = 1 << 16;
 const STOPPED: &str = "stopped";
 const UNSIGNED: &str = "this build is not signed: install updates by hand";
 const NOT_SIGNED: &str = "it is not signed";
-/// win32's codes, as an io error carries them
-const SHARING_VIOLATION: i32 = 32;
-const ACCESS_DENIED: i32 = 5;
+/// what the installer hands the new build as its command line: the files open now (scripts\installer.iss)
+const REOPEN: &str = "EYEPIECE_REOPEN";
+
+/// the installer `apply` checked, held open until `relaunch` starts it
+static CHECKED: Mutex<Option<(PathBuf, File)>> = Mutex::new(None);
 
 /// asks for `url` and gives its body, refusing one longer than `limit`
 pub(super) fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
@@ -47,139 +50,99 @@ pub(super) fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-/// downloads the files of `release` that `install` does not already hold as they are, each on its own, into the
-/// update's folder under the os cache folder. each file's size and sha-256 are counted as it lands, and a file that
-/// does not match, or stops coming, is set aside there as `<name>.failed`, where only that file's next failure
-/// replaces it. `progress` hears the bytes
-/// come so far and the bytes to come in all; `stop`, once set, ends it at the next piece. a file already downloaded
-/// whole is not asked for again.
-pub fn download(release: &Release, install: &Path, progress: &mut dyn FnMut(u64, u64), stop: &AtomicBool) -> Result<(), String> {
+/// downloads the release's installer into the update's folder under the os cache folder, its size and sha-256
+/// counted as it lands; one that does not match, or stops coming, is set aside there as `<name>.failed`, where only
+/// its next failure replaces it. `progress` hears the bytes come so far and the bytes to come in all; `stop`, once
+/// set, ends it at the next piece. an installer already downloaded whole is not asked for again.
+pub fn download(release: &Release, _: &Path, progress: &mut dyn FnMut(u64, u64), stop: &AtomicBool) -> Result<(), String> {
     let staged = staging(release.version)?;
     fs::create_dir_all(&staged).map_err(|e| format!("eyepiece cannot write to {}: {e}", staged.display()))?;
-    let mut wanted = Vec::new();
-    for asset in changed(release, install)? {
-        if !holds(&staged.join(&asset.name), asset)? {
-            wanted.push(asset);
-        }
+    let setup = installer(release)?;
+    if holds(&staged.join(&setup.name), setup)? {
+        progress(0, 0);
+        return Ok(());
     }
-    let total = wanted.iter().map(|a| a.size).sum();
     let mut done = 0;
-    progress(done, total);
-    for asset in wanted {
-        let mut landing = Landing::begin(&staged, asset)?;
-        let got = get(&release.url_of(asset), &mut |piece| {
-            if stop.load(Ordering::Relaxed) {
-                return Err(STOPPED.to_string());
-            }
-            landing.take(piece)?;
-            done += piece.len() as u64;
-            progress(done, total);
-            Ok(())
-        });
-        landing.end(got)?;
-    }
-    Ok(())
+    progress(done, setup.size);
+    let mut landing = Landing::begin(&staged, setup)?;
+    let got = get(&release.url_of(setup), &mut |piece| {
+        if stop.load(Ordering::Relaxed) {
+            return Err(STOPPED.to_string());
+        }
+        landing.take(piece)?;
+        done += piece.len() as u64;
+        progress(done, setup.size);
+        Ok(())
+    });
+    landing.end(got)
 }
 
-/// puts the downloaded `release` in place of the running build in `install`, the folder the program runs from, and
-/// says how many files changed. first every file to change is checked again from the disk, its size and sha-256, and
-/// each program and library must be signed as the running program is; a build that is not signed itself updates
-/// nothing. then, file by file, the installed one is renamed `<name>.old-<current>` and the new one copied in. a
-/// failure puts back every step taken, newest first, and says why. only files the release names are touched, and
-/// only those whose bytes differ.
-pub fn apply(release: &Release, install: &Path, current: &str) -> Result<usize, String> {
+/// checks the downloaded installer from the disk once more, its size and sha-256, and that it is signed as the
+/// running program is; a build that is not signed itself updates nothing. the installer is then held, so nothing can
+/// change it, until `relaunch` starts it. says how many files it checked: the one
+pub fn apply(release: &Release, _: &Path, current: &str) -> Result<usize, String> {
     let from = Version::parse(current).ok_or_else(|| format!("{current} is not a version"))?;
     let running = std::env::current_exe().map_err(|e| format!("eyepiece cannot find itself: {e}"))?;
-    apply_from(release, &staging(release.version)?, install, from, &running, &signer_of)
+    let checked = check(release, &staging(release.version)?, from, &running, &signer_of)?;
+    *CHECKED.lock().unwrap_or_else(PoisonError::into_inner) = Some(checked);
+    Ok(1)
 }
 
-/// starts the program in `install` with `args`, for the caller to end once it has. the new one looks for a player by
-/// the one-window name and hands its files to it, so the caller lets that name go first.
-pub fn relaunch(install: &Path, args: &[OsString]) -> Result<(), String> {
-    let program = install.join(PROGRAM);
-    Command::new(&program).args(args).spawn().map(drop).map_err(|e| format!("{} did not start: {e}", program.display()))
+/// starts the installer `apply` checked, for the caller to end once it has. the installer waits for this process to
+/// end, which holds the installed files and the one-window name, installs, and starts the new build on `args`.
+pub fn relaunch(_: &Path, args: &[OsString]) -> Result<(), String> {
+    let (setup, _held) = CHECKED.lock().unwrap_or_else(PoisonError::into_inner).take().ok_or("the update's installer has not been checked")?;
+    Command::new(&setup).args(setup_args(std::process::id())).env(REOPEN, reopen(args)).spawn().map(drop).map_err(|e| format!("{} did not start: {e}", setup.display()))
 }
 
-/// removes from `install` what an update set aside there, each `<name>.old-<version>` file, one at a time by its
-/// exact name, and nothing else: no folder, no link, no other name. it says which it could not remove, and why: a
-/// player still running holds its own until it ends.
-pub fn tidy(install: &Path) -> Vec<String> {
-    if !safe_root(install, home().as_deref(), &[]) {
-        return vec![format!("not tidying {}: not a folder eyepiece is installed in", install.display())];
-    }
-    let listing = match fs::read_dir(install) {
-        Ok(listing) => listing,
-        Err(e) => return vec![format!("{} cannot be listed: {e}", install.display())],
-    };
-    let mut left = Vec::new();
-    for item in listing {
-        let item = match item {
-            Ok(item) => item,
-            Err(e) => {
-                left.push(format!("{} cannot be listed: {e}", install.display()));
-                continue;
-            }
-        };
-        // the listing's own type, which does not follow links
-        let name = item.file_name();
-        let Some(name) = name.to_str().filter(|n| set_aside(n) && item.file_type().is_ok_and(|t| t.is_file())) else { continue };
-        if let Err(e) = fs::remove_file(install.join(name)) {
-            left.push(format!("{name}: {e}"));
-        }
-    }
-    left
+/// the installer's switches for an update: no wizard, only its progress (and a message, if it fails), no restart of
+/// the system, and the player it waits for (scripts\installer.iss)
+fn setup_args(pid: u32) -> [String; 3] {
+    ["/SILENT".into(), "/NORESTART".into(), format!("/update={pid}")]
 }
 
-/// `apply`, with its folders and the signer check handed in, so the tests can give their own
-fn apply_from(release: &Release, staged: &Path, install: &Path, from: Version, running: &Path, signer_of: &dyn Fn(&Path) -> Result<Signer, String>) -> Result<usize, String> {
-    if !safe_root(install, home().as_deref(), &[]) {
-        return Err(format!("{} is not a folder eyepiece updates", install.display()));
+/// `files` as a command line, each in quotes as windows splits one. a path holds no quote, so only the backslashes
+/// before the closing quote are doubled
+fn reopen(files: &[OsString]) -> OsString {
+    let mut line = OsString::new();
+    for (i, file) in files.iter().enumerate() {
+        line.push(if i == 0 { "\"" } else { " \"" });
+        line.push(file);
+        line.push("\\".repeat(file.as_encoded_bytes().iter().rev().take_while(|&&b| b == b'\\').count()));
+        line.push("\"");
     }
+    line
+}
+
+/// the release's installer as the manifest names it
+fn installer(release: &Release) -> Result<&Asset, String> {
+    let name = setup_name(release.version);
+    release.files.iter().find(|f| f.name == name).ok_or_else(|| format!("the release's manifest has no {name}"))
+}
+
+/// `apply`, with its folder and the signer check handed in, so the tests can give their own: the installer, open,
+/// once it is the release's and signed as `running` is
+fn check(release: &Release, staged: &Path, from: Version, running: &Path, signer_of: &dyn Fn(&Path) -> Result<Signer, String>) -> Result<(PathBuf, File), String> {
     if release.version <= from {
         return Err(format!("{} is not newer than {from}", release.version));
     }
-    // what a failed try set aside goes first, so the next try finds the names free. what is still held stays, and
-    // is refused below
-    tidy(install);
-    let files = changed(release, install)?;
-    verify(staged, &files)?;
-    signed_alike(&files, staged, running, signer_of)?;
-    // set-aside names are never written over, so one left from before would stop the update halfway: refused now,
-    // while nothing is changed. tidy at the next start takes it
-    for asset in &files {
-        for earlier in [aside(&asset.name, from), aside(&asset.name, release.version)] {
-            if fs::symlink_metadata(install.join(&earlier)).is_ok() {
-                return Err(format!("{earlier} is left from an earlier update: start eyepiece again, then update"));
-            }
-        }
+    let setup = installer(release)?;
+    let path = staged.join(&setup.name);
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(format!("{} has not been downloaded", setup.name)),
+        Err(e) => return Err(format!("{} cannot be read: {e}", path.display())),
+        // a folder or a link there is never taken for it
+        Ok(meta) if !meta.is_file() => return Err(format!("{} is not a file", path.display())),
+        Ok(_) => {}
     }
-    put_in_place(&files, staged, install, from, release.version)
-}
-
-/// the files of `release` that `install` does not hold as they are, in the manifest's order. a file it does not have
-/// at all is one of them
-fn changed<'a>(release: &'a Release, install: &Path) -> Result<Vec<&'a Asset>, String> {
-    let mut out = Vec::new();
-    for asset in &release.files {
-        if !holds(&install.join(&asset.name), asset)? {
-            out.push(asset);
-        }
+    // shared for reading alone: from here until it has started, no program can write, rename or remove it, so what
+    // runs is what was checked
+    let mut file = fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ.0).open(&path).map_err(|e| format!("{} cannot be read: {e}", path.display()))?;
+    if sha256_of(&mut file).map_err(|e| format!("{} cannot be read: {e}", path.display()))? != (setup.size, setup.sha256) {
+        return Err(format!("{} does not match the release's size and checksum", setup.name));
     }
-    Ok(out)
-}
-
-/// every file to be put in place is in the update's folder, as the release names it
-fn verify(staged: &Path, files: &[&Asset]) -> Result<(), String> {
-    for asset in files {
-        let path = staged.join(&asset.name);
-        if fs::symlink_metadata(&path).is_err() {
-            return Err(format!("{} has not been downloaded", asset.name));
-        }
-        if !holds(&path, asset)? {
-            return Err(format!("{} does not match the release's size and checksum", asset.name));
-        }
-    }
-    Ok(())
+    signed_alike(&path, running, signer_of)?;
+    Ok((path, file))
 }
 
 /// whether `path` is a file of the size and sha-256 `asset` names: false when nothing is there. a folder or a link
@@ -191,7 +154,7 @@ fn holds(path: &Path, asset: &Asset) -> Result<bool, String> {
         Err(e) => Err(cannot(e)),
         Ok(meta) if !meta.is_file() => Err(format!("{} is not a file", path.display())),
         Ok(meta) if meta.len() != asset.size => Ok(false),
-        Ok(_) => Ok(sha256_of(path).map_err(cannot)? == (asset.size, asset.sha256)),
+        Ok(_) => Ok(File::open(path).and_then(|mut file| sha256_of(&mut file)).map_err(cannot)? == (asset.size, asset.sha256)),
     }
 }
 
@@ -250,85 +213,6 @@ impl<'a> Landing<'a> {
     }
 }
 
-/// one step taken in the install folder, to be undone if a later one fails
-enum Step {
-    /// the installed file renamed `<name>.old-<from>`
-    SetAside(String),
-    /// the new file made at `<name>`, whole or not
-    CopiedIn(String),
-}
-
-fn put_in_place(files: &[&Asset], staged: &Path, install: &Path, from: Version, to: Version) -> Result<usize, String> {
-    let mut done = Vec::new();
-    for asset in files {
-        if let Err(why) = put(asset, staged, install, from, &mut done) {
-            let left = undo(&done, install, from, to);
-            return Err(if left.is_empty() { format!("{why}. everything was put back.") } else { format!("{why}. not everything could be put back: {}", left.join("; ")) });
-        }
-    }
-    Ok(files.len())
-}
-
-fn put(asset: &Asset, staged: &Path, install: &Path, from: Version, done: &mut Vec<Step>) -> Result<(), String> {
-    let name = &asset.name;
-    let installed = install.join(name);
-    if fs::symlink_metadata(&installed).is_ok() {
-        rename_new(&installed, &install.join(aside(name, from))).map_err(|e| why_not(name, install, e))?;
-        done.push(Step::SetAside(name.clone()));
-    }
-    let mut source = File::open(staged.join(name)).map_err(|e| format!("{name} cannot be read from {}: {e}", staged.display()))?;
-    let mut out = File::create_new(&installed).map_err(|e| why_not(name, install, e))?;
-    done.push(Step::CopiedIn(name.clone()));
-    // what goes in place is counted again on the way, so it is the bytes that were checked
-    let (mut hash, mut size, mut piece) = (Sha256::new().map_err(|e| e.to_string())?, 0, vec![0; PIECE]);
-    let copied = (|| loop {
-        let n = source.read(&mut piece)?;
-        if n == 0 {
-            return out.sync_all();
-        }
-        hash.update(&piece[..n])?;
-        out.write_all(&piece[..n])?;
-        size += n as u64;
-    })();
-    copied.map_err(|e| why_not(name, install, e))?;
-    if size != asset.size || hash.finish().map_err(|e| e.to_string())? != asset.sha256 {
-        return Err(format!("{name} changed after it was checked"));
-    }
-    Ok(())
-}
-
-/// takes back `done`, newest first: a new file is set aside as `<name>.old-<to>` for `tidy`, an old one renamed back.
-/// what could not be taken back is said, with where it is
-fn undo(done: &[Step], install: &Path, from: Version, to: Version) -> Vec<String> {
-    let mut left = Vec::new();
-    for step in done.iter().rev() {
-        let (now, back) = match step {
-            Step::CopiedIn(name) => (name.clone(), aside(name, to)),
-            Step::SetAside(name) => (aside(name, from), name.clone()),
-        };
-        if let Err(e) = rename_new(&install.join(&now), &install.join(&back)) {
-            left.push(format!("{now} in {} could not be renamed {back}: {e}", install.display()));
-        }
-    }
-    left
-}
-
-/// why a file could not go in or out of the install folder, in the words the update's modal uses
-fn why_not(name: &str, install: &Path, e: io::Error) -> String {
-    match e.raw_os_error() {
-        Some(SHARING_VIOLATION) => format!("{name} is in use by another program"),
-        Some(ACCESS_DENIED) => format!("eyepiece cannot write to its folder: {}", install.display()),
-        _ => format!("{name}: {e}"),
-    }
-}
-
-/// renames, and never over a file already there: std's rename would replace it
-fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    unsafe { MoveFileExW(&HSTRING::from(from), &HSTRING::from(to), MOVE_FILE_FLAGS(0)) }
-        // a win32 error in an hresult: its code is the low half
-        .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xffff))
-}
-
 /// who signed a file, as far as the update compares: the name its certificate is issued to, as encoded, and the root
 /// its chain ends in. not the certificate itself: artifact signing issues a new one, good for three days, to each build
 struct Signer {
@@ -338,21 +222,18 @@ struct Signer {
     root: Vec<u8>,
 }
 
-/// every program and library to be put in place is signed as the running program is: the same subject and the
-/// same root. a running program that is not signed (a developer build) cannot say whose a new one must be, so it
-/// takes none
-fn signed_alike(files: &[&Asset], staged: &Path, running: &Path, signer_of: &dyn Fn(&Path) -> Result<Signer, String>) -> Result<(), String> {
+/// the installer at `setup` is signed as the running program is: the same subject and the same root. a running
+/// program that is not signed (a developer build) cannot say whose a new one must be, so it takes none
+fn signed_alike(setup: &Path, running: &Path, signer_of: &dyn Fn(&Path) -> Result<Signer, String>) -> Result<(), String> {
     let ours = signer_of(running).map_err(|why| if why == NOT_SIGNED { UNSIGNED.to_string() } else { format!("this build's own signature cannot be checked, {why}: install updates by hand") })?;
-    let code = |name: &str| name.rsplit_once('.').is_some_and(|(_, kind)| kind.eq_ignore_ascii_case("exe") || kind.eq_ignore_ascii_case("dll"));
-    for asset in files.iter().filter(|a| code(&a.name)) {
-        let not_ours = |why: &str| format!("{} is not signed by {}: {why}", asset.name, ours.name);
-        let theirs = signer_of(&staged.join(&asset.name)).map_err(|why| not_ours(&why))?;
-        if theirs.subject != ours.subject {
-            return Err(not_ours(&format!("its signer is {}", theirs.name)));
-        }
-        if theirs.root != ours.root {
-            return Err(not_ours("its certificate comes from another authority"));
-        }
+    let name = setup.file_name().unwrap_or_default().to_string_lossy();
+    let not_ours = |why: &str| format!("{name} is not signed by {}: {why}", ours.name);
+    let theirs = signer_of(setup).map_err(|why| not_ours(&why))?;
+    if theirs.subject != ours.subject {
+        return Err(not_ours(&format!("its signer is {}", theirs.name)));
+    }
+    if theirs.root != ours.root {
+        return Err(not_ours("its certificate comes from another authority"));
     }
     Ok(())
 }
@@ -444,8 +325,7 @@ impl Drop for Sha256 {
 }
 
 /// a file's size and sha-256, read through
-fn sha256_of(path: &Path) -> io::Result<(u64, [u8; 32])> {
-    let mut file = File::open(path)?;
+fn sha256_of(file: &mut File) -> io::Result<(u64, [u8; 32])> {
     let (mut hash, mut size, mut piece) = (Sha256::new()?, 0, vec![0; PIECE]);
     loop {
         let n = file.read(&mut piece)?;
@@ -525,7 +405,6 @@ fn lost(e: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::fs::OpenOptionsExt;
 
     /// a folder of its own for one test, in the temp folder
     struct Scratch(PathBuf);
@@ -601,6 +480,7 @@ mod tests {
     }
 
     const OLD: Version = Version(0, 2, 1);
+    const SETUP: &str = "eyepiece-0.3.0-windows-setup.exe";
 
     #[test]
     fn sha256_gives_the_known_sums() {
@@ -614,135 +494,66 @@ mod tests {
     }
 
     #[test]
-    fn an_update_goes_in_place_and_keeps_the_old() {
-        let (install, staged) = (Scratch::new("in-place"), Scratch::new("in-place-staged"));
-        install.put("eyepiece.exe", b"program 0.2.1");
-        install.put("avcodec-63.dll", b"codecs 0.2.1");
-        install.put("THIRD-PARTY-NOTICES.txt", b"the same notices");
-        install.put("readme.txt", b"not the release's");
-        let new: [(&str, &[u8]); 4] =
-            [("eyepiece.exe", b"program 0.3.0"), ("avcodec-63.dll", b"codecs 0.3.0, longer"), ("THIRD-PARTY-NOTICES.txt", b"the same notices"), ("fonts-new-OFL.txt", b"new in 0.3.0")];
-        let release = release("0.3.0", &new);
-        // what download leaves: the files that differ
-        for (name, bytes) in [new[0], new[1], new[3]] {
-            staged.put(name, bytes);
-        }
-        assert_eq!(apply_from(&release, &staged.0, &install.0, OLD, Path::new("running"), &tridant), Ok(3));
-        for (name, bytes) in new {
-            assert_eq!(install.read(name), bytes, "{name}");
-        }
-        assert_eq!(install.read("eyepiece.exe.old-0.2.1"), b"program 0.2.1");
-        assert_eq!(install.read("avcodec-63.dll.old-0.2.1"), b"codecs 0.2.1");
-        assert_eq!(install.read("readme.txt"), b"not the release's");
-        // the notices were the same and the new file replaced nothing, so neither left an old one
-        assert_eq!(install.names().len(), 7, "{:?}", install.names());
-        assert_eq!(tidy(&install.0), Vec::<String>::new());
-        install.clear(&["eyepiece.exe", "avcodec-63.dll", "THIRD-PARTY-NOTICES.txt", "readme.txt", "fonts-new-OFL.txt"]);
-        staged.clear(&["eyepiece.exe", "avcodec-63.dll", "fonts-new-OFL.txt"]);
-    }
-
-    #[test]
-    fn a_file_in_use_puts_everything_back() {
-        let (install, staged) = (Scratch::new("in-use"), Scratch::new("in-use-staged"));
-        install.put("eyepiece.exe", b"program 0.2.1");
-        install.put("avcodec-63.dll", b"codecs 0.2.1");
-        // not the same size, so the update knows it differs without reading it
-        let new: [(&str, &[u8]); 2] = [("eyepiece.exe", b"program 0.3.0"), ("avcodec-63.dll", b"codecs 0.3.0, longer")];
-        let release = release("0.3.0", &new);
-        for (name, bytes) in new {
-            staged.put(name, bytes);
-        }
-        // held as another program holds a file: shared with no one
-        let held = fs::OpenOptions::new().read(true).share_mode(0).open(install.0.join("avcodec-63.dll")).unwrap();
-        let why = apply_from(&release, &staged.0, &install.0, OLD, Path::new("running"), &tridant);
+    fn the_installer_runs_only_once_it_checks() {
+        let staged = Scratch::new("checked");
+        // a notices file beside it in the manifest is not the update's
+        let release = release("0.3.0", &[(SETUP, b"installer 0.3.0"), ("THIRD-PARTY-NOTICES.txt", b"notices")]);
+        let try_it = |signer_of: &dyn Fn(&Path) -> Result<Signer, String>| check(&release, &staged.0, OLD, Path::new("running"), signer_of).map(|(path, _)| path);
+        assert_eq!(try_it(&tridant), Err(format!("{SETUP} has not been downloaded")));
+        staged.put(SETUP, b"installer 0.3.1");
+        assert_eq!(try_it(&tridant), Err(format!("{SETUP} does not match the release's size and checksum")));
+        staged.put(SETUP, b"installer 0.3.0, longer");
+        assert_eq!(try_it(&tridant), Err(format!("{SETUP} does not match the release's size and checksum")));
+        staged.put(SETUP, b"installer 0.3.0");
+        assert_eq!(try_it(&|_| Err(NOT_SIGNED.into())), Err(UNSIGNED.to_string()));
+        assert_eq!(try_it(&tridant), Ok(staged.0.join(SETUP)));
+        // held from its check until it is started: nothing can write it, move it or take it away meanwhile
+        let (_, held) = check(&release, &staged.0, OLD, Path::new("running"), &tridant).unwrap();
+        assert!(fs::OpenOptions::new().write(true).open(staged.0.join(SETUP)).is_err());
+        assert!(fs::rename(staged.0.join(SETUP), staged.0.join("moved.exe")).is_err());
         drop(held);
-        assert_eq!(why, Err("avcodec-63.dll is in use by another program. everything was put back.".to_string()));
-        assert_eq!((install.read("eyepiece.exe"), install.read("avcodec-63.dll")), (b"program 0.2.1".to_vec(), b"codecs 0.2.1".to_vec()));
-        // the new program that had gone in is set aside
-        assert_eq!(install.read("eyepiece.exe.old-0.3.0"), b"program 0.3.0");
-        // and try again, now nothing holds it, takes that away first
-        assert_eq!(apply_from(&release, &staged.0, &install.0, OLD, Path::new("running"), &tridant), Ok(2));
-        assert_eq!(install.names(), ["avcodec-63.dll", "avcodec-63.dll.old-0.2.1", "eyepiece.exe", "eyepiece.exe.old-0.2.1"]);
-        assert_eq!((install.read("eyepiece.exe"), install.read("avcodec-63.dll")), (b"program 0.3.0".to_vec(), b"codecs 0.3.0, longer".to_vec()));
-        assert_eq!(tidy(&install.0), Vec::<String>::new());
-        install.clear(&["eyepiece.exe", "avcodec-63.dll"]);
-        staged.clear(&["eyepiece.exe", "avcodec-63.dll"]);
+        assert_eq!(check(&release, &staged.0, Version(0, 3, 0), Path::new("running"), &tridant).err(), Some("0.3.0 is not newer than 0.3.0".to_string()));
+        assert_eq!(staged.read(SETUP), b"installer 0.3.0");
+        staged.clear(&[SETUP]);
+        // a folder where the installer should be is not taken for it
+        let folder = Scratch::new("checked-folder");
+        fs::create_dir(folder.0.join(SETUP)).unwrap();
+        assert!(check(&release, &folder.0, OLD, Path::new("running"), &tridant).unwrap_err().ends_with("is not a file"));
+        folder.clear(&[SETUP]);
     }
 
     #[test]
-    fn a_file_changed_after_its_check_is_taken_back_out() {
-        let (install, staged) = (Scratch::new("changed"), Scratch::new("changed-staged"));
-        install.put("eyepiece.exe", b"program 0.2.1");
-        let release = release("0.3.0", &[("eyepiece.exe", b"program 0.3.0")]);
-        staged.put("eyepiece.exe", b"program 0.6.6");
-        let files: Vec<&Asset> = release.files.iter().collect();
-        let why = put_in_place(&files, &staged.0, &install.0, OLD, release.version);
-        assert_eq!(why, Err("eyepiece.exe changed after it was checked. everything was put back.".to_string()));
-        assert_eq!(install.read("eyepiece.exe"), b"program 0.2.1");
-        assert_eq!(install.read("eyepiece.exe.old-0.3.0"), b"program 0.6.6");
-        install.clear(&["eyepiece.exe", "eyepiece.exe.old-0.3.0"]);
-        staged.clear(&["eyepiece.exe"]);
-    }
-
-    #[test]
-    fn nothing_is_touched_until_everything_checks() {
-        let (install, staged) = (Scratch::new("refused"), Scratch::new("refused-staged"));
-        install.put("eyepiece.exe", b"program 0.2.1");
-        install.put("avcodec-63.dll", b"codecs 0.2.1");
-        let release = release("0.3.0", &[("eyepiece.exe", b"program 0.3.0"), ("avcodec-63.dll", b"codecs 0.3.0, longer")]);
-        let try_it = |signer_of: &dyn Fn(&Path) -> Result<Signer, String>| {
-            let why = apply_from(&release, &staged.0, &install.0, OLD, Path::new("running"), signer_of).unwrap_err();
-            assert_eq!((install.read("eyepiece.exe"), install.read("avcodec-63.dll")), (b"program 0.2.1".to_vec(), b"codecs 0.2.1".to_vec()));
-            why
-        };
-        staged.put("eyepiece.exe", b"program 0.3.0");
-        assert_eq!(try_it(&tridant), "avcodec-63.dll has not been downloaded");
-        staged.put("avcodec-63.dll", b"codecs 0.3.0");
-        assert_eq!(try_it(&tridant), "avcodec-63.dll does not match the release's size and checksum");
-        staged.put("avcodec-63.dll", b"codecs 0.3.0, LONGER");
-        assert_eq!(try_it(&tridant), "avcodec-63.dll does not match the release's size and checksum");
-        staged.put("avcodec-63.dll", b"codecs 0.3.0, longer");
-        assert_eq!(try_it(&|_| Err("it is not signed".into())), UNSIGNED);
-        // left by the update before, and still held by the player it replaced
-        install.put("eyepiece.exe.old-0.2.1", b"from an update before");
-        let held = fs::OpenOptions::new().read(true).share_mode(0).open(install.0.join("eyepiece.exe.old-0.2.1")).unwrap();
-        assert_eq!(try_it(&tridant), "eyepiece.exe.old-0.2.1 is left from an earlier update: start eyepiece again, then update");
-        drop(held);
-        let same = super::super::read("version = 0.2.1\ndate = 2026-11-24\nfile = eyepiece.exe · 1 · e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "https://example.invalid/").unwrap();
-        assert_eq!(apply_from(&same, &staged.0, &install.0, OLD, Path::new("running"), &tridant), Err("0.2.1 is not newer than 0.2.1".to_string()));
-        assert_eq!(apply_from(&release, &staged.0, Path::new(r"C:\"), OLD, Path::new("running"), &tridant), Err(r"C:\ is not a folder eyepiece updates".to_string()));
-        install.clear(&["eyepiece.exe", "avcodec-63.dll", "eyepiece.exe.old-0.2.1"]);
-        staged.clear(&["eyepiece.exe", "avcodec-63.dll"]);
-    }
-
-    #[test]
-    fn only_files_signed_as_the_running_program_go_in() {
-        let release = release(
-            "0.3.0",
-            &[("eyepiece.exe", b"program"), ("avcodec-63.dll", b"codecs"), ("swresample-7.DLL", b"resampler"), ("THIRD-PARTY-NOTICES.txt", b"notices")],
-        );
-        let files: Vec<&Asset> = release.files.iter().collect();
-        let staged = Path::new(r"C:\staged");
+    fn only_an_installer_signed_as_the_running_program_runs() {
+        let setup = Path::new(r"C:\staged\eyepiece-0.3.0-windows-setup.exe");
         let running = Path::new(r"C:\installed\eyepiece.exe");
-        let as_ = |dll: Result<Signer, String>| {
-            let dll = std::cell::RefCell::new(Some(dll));
-            signed_alike(&files, staged, running, &|path| match path.file_name().unwrap().to_str().unwrap() {
-                "avcodec-63.dll" => dll.borrow_mut().take().unwrap(),
-                "eyepiece.exe" | "swresample-7.DLL" => tridant(path),
-                // text is never asked about: it cannot carry a signature
-                other => panic!("asked for the signer of {other}"),
-            })
+        let as_ = |theirs: Result<Signer, String>| {
+            let theirs = std::cell::RefCell::new(Some(theirs));
+            signed_alike(setup, running, &|path| if path == running { tridant(path) } else { theirs.borrow_mut().take().unwrap() })
         };
-        assert_eq!(as_(tridant(running)), Ok(()));
-        assert_eq!(as_(Err("it is not signed".into())), Err("avcodec-63.dll is not signed by Tridant, Inc.: it is not signed".to_string()));
-        assert_eq!(as_(Ok(signer("Someone Else", "root 2020"))), Err("avcodec-63.dll is not signed by Tridant, Inc.: its signer is Someone Else".to_string()));
-        assert_eq!(as_(Ok(signer("Tridant, Inc.", "another root"))), Err("avcodec-63.dll is not signed by Tridant, Inc.: its certificate comes from another authority".to_string()));
-        let ours = |why: &'static str| signed_alike(&files, staged, running, &|path| if path == running { Err(why.into()) } else { tridant(path) });
+        assert_eq!(as_(tridant(setup)), Ok(()));
+        assert_eq!(as_(Err("it is not signed".into())), Err(format!("{SETUP} is not signed by Tridant, Inc.: it is not signed")));
+        assert_eq!(as_(Ok(signer("Someone Else", "root 2020"))), Err(format!("{SETUP} is not signed by Tridant, Inc.: its signer is Someone Else")));
+        assert_eq!(as_(Ok(signer("Tridant, Inc.", "another root"))), Err(format!("{SETUP} is not signed by Tridant, Inc.: its certificate comes from another authority")));
+        let ours = |why: &'static str| signed_alike(setup, running, &|path| if path == running { Err(why.into()) } else { tridant(path) });
         assert_eq!(ours(NOT_SIGNED), Err(UNSIGNED.to_string()));
         assert_eq!(
             ours("its signature does not hold (0x800b010a)"),
             Err("this build's own signature cannot be checked, its signature does not hold (0x800b010a): install updates by hand".to_string())
         );
+    }
+
+    #[test]
+    fn the_installer_waits_for_this_player_and_reopens_its_files() {
+        assert_eq!(setup_args(4242), ["/SILENT", "/NORESTART", "/update=4242"]);
+        let files = [r"C:\clips\a b é.mov", r"\\nas\share\x.mov", r"C:\a folder\"].map(OsString::from);
+        // as windows splits it again: a backslash is itself, except in a run before a quote, where two are one
+        assert_eq!(reopen(&files), OsString::from(r#""C:\clips\a b é.mov" "\\nas\share\x.mov" "C:\a folder\\""#));
+        assert_eq!(reopen(&[]), OsString::new());
+    }
+
+    #[test]
+    fn nothing_starts_unless_it_was_checked() {
+        assert_eq!(relaunch(Path::new("unused"), &[]), Err("the update's installer has not been checked".to_string()));
     }
 
     #[test]
@@ -752,8 +563,8 @@ mod tests {
     }
 
     /// the signers of signed files, through wintrust, as the update reads them, and that they are one signer to it:
-    /// the files of EYEPIECE_SIGNED, separated by `;`, such as dist\eyepiece\eyepiece.exe after scripts\package.ps1
-    /// and a build signed on another day, whose certificate is another:
+    /// the files of EYEPIECE_SIGNED, separated by `;`, such as dist\eyepiece\eyepiece.exe and the installer after
+    /// scripts\package.ps1, and a build signed on another day, whose certificate is another:
     /// `cargo test signed_files_name_their_signer -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -768,60 +579,31 @@ mod tests {
     }
 
     #[test]
-    fn tidy_takes_only_what_an_update_set_aside() {
-        let install = Scratch::new("tidy");
-        for name in ["eyepiece.exe.old-0.2.1", "avcodec-63.dll.old-0.10.0", "THIRD-PARTY-NOTICES.txt.old-1.0.0"] {
-            install.put(name, b"set aside");
-        }
-        let kept = [
-            "eyepiece.exe",
-            "notes.txt",
-            "eyepiece.exe.old-latest",
-            "eyepiece.exe.old-0.2",
-            "eyepiece.exe.old-01.2.3",
-            "eyepiece.exe.old-0.2.1.bak",
-            "eyepiece.exe.old-0.2.1.old-0.2.2",
-            "run.bat.old-0.1.0",
-            ".old-0.2.1",
-        ];
-        for name in kept {
-            install.put(name, b"not the update's");
-        }
-        // a folder with an update's name is still not one of its files
-        fs::create_dir(install.0.join("avformat-63.dll.old-0.1.0")).unwrap();
-        assert_eq!(tidy(&install.0), Vec::<String>::new());
-        let mut left: Vec<&str> = kept.to_vec();
-        left.push("avformat-63.dll.old-0.1.0");
-        for refused in ["", r"C:\", r"eyepiece\old"] {
-            assert_eq!(tidy(Path::new(refused)).len(), 1, "{refused}");
-        }
-        install.clear(&left);
-    }
-
-    #[test]
     fn a_download_lands_only_whole() {
         let staged = Scratch::new("landing");
-        let release = release("0.3.0", &[("eyepiece.exe", b"program 0.3.0")]);
+        let release = release("0.3.0", &[(SETUP, b"installer 0.3.0")]);
         let land = |pieces: &[&[u8]], net: Result<(), String>| {
             let mut landing = Landing::begin(&staged.0, &release.files[0]).unwrap();
             let got = pieces.iter().try_for_each(|piece| landing.take(piece)).and(net);
             landing.end(got)
         };
-        assert_eq!(land(&[b"program ", b"0.3.0"], Ok(())), Ok(()));
-        assert_eq!(staged.read("eyepiece.exe"), b"program 0.3.0");
-        assert_eq!(land(&[b"program 0.3.1"], Ok(())), Err("eyepiece.exe does not match the release's checksum".to_string()));
-        assert_eq!(staged.read("eyepiece.exe.failed"), b"program 0.3.1");
-        assert_eq!(land(&[b"program 0.3.0", b"!"], Ok(())), Err("eyepiece.exe is longer than the release says".to_string()));
-        assert_eq!(land(&[b"program"], Ok(())), Err("eyepiece.exe came short: 7 of 13 bytes".to_string()));
-        assert_eq!(land(&[b"program "], Err("github did not answer: it timed out".into())), Err("github did not answer: it timed out".to_string()));
-        assert_eq!(staged.read("eyepiece.exe.failed"), b"program ");
+        assert_eq!(land(&[b"installer ", b"0.3.0"], Ok(())), Ok(()));
+        assert_eq!(staged.read(SETUP), b"installer 0.3.0");
+        assert_eq!(land(&[b"installer 0.3.1"], Ok(())), Err(format!("{SETUP} does not match the release's checksum")));
+        assert_eq!(staged.read(&format!("{SETUP}.failed")), b"installer 0.3.1");
+        assert_eq!(land(&[b"installer 0.3.0", b"!"], Ok(())), Err(format!("{SETUP} is longer than the release says")));
+        assert_eq!(land(&[b"installer"], Ok(())), Err(format!("{SETUP} came short: 9 of 15 bytes")));
+        assert_eq!(land(&[b"installer "], Err("github did not answer: it timed out".into())), Err("github did not answer: it timed out".to_string()));
+        assert_eq!(staged.read(&format!("{SETUP}.failed")), b"installer ");
         // the whole one stayed as it was through the failures after it
-        assert_eq!(staged.read("eyepiece.exe"), b"program 0.3.0");
-        staged.clear(&["eyepiece.exe", "eyepiece.exe.failed"]);
+        assert_eq!(staged.read(SETUP), b"installer 0.3.0");
+        // and is known as downloaded, so it is not asked for again
+        assert_eq!(holds(&staged.0.join(SETUP), &release.files[0]), Ok(true));
+        staged.clear(&[SETUP, &format!("{SETUP}.failed")]);
     }
 
     /// a request for real, to a folder served by hand on this machine: not run with the others, which ask nothing of
-    /// any server. EYEPIECE_UPDATE_FROM names it, as `http://127.0.0.1:8123/`:
+    /// any server. EYEPIECE_UPDATE_FROM names it, as `http://127.0.0.1:39417/`:
     /// `cargo test a_release_is_read_over_http -- --ignored --nocapture`
     #[test]
     #[ignore]
