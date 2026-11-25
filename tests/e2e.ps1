@@ -757,17 +757,34 @@ foreach ($made in $late, (Split-Path $late), (Split-Path (Split-Path $late)), $f
 }
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'the read-again button, f5 and control + R each show a folder made since the last listing' ($kept -contains "browser_folder = $late") "the settings say: $($kept -match 'browser_folder')"
-# what the browser shows of a folder is chosen at the address's right end and kept: its button stands 10 from the
-# window's right, a little over 100 wide, so 66 in from there is on it; its list opens 4 under it, rows of 26 after 4
+# what the browser shows of a folder is chosen at the address's right end and kept: its icon, 30 x 28, stands 6 from
+# the window's right, its middle 17.5 under the strip; its list opens 4 under it, 132 wide to its right edge, rows of
+# 26 after 4
 Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
 Start-Player
 Start-Sleep -Milliseconds 1000
-$viewAt = (Get-Width) - 10 - 66
-Click-At $viewAt 50; Start-Sleep -Milliseconds 500
-Click-At $viewAt (32 + 18 + 13.75 + 4 + 4 + 26 * 2.5); Start-Sleep -Milliseconds 500
+$viewAt = (Get-Width) - 6 - 15; $listTop = 32 + 17.5 + 14 + 4 + 4
+Click-At $viewAt 49.5; Start-Sleep -Milliseconds 500
+Click-At $viewAt ($listTop + 26 * 2.5); Start-Sleep -Milliseconds 500
 Stop-Player
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'the view chosen at the address''s right end is kept between runs' ($kept -contains 'browser_view = list') "the settings say: $($kept -match 'browser_view')"
+# the sort's icon stands 2 left of the view's, its list the same: name, size, date modified, date created (windows keeps
+# no date added), a rule of 9, ascending, descending. by size, largest first, the second row down after the folder of
+# shots is prores_64.mov, where by name it is hap_64.mov. the sort is kept between runs
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
+Start-Player
+Start-Sleep -Milliseconds 1000
+$sortAt = (Get-Width) - 6 - 30 - 2 - 15
+Click-At $sortAt 49.5; Start-Sleep -Milliseconds 500
+Click-At $sortAt ($listTop + 26 * 1.5); Start-Sleep -Milliseconds 500
+Click-At $sortAt 49.5; Start-Sleep -Milliseconds 500
+Click-At $sortAt ($listTop + 9 + 26 * 5.5); Start-Sleep -Milliseconds 500
+Send-Key 0x28; Start-Sleep -Milliseconds 300; Send-Key 0x28
+$script:name = 'prores_64.mov'; Send-Key 0x0D; Assert-Frame 'sorted by size, largest first, the largest file comes after the folders' 0 4
+Stop-Player
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+Confirm-That 'the sort chosen at the address''s right end is kept between runs' ($kept -contains 'browser_sort = size descending') "the settings say: $($kept -match 'browser_sort')"
 # copy and paste in the field go by the clipboard, which is this pc's own: the check is left out when it holds more
 # than plain text, which a test could not put back, and what it held is put back after
 Add-Type -AssemblyName System.Windows.Forms
@@ -789,10 +806,10 @@ if ($more.Count -eq 0) {
     Confirm-That 'control + V types a path into the address, in quotes as explorer copies one' ($kept -contains "browser_folder = $tree") "the settings say: $($kept -match 'browser_folder')"
 } else { Write-Host 'skip  copy and paste in the address: the clipboard holds more than plain text, which this test would not put back' }
 
-# ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order.
-# here hap_64.mov (3 frames), prores_64.mov (4), x_roll.mov (3) and y_broken.mov, which is no clip at all; the one
-# marked as not on the disk is left out
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
+# ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order,
+# however the browser sorts them. here hap_64.mov (3 frames), prores_64.mov (4), x_roll.mov (3) and y_broken.mov, which
+# is no clip at all; the one marked as not on the disk is left out
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off', 'browser_sort = size descending'
 Start-Player
 Start-Sleep -Milliseconds 1000
 function Get-ClipUp { if ((Get-Title) -match ' . clip (\d) of 4') { [int]$Matches[1] } else { 0 } }

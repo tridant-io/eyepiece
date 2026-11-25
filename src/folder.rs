@@ -133,7 +133,7 @@ mod tests {
     use crate::browse::tests::Scratch;
 
     fn entry(name: &str, kind: Kind, away: bool) -> Entry {
-        Entry { name: name.to_string(), path: Path::new("shots").join(name), kind, size: Some(1), modified: None, away, link: false }
+        Entry { name: name.to_string(), path: Path::new("shots").join(name), kind, size: Some(1), modified: None, created: None, added: None, away, link: false }
     }
 
     /// a folder's own clips first, then each subfolder's, in name order, depth first; a file that is no clip and a

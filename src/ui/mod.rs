@@ -628,6 +628,14 @@ impl Ui {
         self.browser.set_view(view);
     }
 
+    pub fn browser_sort(&self) -> crate::browse::Sort {
+        self.browser.sort()
+    }
+
+    pub fn set_browser_sort(&mut self, sort: crate::browse::Sort) {
+        self.browser.set_sort(sort);
+    }
+
     fn point(&self, x: f32, y: f32) -> Pos2 {
         Pos2::new(x / self.scale, y / self.scale)
     }

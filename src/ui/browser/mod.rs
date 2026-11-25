@@ -7,8 +7,8 @@ mod jobs;
 mod nav;
 
 use super::icons::{self, Icon};
-use super::{cut_middle, font, icon_button, text_top, widgets, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS};
-use crate::browse::{self, Entry, Group, Kind, Place, View, Volume, Widths};
+use super::{chip, cut_middle, font, icon_button, text_top, widgets, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS, TIP_IN};
+use crate::browse::{self, Entry, Group, Kind, Place, Sort, View, Volume, Widths};
 use crate::event::{Key, Mods};
 use crate::folder::{self, Clips};
 use crate::media::meta::{Meta, Row, Tone};
@@ -76,8 +76,11 @@ const RECENT: usize = 5;
 /// longest words beside the longest key
 const MENU_WIDTH: f32 = 300.0;
 const MENU_ROW: f32 = 24.0;
-/// what is shown of a folder, as the view's list and the right-click menu name them
-const VIEWS: [(View, &str); 3] = [(View::Both, "list + gallery"), (View::Gallery, "gallery"), (View::List, "list")];
+/// what is shown of a folder, as the view's list and the right-click menu name them, and its button draws it
+const VIEWS: [(View, &str, Icon); 3] = [(View::Both, "list + gallery", Icon::ListAndCards), (View::Gallery, "gallery", Icon::Cards), (View::List, "list", Icon::List)];
+/// a row of the lists that open under the address's buttons, and the rule between the sort's keys and its ways
+const DROP_ROW: f32 = 26.0;
+const DROP_RULE: f32 = 9.0;
 
 /// what was chosen in the browser
 pub enum Chosen {
@@ -104,6 +107,7 @@ pub struct Browser {
     recent: Vec<PathBuf>,
     pictures: Option<Pictures>,
     view: View,
+    sort: Sort,
     widths: Widths,
     state: Option<State>,
 }
@@ -112,7 +116,7 @@ impl Browser {
     /// starts in `folder`; with none, in the first of the system's places (downloads). without `pictures` the
     /// cards stay plain.
     pub fn new(folder: Option<PathBuf>, pictures: Option<Pictures>) -> Browser {
-        Browser { start: folder, recent: Vec::new(), pictures, view: View::Both, widths: Widths::default(), state: None }
+        Browser { start: folder, recent: Vec::new(), pictures, view: View::Both, sort: Sort::default(), widths: Widths::default(), state: None }
     }
 
     /// the folders it last opened files from, the newest first: kept between runs.
@@ -150,10 +154,10 @@ impl Browser {
     }
 
     fn state(&mut self) -> &mut State {
-        let (start, recent, pictures, view, widths) = (&mut self.start, &mut self.recent, &mut self.pictures, self.view, self.widths);
+        let (start, recent, pictures, view, sort, widths) = (&mut self.start, &mut self.recent, &mut self.pictures, self.view, self.sort, self.widths);
         self.state.get_or_insert_with(|| {
             let mut state = State::new(start.take(), std::mem::take(recent), pictures.take());
-            (state.nav.view, state.widths) = (view, widths);
+            (state.nav.view, state.sort, state.widths) = (view, sort, widths);
             state
         })
     }
@@ -161,8 +165,8 @@ impl Browser {
     pub fn key(&mut self, key: Key, mods: Mods) {
         let state = self.state();
         state.take_answers();
-        // a key puts the right-click menu away, and esc does nothing more
-        if state.menu.take().is_some() && key == Key::Escape {
+        // a key puts the right-click menu and the address's lists away, and esc does nothing more
+        if (state.menu.take().is_some() | state.dropdown.take().is_some()) && key == Key::Escape {
             return;
         }
         // control + shift + enter plays the folder shown with its subfolders
@@ -218,6 +222,19 @@ impl Browser {
         self.view = view;
         if let Some(state) = &mut self.state {
             state.nav.view = view;
+        }
+    }
+
+    /// how a folder's entries are ordered: kept between runs.
+    pub fn sort(&self) -> Sort {
+        self.state.as_ref().map_or(self.sort, |state| state.sort)
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) {
+        self.sort = sort;
+        if let Some(state) = &mut self.state {
+            state.sort = sort;
+            state.resort();
         }
     }
 
@@ -311,8 +328,11 @@ struct State {
     address: Option<String>,
     address_fresh: bool,
     address_at: f64,
-    /// the list of views is open under its button
-    view_menu: bool,
+    /// the list open under one of the address's buttons; how the folders' entries are ordered; and the button the
+    /// pointer rests on for its tooltip, and since when
+    dropdown: Option<Dropdown>,
+    sort: Sort,
+    tip: Option<(egui::Id, f64)>,
     /// the videos picked together with shift or control, when there are more than the one selected; and the one a
     /// run picked with shift starts from
     picked: Vec<PathBuf>,
@@ -346,6 +366,13 @@ enum On {
     Folder(PathBuf),
     /// the main area away from its cards: the folder it shows
     Shown(PathBuf),
+}
+
+/// the lists that open under the address's buttons at its right
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dropdown {
+    View,
+    Sort,
 }
 
 /// a row of the right-click menu: its words, its key where it has one, what it does, and for a view whether it is the
@@ -383,9 +410,10 @@ enum Click {
     /// back (-1) or forward (1) along the folders shown; and the folders on screen read again
     Retrace(isize),
     Refresh,
-    /// the list of views opens or closes; and one of them is chosen
-    ViewMenu,
+    /// a list under the address's buttons opens or closes; and a view or a sort is chosen in it
+    Dropdown(Dropdown),
     View(View),
+    Sort(Sort),
     /// a video pressed with control held (one more picked, or one less) or with shift (true: a run of them), in a row
     /// or a card, which the keys then act in; and the videos picked, opened together
     Pick(PathBuf, bool, nav::Focus),
@@ -513,7 +541,9 @@ impl State {
             address: None,
             address_fresh: false,
             address_at: 0.0,
-            view_menu: false,
+            dropdown: None,
+            sort: Sort::default(),
+            tip: None,
             picked: Vec::new(),
             anchor: None,
             held: (false, false),
@@ -611,8 +641,11 @@ impl State {
         for (_, pinned) in self.pins.answers() {
             self.pin(pinned);
         }
-        for (folder, listing) in self.lists.answers() {
+        for (folder, mut listing) in self.lists.answers() {
             self.stale.remove(&folder);
+            if let Ok(entries) = &mut listing {
+                browse::sort(entries, self.sort);
+            }
             self.nav.listings.insert(folder, listing);
         }
         self.read.extend(self.metas.answers());
@@ -650,7 +683,7 @@ impl State {
         self.scroll(ui, &layout);
         let mut clicks = Vec::new();
         self.side(ui, layout.side, &mut clicks);
-        self.address_line(ui, layout.address, &mut clicks);
+        let hint = self.address_line(ui, layout.address, &mut clicks);
         for (i, rect) in layout.columns.iter().enumerate() {
             self.column(ui, layout.first + i, *rect, &mut clicks);
         }
@@ -665,6 +698,8 @@ impl State {
         // after the parts, so an edge takes the pointer before the rows and cards under it
         self.edges(ui, &layout);
         self.menu(ui, area.shrink(8.0), &mut clicks);
+        // over all the parts it may stand on
+        self.tooltip(ui, hint, layout.address.bottom());
         // a double click acts on what its first press was on, not on what its second one lands on. a press on nothing
         // leaves nothing for one
         let (single, double) = ui.input(|i| {
@@ -740,7 +775,7 @@ impl State {
                 self.asked.insert(file);
             }
             Click::Copy(path) => self.copied = Some(path.to_string_lossy().into_owned()),
-            Click::Menu(on, at) => (self.menu, self.view_menu) = (Some((on, at)), false),
+            Click::Menu(on, at) => (self.menu, self.dropdown) = (Some((on, at)), None),
             Click::Previews(folder) => {
                 self.previews.insert(folder);
             }
@@ -759,8 +794,12 @@ impl State {
                 }
             }
             Click::Retrace(by) => self.nav.retrace(by, &self.roots),
-            Click::ViewMenu => self.view_menu = !self.view_menu,
-            Click::View(view) => (self.nav.view, self.view_menu) = (view, false),
+            Click::Dropdown(list) => self.dropdown = (self.dropdown != Some(list)).then_some(list),
+            Click::View(view) => (self.nav.view, self.dropdown) = (view, None),
+            Click::Sort(sort) => {
+                (self.sort, self.dropdown) = (sort, None);
+                self.resort();
+            }
             // what was read of the files is read again as well: a render may have written over one
             Click::Refresh => {
                 self.reread();
@@ -841,9 +880,20 @@ impl State {
         self.stale = self.nav.listings.keys().cloned().collect();
     }
 
+    /// every folder listed is ordered by the sort chosen, and what is selected in each is brought into view where it
+    /// has moved to.
+    fn resort(&mut self) {
+        for entries in self.nav.listings.values_mut().filter_map(|listing| listing.as_mut().ok()) {
+            browse::sort(entries, self.sort);
+        }
+        self.nav.path.iter_mut().for_each(|column| column.reveal = true);
+        self.revealed = None;
+    }
+
     /// the address (the owner's ask, 2026-11-24): a line across the top, over the columns and the main area, with
-    /// every folder from the drive or share down to the one shown, or the field a path is typed into.
-    fn address_line(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
+    /// every folder from the drive or share down to the one shown, or the field a path is typed into. returns the
+    /// tooltip of the button at its right the pointer is on: which, where, and what it says.
+    fn address_line(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) -> Option<(egui::Id, Rect, String)> {
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 1.0), rect.max), 0.0, LINE);
         let middle = rect.top() + (PATH_LINE - 1.0) / 2.0;
@@ -859,48 +909,26 @@ impl State {
                 clicks.push((click.clone(), Some(click)));
             }
         }
-        // at its right, where nothing comes and goes: what is shown of a folder, and open folder where the folder
-        // holds more than one video. (as "play folder" it stood at the main area's right, and jumped away when the
-        // metadata column came in: the owner saw it flash, 2026-11-24.)
-        let names = VIEWS;
-        let now = self.nav.view;
-        let label = painter.layout_no_wrap(names.iter().find(|(view, _)| *view == now).map_or("", |(_, name)| name).to_string(), font(SANS, 12.0), FG);
-        let size = Vec2::new(1.0 + 9.0 + label.size().x + 8.0 + 7.0 + 9.0 + 1.0, 27.5);
-        let view = Rect::from_min_size(Pos2::new(rect.right() - 10.0 - size.x, middle - size.y / 2.0), size);
-        let over_view = ui.rect_contains_pointer(view);
-        if button(ui, &painter, view, "brw-view", label, false) {
-            clicks.push((Click::ViewMenu, None));
-        }
-        let tip = Pos2::new(view.right() - 13.5, middle + 2.0);
-        painter.line_segment([tip + Vec2::new(-3.5, -3.5), tip], (1.2, DIM));
-        painter.line_segment([tip, tip + Vec2::new(3.5, -3.5)], (1.2, DIM));
-        if self.view_menu {
-            let size = Vec2::new(view.width().max(132.0), 4.0 + names.len() as f32 * 26.0 + 4.0);
-            let mut inside = false;
-            egui::Area::new(egui::Id::unique("brw-view-menu")).order(egui::Order::Foreground).fixed_pos(Pos2::new(view.right() - size.x, view.bottom() + 4.0)).show(ui.ctx(), |ui| {
-                let (list, _) = ui.allocate_exact_size(size, Sense::hover());
-                ui.painter().rect_filled(list, 0.0, PANEL);
-                ui.painter().rect_stroke(list, 0.0, (1.0, LINE), StrokeKind::Inside);
-                for (i, (to, name)) in names.iter().enumerate() {
-                    let row = Rect::from_min_size(Pos2::new(list.left() + 1.0, list.top() + 4.0 + i as f32 * 26.0), Vec2::new(list.width() - 2.0, 26.0));
-                    let response = ui.interact(row, ui.scope_id().with(("brw-view-row", i)), Sense::click());
-                    if response.hovered() {
-                        ui.painter().rect_filled(row, 0.0, HOVER);
-                    }
-                    let on = *to == now;
-                    text(ui.painter(), row.left() + 10.0, row.center().y, name, font(if on { "sans-semibold" } else { SANS }, 12.0), if on { FG } else { DIM }, row.width() - 20.0);
-                    if response.clicked() {
-                        clicks.push((Click::View(*to), None));
-                    }
-                }
-                inside = ui.rect_contains_pointer(list);
-            });
-            // a press anywhere else puts the list away
-            if ui.input(|i| i.pointer.any_pressed()) && !inside && !over_view {
-                self.view_menu = false;
+        // at its right, where nothing comes and goes: what is shown of a folder and how it is sorted, as icons with
+        // their lists under them (the owner's ask, 2026-11-25: as words they would take the address's room), and open
+        // folder where the folder holds more than one video. (as "play folder" it stood at the main area's right, and
+        // jumped away when the metadata column came in: the owner saw it flash, 2026-11-24.)
+        let (view, sort) = right_buttons(rect);
+        let shown = VIEWS.into_iter().find(|(to, ..)| *to == self.nav.view).unwrap_or(VIEWS[0]);
+        let mut hint = None;
+        for (list, at, name, icon, says) in [(Dropdown::View, view, "brw-view", shown.2, format!("view: {}", shown.1)), (Dropdown::Sort, sort, "brw-sort", Icon::Sort, sort_words(self.sort))] {
+            let response = icon_button(ui, at, name, icon, if self.dropdown == Some(list) { Lit::Open } else { Lit::No });
+            if response.clicked() {
+                clicks.push((Click::Dropdown(list), None));
+            }
+            if response.hovered() {
+                hint = Some((response.id, at, says));
             }
         }
-        let mut right = view.left() - 6.0;
+        if let Some(list) = self.dropdown {
+            self.dropdown_list(ui, list, if list == Dropdown::View { view } else { sort }, clicks);
+        }
+        let mut right = sort.left() - 6.0;
         if self.nav.cards().nth(1).is_some() {
             let label = painter.layout_no_wrap("open folder".to_string(), font(SANS, 12.0), FG);
             let keys = painter.layout_no_wrap("shift + enter".to_string(), font(MONO_MEDIUM, 9.5), DIM);
@@ -921,6 +949,72 @@ impl State {
             let folder = self.nav.main().folder.clone();
             self.address_crumbs(ui, &painter, &folder, left, middle, room, clicks);
         }
+        hint
+    }
+
+    /// the list open under `button`: the views, or the keys the sort can go by on this system and, after a rule, its
+    /// two ways. what is chosen is in bright semibold, the rest dim. a row pressed sets what it says; a press anywhere
+    /// else puts the list away.
+    fn dropdown_list(&mut self, ui: &egui::Ui, list: Dropdown, button: Rect, clicks: &mut Vec<Press>) {
+        let sorted = self.sort;
+        // words, chosen, what a press does, and a rule over it
+        let rows: Vec<(&str, bool, Click, bool)> = match list {
+            Dropdown::View => VIEWS.iter().map(|&(to, words, _)| (words, to == self.nav.view, Click::View(to), false)).collect(),
+            Dropdown::Sort => {
+                let keys = browse::SORTS.iter().filter(|(_, by)| by.kept()).map(|&(words, by)| (words, by == sorted.by, Click::Sort(Sort { by, ..sorted }), false));
+                let ways = browse::WAYS.iter().enumerate().map(|(i, &(words, descending))| (words, descending == sorted.descending, Click::Sort(Sort { descending, ..sorted }), i == 0));
+                keys.chain(ways).collect()
+            }
+        };
+        let rules = rows.iter().filter(|row| row.3).count();
+        let size = Vec2::new(132.0, 4.0 + rows.len() as f32 * DROP_ROW + rules as f32 * DROP_RULE + 4.0);
+        let mut inside = false;
+        let id = egui::Id::unique(if list == Dropdown::View { "brw-view-menu" } else { "brw-sort-menu" });
+        egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(Pos2::new(button.right() - size.x, button.bottom() + 4.0)).show(ui.ctx(), |ui| {
+            let (frame, _) = ui.allocate_exact_size(size, Sense::hover());
+            ui.painter().rect_filled(frame, 0.0, PANEL);
+            ui.painter().rect_stroke(frame, 0.0, (1.0, LINE), StrokeKind::Inside);
+            let mut top = frame.top() + 4.0;
+            for (i, (words, on, click, ruled)) in rows.into_iter().enumerate() {
+                if ruled {
+                    ui.painter().rect_filled(Rect::from_min_size(Pos2::new(frame.left() + 10.0, top + (DROP_RULE / 2.0).floor()), Vec2::new(frame.width() - 20.0, 1.0)), 0.0, LINE);
+                    top += DROP_RULE;
+                }
+                let row = Rect::from_min_size(Pos2::new(frame.left() + 1.0, top), Vec2::new(frame.width() - 2.0, DROP_ROW));
+                top = row.bottom();
+                let response = ui.interact(row, ui.scope_id().with(("brw-drop-row", i)), Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(row, 0.0, HOVER);
+                }
+                text(ui.painter(), row.left() + 10.0, row.center().y, words, font(if on { "sans-semibold" } else { SANS }, 12.0), if on { FG } else { DIM }, row.width() - 20.0);
+                if response.clicked() {
+                    clicks.push((click, None));
+                }
+            }
+            inside = ui.rect_contains_pointer(frame);
+        });
+        if ui.input(|i| i.pointer.any_pressed()) && !inside && !ui.rect_contains_pointer(button) {
+            self.dropdown = None;
+        }
+    }
+
+    /// the tooltip of the address's button the pointer rests on: under the address line from the button's right edge,
+    /// a moment after the pointer comes, as the player's own tooltips come; never while a list or the right-click menu
+    /// is open, or a button is held.
+    fn tooltip(&mut self, ui: &egui::Ui, hint: Option<(egui::Id, Rect, String)>, under: f32) {
+        let quiet = self.dropdown.is_some() || self.menu.is_some() || ui.input(|i| i.pointer.any_down());
+        let Some((id, button, says)) = hint.filter(|_| !quiet) else {
+            self.tip = None;
+            return;
+        };
+        let now = ui.input(|i| i.time);
+        let since = self.tip.filter(|(on, _)| *on == id).map_or(now, |(_, since)| since);
+        self.tip = Some((id, since));
+        if now - since < TIP_IN {
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(TIP_IN - (now - since)));
+            return;
+        }
+        chip(ui, Pos2::new(button.right(), under + 7.0), Align2::RIGHT_TOP, &[(says, FG)], 1.0, SANS);
     }
 
     /// the address, while it is not being typed into: the folders from the drive or share down to the one shown,
@@ -1489,7 +1583,7 @@ impl State {
                     rows.push(("make previews", "", Click::Previews(folder.clone()), None));
                 }
                 if shown {
-                    rows.extend(VIEWS.map(|(view, words)| (words, "", Click::View(view), Some(view == self.nav.view))));
+                    rows.extend(VIEWS.map(|(view, words, _)| (words, "", Click::View(view), Some(view == self.nav.view))));
                 }
             }
         }
@@ -1569,6 +1663,20 @@ fn crumbs(folder: &Path) -> Vec<(String, PathBuf)> {
     down.into_iter().map(|at| (browse::name_of(at), at.to_path_buf())).collect()
 }
 
+/// the buttons at the address's right end: the view's 6 in from it, as back is from its left, and the sort's beside it
+fn right_buttons(address: Rect) -> (Rect, Rect) {
+    let middle = address.top() + (PATH_LINE - 1.0) / 2.0;
+    let view = Rect::from_min_size(Pos2::new(address.right() - 6.0 - ICON_BUTTON.x, middle - ICON_BUTTON.y / 2.0), ICON_BUTTON);
+    (view, view.translate(Vec2::new(-ICON_BUTTON.x - 2.0, 0.0)))
+}
+
+/// the sort as its button's tooltip says it: "sort: date modified, descending"
+fn sort_words(sort: Sort) -> String {
+    let by = browse::SORTS.iter().find(|(_, by)| *by == sort.by).map_or("", |(words, _)| words);
+    let way = browse::WAYS.iter().find(|(_, descending)| *descending == sort.descending).map_or("", |(words, _)| words);
+    format!("sort: {by}, {way}")
+}
+
 /// what was typed into the address: a path, as typed or as the system's file browser copies one, in quotes. none
 /// when nothing was.
 fn typed(text: &str) -> Option<PathBuf> {
@@ -1587,7 +1695,9 @@ fn rest(resting: &mut Option<(PathBuf, f64)>, file: &Path, now: f64) -> f64 {
 }
 
 fn list(folder: &Path) -> Listing {
-    browse::list(folder).map_err(|e| e.to_string())
+    let mut entries = browse::list(folder).map_err(|e| e.to_string())?;
+    browse::read_added(folder, &mut entries);
+    Ok(entries)
 }
 
 fn read_meta(file: &Path) -> Result<Meta, String> {
@@ -1871,9 +1981,9 @@ mod tests {
         assert_eq!(when(at), "2023-11-14 22:13 utc");
         assert_eq!(when(UNIX_EPOCH + Duration::from_secs(951_782_400)), "2000-02-29 00:00 utc");
         assert_eq!((short_size(4_820_000_000), short_size(86_000_000), short_size(512)), ("4.82 GB".into(), "86.0 MB".into(), "512 bytes".into()));
-        let clip = Entry { name: "a.mov".into(), path: "a.mov".into(), kind: Kind::Clip, size: Some(4_820_000_000), modified: Some(at), away: false, link: false };
+        let clip = Entry { name: "a.mov".into(), path: "a.mov".into(), kind: Kind::Clip, size: Some(4_820_000_000), modified: Some(at), created: None, added: None, away: false, link: false };
         assert_eq!(spec(&clip), ("4.82 GB · 2023-11-14 22:13 utc".to_string(), false));
-        let seq = Entry { name: "s.[0001-0240].exr".into(), path: "s.0001.exr".into(), kind: Kind::Sequence { first: 1, last: 240, missing: vec![7, 9], pad: 4 }, size: None, modified: None, away: false, link: false };
+        let seq = Entry { name: "s.[0001-0240].exr".into(), path: "s.0001.exr".into(), kind: Kind::Sequence { first: 1, last: 240, missing: vec![7, 9], pad: 4 }, size: None, modified: None, created: None, added: None, away: false, link: false };
         assert_eq!(spec(&seq), ("238 of 240".to_string(), true));
         assert_eq!(listed_facts(&seq)[1].value, "238 of 240 · 2 missing");
         assert_eq!(holds(&[clip, seq]), "1 video · 1 sequence");
@@ -1915,6 +2025,10 @@ mod tests {
             let has = |family: &str, words: &str| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 11.5), words));
             assert!(["PLACES", "PINNED IN EXPLORER", "VOLUMES", "RECENT", "net"].iter().all(|w| has(MONO_MEDIUM, w)));
             assert!(["open", "reveal", "read metadata", "open selected", "open folder", "list + gallery"].iter().all(|w| has(SANS, w)));
+            // the lists under the address's buttons, chosen or not, and their tooltips
+            let rows = browse::SORTS.map(|(words, _)| words).into_iter().chain(browse::WAYS.map(|(words, _)| words)).chain(VIEWS.map(|(_, words, _)| words));
+            assert!(rows.into_iter().all(|w| has(SANS, w) && has("sans-semibold", w)));
+            assert!(has(SANS, "view: list + gallery") && has(SANS, &sort_words(Sort { by: browse::By::Modified, descending: true })));
             assert!(has(SANS, &recent_name(Path::new(r"D:\delivery_2026-11-20\wall"), |n| n.len() < 12)) && has(SANS, "system (C:)"));
             for (previews, opened) in [(false, false), (false, true), (true, false)] {
                 let (head, rest) = network_note(previews, opened);
@@ -2100,6 +2214,80 @@ mod tests {
         assert_eq!(state.widths.side, 150.0, "a double click puts it back");
     }
 
+    /// at the address's right end, the view and the sort are icons side by side, each narrower than the words the
+    /// view's button held. each opens its list under it, and a row pressed there sets what it says: the folder's
+    /// columns and cards follow the sort, folders first. date added is offered where the system keeps it. resting on a
+    /// button, the pointer gets its tooltip, which names what is chosen.
+    #[test]
+    fn the_view_and_the_sort_are_icons_whose_lists_set_them() {
+        let folder = std::env::temp_dir().join("eyepiece-no-such-sort");
+        let mut state = State::new(Some(folder.clone()), Vec::new(), None);
+        let sized = |name: &str, kind, size| Entry { size, ..listed_entry(&folder, name, kind) };
+        let listing = vec![sized("dome", Kind::Folder, None), sized("a.mov", Kind::Clip, Some(300)), sized("b.mov", Kind::Clip, Some(100)), sized("c.mov", Kind::Clip, Some(200))];
+        state.nav.listings.insert(folder.clone(), Ok(listing));
+        let names = |state: &State| state.nav.entries(&folder).iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        let cards = |state: &State| state.nav.cards().map(|e| e.name.clone()).collect::<Vec<_>>();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0));
+        let mut time = 0.0;
+        // a pass with these events: what it drew
+        let mut pass = |state: &mut State, events: Vec<egui::Event>, wait: f64| {
+            time += wait;
+            let mut raw = egui::RawInput { time: Some(time), screen_rect: Some(area), ..Default::default() };
+            raw.events = events;
+            let mut out = ctx.run_ui(raw, |ui| {
+                state.draw(ui, ui.max_rect());
+            });
+            out.textures_delta.clear();
+            out.shapes.into_iter().filter_map(|s| if let egui::Shape::Text(t) = s.shape { Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)) } else { None }).collect::<Vec<_>>()
+        };
+        let press = |state: &mut State, pass: &mut dyn FnMut(&mut State, Vec<egui::Event>, f64) -> Vec<(String, Pos2)>, at: Pos2| {
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            pass(state, vec![egui::Event::PointerMoved(at)], 0.05);
+            pass(state, vec![button(true)], 0.05);
+            pass(state, vec![button(false)], 0.05);
+            // a list is laid out unseen the first time it is drawn
+            pass(state, Vec::new(), 0.05);
+            pass(state, Vec::new(), 0.05)
+        };
+        let at = |drawn: &[(String, Pos2)], words: &str| drawn.iter().find(|(said, _)| said == words).map(|(_, at)| *at).unwrap_or_else(|| panic!("no {words} drawn"));
+
+        let address = Layout::new(area, state.nav.drawn(), false, state.nav.view, state.widths).address;
+        let (view, sort) = right_buttons(address);
+        let mut words = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| words = ui.painter().layout_no_wrap("list + gallery".to_string(), font(SANS, 12.0), FG).size().x);
+        out.textures_delta.clear();
+        // the view's button as it was: its words, 9 each side and the arrow's 15, inside its edges
+        let was = 1.0 + 9.0 + words + 8.0 + 7.0 + 9.0 + 1.0;
+        assert!(view.width() < was && sort.width() < was, "{} and {} wide, against {was}", view.width(), sort.width());
+        assert!(sort.right() < view.left() && view.right() <= address.right(), "the sort's icon stands left of the view's");
+
+        let drawn = press(&mut state, &mut pass, sort.center());
+        assert_eq!(state.dropdown, Some(Dropdown::Sort));
+        assert_eq!(drawn.iter().any(|(said, _)| said == "date added"), cfg!(target_os = "macos"), "date added where the system keeps it");
+        press(&mut state, &mut pass, at(&drawn, "size"));
+        assert_eq!((state.sort, state.dropdown), (Sort { by: browse::By::Size, descending: false }, None));
+        assert_eq!(names(&state), ["dome", "b.mov", "c.mov", "a.mov"]);
+        let drawn = press(&mut state, &mut pass, sort.center());
+        press(&mut state, &mut pass, at(&drawn, "descending"));
+        assert_eq!(state.sort, Sort { by: browse::By::Size, descending: true });
+        assert_eq!(names(&state), ["dome", "a.mov", "c.mov", "b.mov"]);
+        assert_eq!(cards(&state), ["a.mov", "c.mov", "b.mov"]);
+
+        // resting on the sort's icon, its tooltip names the sort a moment later
+        pass(&mut state, vec![egui::Event::PointerMoved(sort.center())], 0.05);
+        assert!(!pass(&mut state, Vec::new(), 0.1).iter().any(|(said, _)| said.starts_with("sort:")), "the tooltip came at once");
+        assert!(pass(&mut state, Vec::new(), TIP_IN).iter().any(|(said, _)| said == "sort: size, descending"));
+
+        let drawn = press(&mut state, &mut pass, view.center());
+        assert_eq!(state.dropdown, Some(Dropdown::View));
+        press(&mut state, &mut pass, at(&drawn, "list"));
+        assert_eq!((state.nav.view, state.dropdown), (View::List, None));
+        pass(&mut state, vec![egui::Event::PointerMoved(view.center())], 0.05);
+        assert!(pass(&mut state, Vec::new(), TIP_IN + 0.1).iter().any(|(said, _)| said == "view: list"));
+    }
+
     /// what is selected where the keys act is drawn brightly, and what is selected on the way there dimly, in the
     /// columns and in the grid, with no border round either. a press on a row
     /// gives the keys to its column, and a press on a card to the grid.
@@ -2109,7 +2297,7 @@ mod tests {
         let (r, shots) = (place.join("r"), place.join("r").join("shots"));
         let mut state = State::new(Some(r.clone()), Vec::new(), None);
         state.nav = Nav::new(&r, std::slice::from_ref(&place));
-        let entry = |dir: &Path, name: &str, kind| Entry { name: name.into(), path: dir.join(name), kind, size: Some(10), modified: None, away: false, link: false };
+        let entry = |dir: &Path, name: &str, kind| Entry { name: name.into(), path: dir.join(name), kind, size: Some(10), modified: None, created: None, added: None, away: false, link: false };
         let listings = || [(place.clone(), vec![entry(&place, "r", Kind::Folder)]), (r.clone(), vec![entry(&r, "shots", Kind::Folder), entry(&r, "a.mov", Kind::Clip)]), (shots.clone(), vec![entry(&shots, "c.mov", Kind::Clip), entry(&shots, "d.mov", Kind::Clip)])];
         let ctx = egui::Context::default();
         ctx.set_fonts(super::super::fonts());
@@ -2164,7 +2352,7 @@ mod tests {
     fn shift_and_control_presses_pick_several_videos_to_open_together() {
         let folder = std::env::temp_dir().join("eyepiece-no-such-wall");
         let mut state = State::new(Some(folder.clone()), Vec::new(), None);
-        let clip = |name: &str| Entry { name: name.into(), path: folder.join(name), kind: Kind::Clip, size: Some(10), modified: None, away: false, link: false };
+        let clip = |name: &str| Entry { name: name.into(), path: folder.join(name), kind: Kind::Clip, size: Some(10), modified: None, created: None, added: None, away: false, link: false };
         state.nav.listings.insert(folder.clone(), Ok(["a.mov", "b.mov", "c.mov", "d.mov"].map(clip).into()));
         let at = |name: &str| folder.join(name);
         let grid = nav::Focus::Grid;
@@ -2182,7 +2370,7 @@ mod tests {
     }
 
     fn listed_entry(folder: &Path, name: &str, kind: Kind) -> Entry {
-        Entry { name: name.into(), path: folder.join(name), kind, size: Some(10), modified: None, away: false, link: false }
+        Entry { name: name.into(), path: folder.join(name), kind, size: Some(10), modified: None, created: None, added: None, away: false, link: false }
     }
 
     /// the right-click menu offers what the browser does with what it is on, and only what applies there: a video, a

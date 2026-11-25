@@ -518,7 +518,7 @@ mod tests {
     use super::*;
 
     fn entry(dir: &Path, name: &str, kind: Kind) -> Entry {
-        Entry { name: name.to_string(), path: dir.join(name), kind, size: Some(10), modified: None, away: false, link: false }
+        Entry { name: name.to_string(), path: dir.join(name), kind, size: Some(10), modified: None, created: None, added: None, away: false, link: false }
     }
 
     /// a folder that need not exist, named from the top of a local drive: `C:\no\such` on windows, `/no/such` on

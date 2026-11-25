@@ -58,6 +58,8 @@ pub struct Settings {
     pub browser_recent: Vec<PathBuf>,
     /// what the browser shows of a folder: its column and its cards, the cards, or the column
     pub browser_view: crate::browse::View,
+    /// how the browser orders a folder's entries
+    pub browser_sort: crate::browse::Sort,
     /// how wide the sidebar, the folders' columns and the metadata column are
     pub browser_widths: crate::browse::Widths,
     /// a file starts playing when it opens (the owner's ask, 2026-11-24); off, it opens paused on its first frame
@@ -106,6 +108,7 @@ impl Default for Settings {
             browser_folder: None,
             browser_recent: Vec::new(),
             browser_view: crate::browse::View::Both,
+            browser_sort: crate::browse::Sort::default(),
             browser_widths: crate::browse::Widths::default(),
             play_on_open: true,
             browser_opens_in: Opens::ThisTab,
@@ -175,7 +178,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 32] {
+    fn pairs(&self) -> [(&'static str, String); 33] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -202,6 +205,7 @@ impl Settings {
             ("browser_start", path(&self.browser_start)),
             ("browser_recent", recent.join(" | ")),
             ("browser_view", word(&VIEWS, self.browser_view)),
+            ("browser_sort", format!("{} {}", word(&crate::browse::SORTS, self.browser_sort.by), word(&crate::browse::WAYS, self.browser_sort.descending))),
             // the sidebar, the columns as far as the last one dragged, the metadata column
             ("browser_widths", {
                 let w = &self.browser_widths;
@@ -246,6 +250,12 @@ impl Settings {
             // a bar cannot be in a windows path
             "browser_recent" => self.browser_recent = v.split('|').filter_map(|p| folder(p.trim())).collect(),
             "browser_view" => self.browser_view = pick(&VIEWS, v)?,
+            // what it is sorted by, then which way: "date modified descending". a date this system does not keep reads
+            // as nothing
+            "browser_sort" => {
+                let (by, way) = v.rsplit_once(' ')?;
+                self.browser_sort = crate::browse::Sort { by: pick(&crate::browse::SORTS, by).filter(|by| by.kept())?, descending: pick(&crate::browse::WAYS, way)? };
+            }
             "browser_widths" => {
                 // the sidebar, then each column's, then the metadata column's. a column not named has the design's width
                 let n: Vec<f32> = v.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?;
@@ -381,6 +391,7 @@ mod tests {
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
             browser_view: crate::browse::View::List,
+            browser_sort: crate::browse::Sort { by: crate::browse::By::Size, descending: true },
             browser_widths: { let mut w = crate::browse::Widths { side: 180.0, meta: 300.0, ..Default::default() }; w.set_column(2, 200.5); w },
             play_on_open: false,
             browser_opens_in: Opens::NewTab,
@@ -406,12 +417,15 @@ mod tests {
         let dir = scratch("odd");
         let file = dir.join("settings.txt");
         fs::create_dir_all(&dir).unwrap();
-        let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\n";
+        let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\nbrowser_sort = date added descending\r\n";
         fs::write(&file, by_hand).unwrap();
         let loaded = Settings::load_from(&file);
         let defaults = Settings::default();
         assert_eq!((loaded.volume, loaded.guide_color), (0.5, [0xff, 0x88, 0x00]));
         assert_eq!((loaded.mute, loaded.tile), (defaults.mute, defaults.tile));
+        // windows keeps no date added: there the sort stays as it was
+        let added = crate::browse::Sort { by: crate::browse::By::Added, descending: true };
+        assert_eq!(loaded.browser_sort, if cfg!(target_os = "macos") { added } else { defaults.browser_sort });
         loaded.save_to(&file).unwrap();
         let text = fs::read_to_string(&file).unwrap();
         assert!(text.contains("\nfrom_a_newer_build = 42\n"), "{text}");

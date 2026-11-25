@@ -1599,6 +1599,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, start, pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
     ui.set_browser_view(settings.browser_view);
+    ui.set_browser_sort(settings.browser_sort);
     ui.set_browser_widths(settings.browser_widths);
     ui.set_pinned(settings.pin_controls);
     ui.set_buttons_room(window::buttons_room());
@@ -2020,7 +2021,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if settings.browser_folder.as_deref() != Some(ui.browser_folder()) {
             settings.browser_folder = Some(ui.browser_folder().to_path_buf());
         }
-        (settings.browser_view, settings.browser_widths) = (ui.browser_view(), ui.browser_widths());
+        (settings.browser_view, settings.browser_sort, settings.browser_widths) = (ui.browser_view(), ui.browser_sort(), ui.browser_widths());
         if settings.browser_recent != ui.browser_recent() {
             settings.browser_recent = ui.browser_recent().to_vec();
         }

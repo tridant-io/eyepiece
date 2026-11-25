@@ -51,6 +51,9 @@ pub struct Entry {
     pub kind: Kind,
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    /// when it was put in its folder: macos keeps this (`read_added`), windows does not
+    pub added: Option<SystemTime>,
     /// its data is not on this disk (a cloud placeholder, or moved to offline storage): reading it would fetch it.
     /// for a sequence, any of its files
     pub away: bool,
@@ -66,6 +69,58 @@ pub enum View {
     Both,
     Gallery,
     List,
+}
+
+/// how the browser orders a folder's entries: by what, and which way. folders always come before files.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sort {
+    pub by: By,
+    pub descending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum By {
+    #[default]
+    Name,
+    Size,
+    Modified,
+    Created,
+    Added,
+}
+
+/// what a folder can be sorted by and which way, in the words the browser's menu and the settings file use
+pub const SORTS: [(&str, By); 5] = [("name", By::Name), ("size", By::Size), ("date modified", By::Modified), ("date created", By::Created), ("date added", By::Added)];
+pub const WAYS: [(&str, bool); 2] = [("ascending", false), ("descending", true)];
+
+impl By {
+    /// the system keeps it: windows records no date an item was put in its folder, so it is not offered there
+    pub fn kept(self) -> bool {
+        self != By::Added || cfg!(target_os = "macos")
+    }
+}
+
+/// orders a folder's entries by `sort`, folders first. a value the listing does not have (a folder's size, a date not
+/// recorded) comes after the known ones whichever way the sort runs; ties go by name.
+pub fn sort(entries: &mut [Entry], sort: Sort) {
+    fn known<T: Ord>(a: Option<T>, b: Option<T>, descending: bool) -> Ordering {
+        match (a, b) {
+            (Some(a), Some(b)) if descending => b.cmp(&a),
+            (Some(a), Some(b)) => a.cmp(&b),
+            (a, b) => a.is_none().cmp(&b.is_none()),
+        }
+    }
+    let down = sort.descending;
+    entries.sort_by(|a, b| {
+        let by = match sort.by {
+            By::Name if down => natural_cmp(&b.name, &a.name),
+            By::Name => Ordering::Equal,
+            By::Size => known(a.size, b.size, down),
+            By::Modified => known(a.modified, b.modified, down),
+            By::Created => known(a.created, b.created, down),
+            By::Added => known(a.added, b.added, down),
+        };
+        (a.kind != Kind::Folder).cmp(&(b.kind != Kind::Folder)).then(by).then_with(|| natural_cmp(&a.name, &b.name))
+    });
 }
 
 /// how wide the browser's parts are, in the design's px: the sidebar, each folder's column by its place along the
@@ -336,22 +391,101 @@ pub fn list(dir: &Path) -> io::Result<Vec<Entry>> {
         if hidden {
             continue;
         }
-        let modified = meta.modified().ok();
+        let (modified, created) = (meta.modified().ok(), meta.created().ok());
         // from the listing too: on windows a reparse point that names another place (onedrive's and dropbox's
         // folders are reparse points that do not)
         let link = meta.file_type().is_symlink();
         if folder {
-            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified, away, link });
+            folders.push(Entry { name, path: item.path(), kind: Kind::Folder, size: None, modified, created, added: None, away, link });
         } else {
             let kind = if is_media(&name) { Kind::Clip } else { Kind::Other };
-            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified, away, link });
+            files.push(Entry { name, path: item.path(), kind, size: Some(meta.len()), modified, created, added: None, away, link });
         }
     }
-    let mut files = fold_sequences(files);
-    folders.sort_by(|a, b| natural_cmp(&a.name, &b.name));
-    files.sort_by(|a, b| natural_cmp(&a.name, &b.name));
-    folders.append(&mut files);
-    Ok(folders)
+    let mut entries = fold_sequences(files);
+    entries.append(&mut folders);
+    sort(&mut entries, Sort::default());
+    Ok(entries)
+}
+
+/// on macos: fills in when each entry was put in `dir` (a sequence's by its first frame), as its file system keeps it,
+/// from one more listing of the folder, in bulk: nothing is asked of an entry itself. an item the file system keeps no
+/// such date for (a share's may not) has none. the browser's alone: a walk of a tree does without.
+#[cfg(target_os = "macos")]
+pub fn read_added(dir: &Path, entries: &mut [Entry]) {
+    let added = added(dir);
+    for entry in entries {
+        entry.added = entry.path.file_name().and_then(|name| added.get(name)).copied();
+    }
+}
+
+/// windows keeps no date an item was put in its folder.
+#[cfg(not(target_os = "macos"))]
+pub fn read_added(_dir: &Path, _entries: &mut [Entry]) {}
+
+/// when each item of `dir` was put there, by name, as getattrlistbulk gives it (sys/attr.h)
+#[cfg(target_os = "macos")]
+fn added(dir: &Path) -> HashMap<std::ffi::OsString, SystemTime> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::time::{Duration, UNIX_EPOCH};
+    /// `struct attrlist`: the attributes asked for, a set of bits for each group
+    #[repr(C)]
+    struct Asked {
+        count: u16,
+        reserved: u16,
+        common: u32,
+        volume: u32,
+        folder: u32,
+        file: u32,
+        fork: u32,
+    }
+    extern "C" {
+        fn getattrlistbulk(folder: i32, asked: *const Asked, into: *mut u8, size: usize, options: u64) -> i32;
+    }
+    const NAME: u32 = 0x0000_0001;
+    const ADDED: u32 = 0x1000_0000;
+    const ERROR: u32 = 0x2000_0000;
+    const RETURNED: u32 = 0x8000_0000;
+    let mut found = HashMap::new();
+    let Ok(folder) = fs::File::open(dir) else { return found };
+    let asked = Asked { count: 5, reserved: 0, common: RETURNED | ERROR | NAME | ADDED, volume: 0, folder: 0, file: 0, fork: 0 };
+    let mut buffer = vec![0u8; 64 * 1024];
+    let word = |b: &[u8], at: usize| -> Option<u32> { Some(u32::from_ne_bytes(b.get(at..at + 4)?.try_into().ok()?)) };
+    let long = |b: &[u8], at: usize| -> Option<i64> { Some(i64::from_ne_bytes(b.get(at..at + 8)?.try_into().ok()?)) };
+    loop {
+        let count = unsafe { getattrlistbulk(folder.as_raw_fd(), &asked, buffer.as_mut_ptr(), buffer.len(), 0) };
+        if count <= 0 {
+            return found;
+        }
+        let mut start = 0;
+        for _ in 0..count {
+            // each item: its length, the five groups of attributes returned, then those asked for in sys/attr.h's
+            // order, each only when returned: an error, the name's reference, the time added
+            let Some(length) = word(&buffer, start).map(|n| n as usize).filter(|n| *n >= 4) else { break };
+            let item = buffer.get(start..start + length).unwrap_or_default();
+            start += length;
+            let Some(returned) = word(item, 4) else { continue };
+            let mut at = 4 + 5 * 4;
+            if returned & ERROR != 0 {
+                if word(item, at) != Some(0) {
+                    continue;
+                }
+                at += 4;
+            }
+            if returned & NAME == 0 || returned & ADDED == 0 {
+                continue;
+            }
+            // the name's place counts from its reference, and its length takes in the nul that ends it
+            let (Some(offset), Some(len)) = (word(item, at), word(item, at + 4)) else { continue };
+            let from = at + offset as usize;
+            let Some(name) = item.get(from..from + (len as usize).saturating_sub(1)) else { continue };
+            let (Some(secs), Some(nanos)) = (long(item, at + 8), long(item, at + 16)) else { continue };
+            if let (Ok(secs), Ok(nanos)) = (u64::try_from(secs), u32::try_from(nanos)) {
+                found.insert(std::ffi::OsStr::from_bytes(name).to_os_string(), UNIX_EPOCH + Duration::new(secs, nanos));
+            }
+        }
+    }
 }
 
 /// (folder, hidden, away), from what the listing says.
@@ -491,6 +625,8 @@ fn sequence(before: &str, ext: &str, run: &mut [Frame], files: &[Entry]) -> Opti
         kind: Kind::Sequence { first, last, missing, pad },
         size: Some(members().filter_map(|f| f.size).sum()),
         modified: members().filter_map(|f| f.modified).max(),
+        created: members().filter_map(|f| f.created).min(),
+        added: None,
         away: members().any(|f| f.away),
         link: false,
     })
@@ -703,6 +839,76 @@ pub(crate) mod tests {
         names.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(names, ["a", "B", "file1", "file02", "file2", "n99999999999999999999", "n100000000000000000000", "V9", "v9b", "v10", "x20", "x100"]);
         assert_eq!(natural_cmp("a", "A"), "a".cmp("A"));
+    }
+
+    /// every key both ways: folders stay before files, each group in the sort's order; what the listing does not have
+    /// (a folder's size, a date not recorded) comes last whichever way it runs; ties and name go in natural order.
+    #[test]
+    fn a_folder_sorts_by_each_key_both_ways() {
+        let at = |secs: Option<u64>| secs.map(|s| std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
+        // name, kind, size, modified, created, added
+        let made = |name: &str, kind: Kind, size: Option<u64>, [modified, created, added]: [Option<u64>; 3]| Entry {
+            name: name.into(),
+            path: PathBuf::from(name),
+            kind,
+            size,
+            modified: at(modified),
+            created: at(created),
+            added: at(added),
+            away: false,
+            link: false,
+        };
+        let entries = || {
+            vec![
+                made("notes.txt", Kind::Other, None, [Some(5), Some(10), Some(40)]),
+                made("b_dir", Kind::Folder, None, [Some(30), Some(10), None]),
+                made("clip 10.mov", Kind::Clip, Some(300), [None, Some(30), Some(10)]),
+                made("plate.[1001-1002].dpx", seq(1001, 1002, &[], 4), Some(200), [Some(40), Some(5), Some(30)]),
+                made("a_dir", Kind::Folder, None, [Some(20), None, Some(5)]),
+                made("clip 2.mov", Kind::Clip, Some(100), [Some(20), Some(20), None]),
+                made("a.mov", Kind::Clip, Some(100), [Some(10), None, Some(20)]),
+            ]
+        };
+        let plate = "plate.[1001-1002].dpx";
+        let cases: [(By, bool, [&str; 7]); 10] = [
+            (By::Name, false, ["a_dir", "b_dir", "a.mov", "clip 2.mov", "clip 10.mov", "notes.txt", plate]),
+            (By::Name, true, ["b_dir", "a_dir", plate, "notes.txt", "clip 10.mov", "clip 2.mov", "a.mov"]),
+            (By::Size, false, ["a_dir", "b_dir", "a.mov", "clip 2.mov", plate, "clip 10.mov", "notes.txt"]),
+            (By::Size, true, ["a_dir", "b_dir", "clip 10.mov", plate, "a.mov", "clip 2.mov", "notes.txt"]),
+            (By::Modified, false, ["a_dir", "b_dir", "notes.txt", "a.mov", "clip 2.mov", plate, "clip 10.mov"]),
+            (By::Modified, true, ["b_dir", "a_dir", plate, "clip 2.mov", "a.mov", "notes.txt", "clip 10.mov"]),
+            (By::Created, false, ["b_dir", "a_dir", plate, "notes.txt", "clip 2.mov", "clip 10.mov", "a.mov"]),
+            (By::Created, true, ["b_dir", "a_dir", "clip 10.mov", "clip 2.mov", "notes.txt", plate, "a.mov"]),
+            (By::Added, false, ["a_dir", "b_dir", "clip 10.mov", "a.mov", plate, "notes.txt", "clip 2.mov"]),
+            (By::Added, true, ["a_dir", "b_dir", "notes.txt", plate, "a.mov", "clip 10.mov", "clip 2.mov"]),
+        ];
+        for (by, descending, wanted) in cases {
+            let mut sorted = entries();
+            sort(&mut sorted, Sort { by, descending });
+            assert_eq!(sorted.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), wanted, "by {by:?}, descending {descending}");
+        }
+        // the menu offers date added where the system keeps it
+        assert_eq!(SORTS.iter().filter(|(_, by)| by.kept()).count(), if cfg!(target_os = "macos") { 5 } else { 4 });
+    }
+
+    /// the listing says when each entry was made (on windows from the listing's own data, on macos its birth time),
+    /// and on macos when it was put in the folder, read with a listing in bulk. windows keeps no date added. a wrong
+    /// place in what the system returns would give a date far from now.
+    #[test]
+    fn the_listing_says_when_each_entry_was_made_and_on_macos_added() {
+        let mut s = Scratch::new("dates");
+        let since = SystemTime::now() - std::time::Duration::from_secs(5);
+        s.folder("dome");
+        s.files(&["a.mov", "run.0001.png", "run.0002.png"]);
+        let until = SystemTime::now() + std::time::Duration::from_secs(5);
+        let mut entries = list(&s.dir).unwrap();
+        read_added(&s.dir, &mut entries);
+        assert_eq!(entries.len(), 3);
+        let now = |t: Option<SystemTime>| t.is_some_and(|t| t >= since && t <= until);
+        for entry in &entries {
+            assert!(now(entry.created), "{}: made {:?}", entry.name, entry.created);
+            assert_eq!(now(entry.added), cfg!(target_os = "macos"), "{}: added {:?}", entry.name, entry.added);
+        }
     }
 
     #[test]

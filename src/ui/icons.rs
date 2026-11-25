@@ -18,10 +18,15 @@ pub enum Icon {
     Full,
     Close,
     Pin,
-    // the browser's: back and forward along the folders shown, and read again
+    // the browser's: back and forward along the folders shown, and read again; what is shown of a folder (its
+    // column, its cards, or both side by side), and how it is sorted
     Back,
     Forward,
     Refresh,
+    List,
+    Cards,
+    ListAndCards,
+    Sort,
     // markup's tools, and undo
     Rectangle,
     Circle,
@@ -160,6 +165,34 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Refresh => {
             painter.add(Shape::line([arc(8.0, 8.4, 4.8, 20.0, 110.0), arc(8.0, 8.4, 4.8, 110.0, 200.0), arc(8.0, 8.4, 4.8, 200.0, 290.0)].concat().iter().map(|&(x, y)| p(x, y)).collect(), stroke));
             fill(&[(10.43, 1.73), (12.46, 4.92), (8.85, 6.05)]);
+        }
+        // rows: a mark and a line each
+        Icon::List => {
+            for y in [4.0, 8.0, 12.0] {
+                fill(&[(2.5, y - 1.0), (4.5, y - 1.0), (4.5, y + 1.0), (2.5, y + 1.0)]);
+                line(&[(7.0, y), (13.0, y)]);
+            }
+        }
+        Icon::Cards => {
+            for (x, y) in [(2.5, 2.5), (9.0, 2.5), (2.5, 9.0), (9.0, 9.0)] {
+                painter.rect_stroke(Rect::from_min_max(p(x, y), p(x + 4.5, y + 4.5)), 0.0, stroke, egui::StrokeKind::Middle);
+            }
+        }
+        // short rows at the left, two cards stacked at the right
+        Icon::ListAndCards => {
+            for y in [4.0, 8.0, 12.0] {
+                line(&[(2.5, y), (5.5, y)]);
+            }
+            for y in [2.5, 9.0] {
+                painter.rect_stroke(Rect::from_min_max(p(8.5, y), p(13.5, y + 4.5)), 0.0, stroke, egui::StrokeKind::Middle);
+            }
+        }
+        // an arrow up beside an arrow down
+        Icon::Sort => {
+            line(&[(5.0, 13.0), (5.0, 3.0)]);
+            line(&[(2.8, 5.0), (5.0, 2.7), (7.2, 5.0)]);
+            line(&[(11.0, 3.0), (11.0, 13.0)]);
+            line(&[(8.8, 11.0), (11.0, 13.3), (13.2, 11.0)]);
         }
         Icon::Undo => {
             line(&[(5.5, 4.0), (3.0, 6.5), (5.5, 9.0)]);
