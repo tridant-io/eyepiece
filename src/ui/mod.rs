@@ -59,8 +59,9 @@ const TAB_MAX: f32 = 310.0;
 const TAB_PAD: f32 = 40.0;
 /// tabs narrow to this before they run under the window's buttons
 const TAB_MIN: f32 = 64.0;
-/// a played folder's name on its tab is cut to no less than this, for the clip's place and name
-const FOLDER_MIN: f32 = 72.0;
+/// a played folder's name on its tab is cut in its middle to no more than this: the arrows after it stand still as
+/// its clips' names change (the owner's word, 2026-11-25)
+const FOLDER_MAX: f32 = 150.0;
 /// room each side of the arrows on a folder's tab
 const NAV_PAD: f32 = 5.0;
 const PLUS: f32 = 32.0;
@@ -1329,7 +1330,7 @@ impl Ui {
             // a folder's name, its arrows and the clip's place come on top of the room a clip's name has
             let more = place(i).map_or(0.0, |place| {
                 let [title, arrow, count, space] = folder_pieces(&painter, place, MONO_MEDIUM);
-                title.min(FOLDER_MIN) + 2.0 * arrow + count + space
+                title + 2.0 * arrow + count + space
             });
             (label + pad).min(TAB_MAX + more)
         };
@@ -1500,10 +1501,6 @@ impl Ui {
         let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
         let top = text_top(&painter, font(family, 11.5), text.center().y);
         let [title, arrow, count, space] = folder_pieces(&painter, place, family);
-        // the clip's place and name come first: the folder's name is cut in its middle to what they leave, but never
-        // to less than FOLDER_MIN
-        let name_wide = painter.layout_no_wrap(place.clip.to_string(), font(family, 11.5), color).size().x;
-        let title = title.min((text.width() - 2.0 * arrow - count - space - name_wide).max(FOLDER_MIN));
         // the folder's name opens the browser on that folder
         let folder = Rect::from_min_max(text.min, Pos2::new(text.left() + title, text.bottom())).intersect(text);
         let mut lit = false;
@@ -1538,9 +1535,11 @@ impl Ui {
             let color = if lit { FG } else { DIM };
             painter.galley(Pos2::new(left + NAV_PAD, top), painter.layout_no_wrap(glyph.to_string(), font(family, 11.5), color), color);
         }
+        // the place in the middle of its room, which is as wide as the last place's
         let figures = painter.layout_no_wrap(format!("{} of {}", place.at + 1, place.count), font(MONO_MEDIUM, 11.5), FG);
-        dotted(&painter, font(MONO_MEDIUM, 11.5), Pos2::new(at, top), count, FG);
-        painter.galley(Pos2::new(at, top), figures, FG);
+        let from = Pos2::new(at + (count - figures.size().x) / 2.0, top);
+        dotted(&painter, font(MONO_MEDIUM, 11.5), from, figures.size().x, FG);
+        painter.galley(from, figures, FG);
         let name = at + count + arrow + space;
         if name < text.right() {
             painter.galley(Pos2::new(name, top), cut_middle(&painter, place.clip, font(family, 11.5), color, text.right() - name), color);
@@ -1857,11 +1856,12 @@ fn tab_scroll(scroll: f32, widths: &[f32], up: usize, room: f32, came_up: bool) 
     scroll.clamp(0.0, (widths.iter().sum::<f32>() - room).max(0.0))
 }
 
-/// how wide the pieces of a folder tab's label are before the clip's name: the folder's name and its slash, an arrow
-/// with its room, the clip's place, and the space before the name.
+/// how wide the pieces of a folder tab's label are before the clip's name: the folder's name and its slash, cut to
+/// FOLDER_MAX, an arrow with its room, the clip's place, as wide as the last place is, and the space before the name.
+/// none of them changes from clip to clip of a folder, so its arrows stand still.
 fn folder_pieces(painter: &egui::Painter, place: Place, family: &str) -> [f32; 4] {
     let wide = |text: String, family: &str| painter.layout_no_wrap(text, font(family, 11.5), FG).size().x;
-    [wide(format!("{} /", place.folder), family), wide("‹".to_string(), family) + 2.0 * NAV_PAD, wide(format!("{} of {}", place.at + 1, place.count), MONO_MEDIUM), wide(" ".to_string(), family)]
+    [wide(format!("{} /", place.folder), family).min(FOLDER_MAX), wide("‹".to_string(), family) + 2.0 * NAV_PAD, wide(format!("{} of {}", place.count, place.count), MONO_MEDIUM), wide(" ".to_string(), family)]
 }
 
 /// a name cut in its middle to fit `width`, so what ends it (a version, a frame range) stays in view.
@@ -2419,14 +2419,13 @@ pub(super) mod tests {
         assert_eq!(drive_on(&mut ui, &up, &click(12.0 + 20.0, 16.0)), vec![Action::BrowsePlayed]);
         std::thread::sleep(Duration::from_millis(350));
         assert_eq!(drive_on(&mut ui, &up, &click(other + 12.0 + 20.0, 16.0)), vec![Action::SelectTab(1), Action::BrowsePlayed]);
-        // a folder's name too long for the tab (60 letters, 414 wide) is cut so the clip's place and name keep their
-        // room: the tab is 464.1 wide (310, and the least of the name kept, 72, the arrows, the place and its space),
-        // its text 424.1, and the name is cut to 273 (424.1 less the arrows, the place, the space and hap_64.mov)
+        // a folder's name too long for the tab (60 letters, 414 wide) is cut to 150, whatever the clip's name, so
+        // the clip's place and name keep their room and the arrows their place
         let long = "a-project-folder-whose-name-runs-on-and-on-past-any-tab-room";
         let place = |at| Some(Place { folder: long, at, count: 4, clip: "hap_64.mov" });
         let screen = Screen { tabs: vec!["long"], current: 0, places: vec![place(0)], ..screen(Some(model()), None) };
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
-        assert_eq!(drive_on(&mut ui, &screen, &click(12.0 + 273.0 + 16.9 + 41.4 + 8.45, 16.0)), vec![Action::Key(Key::Right, keys::CTRL)], "the next arrow stays on the tab");
+        assert_eq!(drive_on(&mut ui, &screen, &click(12.0 + 150.0 + 16.9 + 41.4 + 8.45, 16.0)), vec![Action::Key(Key::Right, keys::CTRL)], "the next arrow stays on the tab");
         // and the type has the arrows: a sign it lacks is drawn as an empty box
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts());
@@ -2434,6 +2433,22 @@ pub(super) mod tests {
             for family in [MONO, MONO_MEDIUM] {
                 assert!(ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 11.5), "‹›")), "{family} has no arrows");
             }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// stepping through a played folder, its tab's arrows stay where they are (the owner's word, 2026-11-25): what lies
+    /// before the clip's name is as wide for every clip of the folder, whatever its place in it or its name
+    #[test]
+    fn a_folders_tab_keeps_its_arrows_still_from_clip_to_clip() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let folder = "a-project-folder-whose-name-runs-on-and-on-past-any-tab-room";
+            let at = |at: usize, clip| folder_pieces(painter, Place { folder, at, count: 51, clip }, MONO_MEDIUM);
+            assert_eq!(at(8, "a.mov"), at(10, "LN-ACL_v2_Terranea-L_30fps.mov"));
+            assert_eq!(at(0, "a.mov"), at(50, "a.mov"));
         });
         out.textures_delta.clear();
     }
