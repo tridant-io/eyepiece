@@ -6,7 +6,7 @@ a video review player for video professionals: extremely fast, lightweight, and 
 
 [a tridant system](https://tridant.io)
 
-![eyepiece with a clip up, its tabs along the top, the bar of controls along the bottom and the timebar under it](docs/images/hero.png)
+![eyepiece showing a time-lapse of the milky way over an observatory, its tabs along the top, the bar of controls along the bottom and the timebar under it](docs/images/hero.png)
 
 ## why eyepiece
 
@@ -148,7 +148,7 @@ a played folder is a folder's clips, played one after another in name order, in 
 - clips that are not on the disk (a cloud folder's placeholders) and lone stills are left out, and a line says how many. a clip that does not open is passed over, and a line says which.
 - a folder on a network volume is asked about first: a line says how many clips playing it will open, and **open folder** again within a few seconds plays it. there each clip is opened only as it plays, and the list shows names alone.
 
-![a played folder's tab with its list of clips open, one clip's rate in amber](docs/images/played-folder.png)
+![a played folder's tab with its list of clips open, the rates and the size that differ from the rest in amber](docs/images/played-folder.png)
 
 ### the browser
 
@@ -390,3 +390,12 @@ its attribution term means every copy of eyepiece, and every program made from i
 ## credits
 
 eyepiece is built by [tridant](https://tridant.io).
+
+the screenshots show six-second excerpts, without sound and re-encoded, of:
+
+- [Moon Phase and Libration, 2026](https://svs.gsfc.nasa.gov/5587/): NASA's Scientific Visualization Studio, Ernie Wright, Noah Petro and James Tralie. public domain.
+- [Thermonuclear Art](https://svs.gsfc.nasa.gov/12034/): NASA's Goddard Space Flight Center; the SDO Team, Genna Duberstein and Scott Wiessinger, producers. public domain.
+- [Zoom into Webb's View of the Pillars of Creation](https://esawebb.org/videos/weic2216d/): NASA, ESA, CSA, and STScI, ESO, NOIRLab/NSF/AURA, T.A.Rector, B.A.Wolpa, ESA/Hubble, J. DePasquale, A. Koekemoer, A. Pagan, N. Bartmann, M. Zamani. [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- [Dusk till dawn over Paranal](https://www.eso.org/public/videos/uhd_cm_paranal_3/): ESO / C. Malin. [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+none of them endorses eyepiece or tridant.
