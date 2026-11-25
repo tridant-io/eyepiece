@@ -632,7 +632,8 @@ impl Ui {
 
     pub fn pointer_leave(&mut self) {
         self.events.push(egui::Event::PointerGone);
-        self.inside = false;
+        // the mark's card goes with the pointer, and waits for it to rest on the mark again
+        (self.inside, self.card, self.mark_since) = (false, None, None);
     }
 
     /// true while a field in a menu is being typed into: keys then go there, not to the player.
@@ -837,7 +838,9 @@ impl Ui {
             _ => None,
         });
         self.moved = false;
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown: self.shown, hovered: self.time_hover, cross: self.cross , resize: screen.browsing && self.browser.over_edge()}
+        // under a panel the strip stays up, though the bar steps aside: the pointer shows, and the mac's buttons stay
+        let shown = self.shown || self.panel.is_some();
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: screen.browsing && self.browser.over_edge()}
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -2428,6 +2431,18 @@ pub(super) mod tests {
         let beside = (8.0, 180.0, None);
         let actions = drive(&mut ui, &[beside, beside, (beside.0, beside.1, Some((Left, true))), (beside.0, beside.1, Some((Left, false))), (beside.0, beside.1, Some((Left, true))), (beside.0, beside.1, Some((Left, false)))]);
         assert_eq!(actions, vec![]);
+    }
+
+    /// a panel keeps the strip up, and says so: in fullscreen the pointer then shows, to press the panel's controls,
+    /// and on a mac the system's window buttons stay with the strip.
+    #[test]
+    fn a_panel_in_fullscreen_keeps_the_pointer_and_the_strip() {
+        let mut ui = Ui::new((1088, 612), 1.0, false, None, None);
+        let screen = Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: true, toast: None, settings: &DEFAULTS };
+        ui.toggle_settings();
+        let mut out = ui.run(&screen);
+        out.textures.clear();
+        assert!(out.shown, "the strip is up under a panel");
     }
 
     /// the keys of a panel (figs. 33, 39): esc closes either. help keeps the table of keys' rule: ? closes it, and any
