@@ -10,6 +10,7 @@ use super::timeline::Timeline;
 use super::video_source::{Times, VideoLane};
 use crate::browse::{self, Kind};
 use crate::timecode::Timecode;
+use crate::view::Look;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
@@ -33,6 +34,14 @@ pub struct Clip {
     /// what the frames are called by the clock: the file's own timecode, else counted from 00:00:00:00. none for a
     /// clip with no one rate to count by
     pub clock: Option<Timecode>,
+    /// how the file asks the picture to be turned for the screen, as a phone held upright tags the picture it stores
+    /// on its side. what the user turns comes on top of it (`Look::then`)
+    pub turn: Look,
+}
+
+/// how a stream asks to be turned, when that is a quarter turn; otherwise it is shown as stored
+fn turn(input: &Input, video: &Video) -> Look {
+    input.turn(video.index).and_then(|(degrees, mirror)| Look::upright(degrees, mirror)).unwrap_or_default()
 }
 
 /// a clip's clock: its own timecode when the file carries one that reads (`own`: as written, and its track's frame
@@ -275,7 +284,7 @@ impl Clip {
             }
         };
         let clock = clock(&timeline, meta::timecode_tag(&input, video.index).map(|text| (text, input.timecode_base())));
-        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false, clock })
+        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false, clock, turn: turn(&input, &video) })
     }
 
     /// a still, or the numbered run of stills it is a frame of, opened on its frame. the file's own picture gives the
@@ -291,7 +300,12 @@ impl Clip {
         let timeline = Timeline::even((den, num), run.frames, 1);
         let lane = SeqLane::open(run.missing.clone(), (run.at, image), run.path_of)?;
         let clock = clock(&timeline, None);
-        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed, clock })
+        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed, clock, turn: Look::default() })
+    }
+
+    /// the picture's size upright, as the file asks it shown
+    pub fn upright(&self) -> (usize, usize) {
+        self.turn.shown((self.width, self.height))
     }
 
     /// starts decoding, for a clip that was waiting. `hardware` is the renderer's device, when there is one.
@@ -331,7 +345,7 @@ fn rate_words(timeline: &Timeline, assumed: bool) -> String {
     if assumed { format!("{text} assumed") } else { text }
 }
 
-/// what a played folder's list says of one of its clips: its size, and its frames and rate, which a file that
+/// what a played folder's list says of one of its clips: its size upright, and its frames and rate, which a file that
 /// would have to be read through to count them does not give.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Facts {
@@ -370,7 +384,8 @@ pub fn facts(path: &str) -> Result<Facts, String> {
     let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
     let timeline = stored(path, &input, &video, &Count::Known).ok().map(|(samples, shown)| frames(&video, samples, shown).1);
     let fps = timeline.as_ref().filter(|t| t.frames() > 1).map(Timeline::fps);
-    Ok(Facts { width: video.width, height: video.height, frames: timeline.as_ref().map(Timeline::frames), rate: timeline.as_ref().map(|t| rate_words(t, false)), fps })
+    let (width, height) = turn(&input, &video).shown((video.width, video.height));
+    Ok(Facts { width, height, frames: timeline.as_ref().map(Timeline::frames), rate: timeline.as_ref().map(|t| rate_words(t, false)), fps })
 }
 
 #[cfg(test)]
@@ -410,6 +425,22 @@ mod tests {
         assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), ("h.264", 12, "15360/512 fps"));
         let c = Clip::open(&media("prores_64.mov")).expect("open");
         assert_eq!((c.codec, c.timeline.frames()), ("prores", 4));
+    }
+
+    /// a file tagged to be turned is turned as ffmpeg's own player turns it, measured (2026-11-24) with its autorotate
+    /// on clips tagged by -display_rotation, -display_hflip and -display_vflip: each matrix as ffmpeg writes it, then
+    /// the quarter turns clockwise and the mirror first that it makes of it. the test clips are read for their tag
+    #[test]
+    fn a_clip_is_turned_as_its_file_asks() {
+        let matrix = |a: i32, b: i32, c: i32, d: i32| ff::rotation([a << 16, b << 16, 0, c << 16, d << 16, 0, 0, 0, 1 << 30]);
+        let made = |(degrees, mirror)| Look::upright(degrees, mirror).map(|look| (look.turns, look.mirror));
+        // rotation 90, 180 and 270, then 90 with hflip, then vflip alone
+        let asked = [matrix(0, -1, 1, 0), matrix(-1, 0, 0, -1), matrix(0, 1, -1, 0), matrix(0, -1, -1, 0), matrix(1, 0, 0, -1)];
+        assert_eq!(asked.map(made), [(3, false), (2, false), (1, false), (1, true), (2, true)].map(Some));
+        for (name, turns, upright) in [("h264_320.mp4", 0, (320, 180)), ("h264_320_turn90.mp4", 1, (180, 320)), ("h264_320_turn180.mp4", 2, (320, 180)), ("h264_320_turn270.mp4", 3, (180, 320))] {
+            let c = Clip::open(&media(name)).expect("open");
+            assert_eq!((c.turn, (c.width, c.height), c.upright()), (Look { turns, ..Look::default() }, (320, 180), upright), "{name}");
+        }
     }
 
     #[test]
@@ -526,10 +557,10 @@ mod tests {
     /// a folder's list says of a clip what opening it would, from its header alone
     #[test]
     fn a_clips_facts_are_its_headers() {
-        for name in ["hapq_64.mov", "h264_320.mp4", "prores_64.mov", "hevc10_64.mp4", "seq.0001.png", "still_8bit.png", "still_half.exr"] {
+        for name in ["hapq_64.mov", "h264_320.mp4", "h264_320_turn90.mp4", "prores_64.mov", "hevc10_64.mp4", "seq.0001.png", "still_8bit.png", "still_half.exr"] {
             let clip = Clip::open(&media(name)).unwrap_or_else(|e| panic!("{e}"));
             let found = facts(&media(name)).unwrap();
-            assert_eq!((found.width, found.height, found.frames, found.rate.clone()), (clip.width, clip.height, Some(clip.timeline.frames()), Some(clip.rate_text())), "{name}");
+            assert_eq!(((found.width, found.height), found.frames, found.rate.clone()), (clip.upright(), Some(clip.timeline.frames()), Some(clip.rate_text())), "{name}");
             assert_eq!(found.fps, (clip.timeline.frames() > 1).then(|| clip.timeline.fps()), "{name}");
         }
         // a rate is another by its value, not by how the file spells it

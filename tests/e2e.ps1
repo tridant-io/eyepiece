@@ -531,7 +531,29 @@ Move-Pointer 215 150; Send-Key 0xBB 6
 Assert-Title 'with chroma = nearest the same pixel is the nearest sample''s' ' . 1600% . x 107 y 75 . 0 255 1$'
 Stop-Player
 (Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^chroma' } | Set-Content -LiteralPath $settings
-foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $first, $shots) {
+# a clip whose file asks to be turned, as a phone held upright tags the picture it stores on its side, is shown
+# upright, as other players show it. the title names the file's size as stored and says nothing of the turn, which
+# is not the user's. here 320 x 180 tagged a quarter clockwise, so 180 x 320 upright: at 1:1 the middle of the window
+# is the file's pixel 160, 89, and 40 right of it is up the file's picture, at the same x
+Start-Player (Join-Path $media 'h264_320_turn90.mp4')
+Assert-Frame 'a clip the file asks to turn opens, and the title says nothing of the turn' 0 24
+$mid = Get-Middle
+Move-Pointer $mid[0] $mid[1]; Send-Key 0x31
+Assert-Title 'at 1:1 the middle of the upright picture is the middle of the file''s' ' . 100% . x 160 y 89 . '
+Move-Pointer ($mid[0] + 40) $mid[1]
+Wait-Title 'right of the middle is up the file''s picture: the pixel named is the file''s own' { param($t) $t -match ' x 160 y (\d+) ' -and [int]$Matches[1] -lt 60 } 'x 160 and y under 60'
+Send-Key 0x51; Assert-Title 'Q turns it a quarter more, and that is all the chip says' ' fps . rotated 90.$'
+Send-Key 0x51 3; Assert-Frame 'three more quarters and it is as the file asks again' 0 24
+$upright = Join-Path $shots 'h264_320_turn90.f000000.png'
+Send-Key 0x53
+Confirm-That 'S saves the frame upright' ((Wait-File $upright) -and (Get-PngSize $upright) -eq '180 x 320') "no $upright of 180 x 320"
+Stop-Player
+# the window takes the upright picture's shape: taller than wide for 1280 x 720 turned a quarter
+Start-Player (Join-Path $media 'h264_720_turn90.mp4')
+Assert-Frame 'a 1280 x 720 clip the file asks to turn opens' 0 2
+Confirm-That 'in a window taller than wide' ((Get-Height) -gt (Get-Width)) "the picture area is $(Get-Width) x $(Get-Height)"
+Stop-Player
+foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $first, $upright, $shots) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 

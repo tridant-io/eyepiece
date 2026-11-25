@@ -45,7 +45,8 @@ pub fn set_limit(bytes: u64) {
 /// where `open` keeps the cache, under the os cache folder
 const PLACE: [&str; 3] = ["eyepiece", "cache", "previews"];
 const MAGIC: [u8; 8] = *b"EYEPPREV";
-const VERSION: u32 = 1;
+// 2: a clip whose file asks to be turned is pictured upright, which the pictures kept before were not
+const VERSION: u32 = 2;
 /// magic, version, width, height, clip frames, picture count, packed length, checksum
 const HEAD: usize = 44;
 // far more than a card shows, so a file that claims more is damaged or not ours
@@ -426,7 +427,7 @@ mod tests {
             ("one byte short", good[..good.len() - 1].to_vec()),
             ("one byte over", [good.as_slice(), &[0]].concat()),
             ("magic", set(0, b"EYEPSTRX")),
-            ("version", set(8, &2u32.to_le_bytes())),
+            ("version", set(8, &(VERSION + 1).to_le_bytes())),
             ("too wide", set(12, &641u32.to_le_bytes())),
             ("no height", set(16, &0u32.to_le_bytes())),
             ("frames outside the clip", set(20, &10u64.to_le_bytes())),

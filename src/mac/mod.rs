@@ -58,7 +58,7 @@ pub fn run(first: Option<String>) -> Result<(), String> {
     });
     // with no clip to give it a shape, the window is as it was left, when that is kept, fitted to this display
     let client = match (&first, settings.window_size.filter(|_| settings.remember_size)) {
-        (Some((_, Ok(clip))), _) => window::client_for((clip.width, clip.height)),
+        (Some((_, Ok(clip))), _) => window::client_for(clip.upright()),
         (_, Some((w, h))) => window::client_for((w as usize, h as usize)),
         _ => window::client_for_none(),
     };

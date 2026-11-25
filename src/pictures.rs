@@ -94,7 +94,8 @@ impl Reader for Open<'_> {
     }
 
     fn size(&self) -> (u32, u32) {
-        (self.view.clip.width as u32, self.view.clip.height as u32)
+        let (w, h) = self.view.clip.upright();
+        (w as u32, h as u32)
     }
 
     fn rate(&self) -> f64 {
@@ -237,6 +238,20 @@ mod tests {
         let seam = spare::compare(&last, &first);
         assert!(!seam.identical && seam.change > 0.0, "{seam:?}");
         assert!(spare::compare(&first, &open.read(0, 64, 64).expect("the first again")).identical);
+    }
+
+    /// a clip whose file asks to be turned is read upright, for its card and the timebar: its size turned, and each
+    /// pixel the one the same clip untagged has there once turned a quarter clockwise.
+    #[test]
+    fn a_clip_the_file_turns_is_read_upright() {
+        let gpu = Gpu::offscreen().expect("a graphics device");
+        let mut plain = Open::new(&gpu, &media("h264_320.mp4")).expect("it opens");
+        let mut turned = Open::new(&gpu, &media("h264_320_turn90.mp4")).expect("it opens");
+        assert_eq!((plain.size(), turned.size()), ((320, 180), (180, 320)));
+        let (plain, turned) = (plain.read(5, 320, 180).expect("the frame"), turned.read(5, 180, 320).expect("the frame"));
+        for (x, y) in (0..180).flat_map(|x| (0..320).map(move |y| (x, y))) {
+            assert_eq!(turned[(y * 180 + x) * 4..][..4], plain[((179 - x) * 320 + y) * 4..][..4], "pixel {x},{y}");
+        }
     }
 
     /// a picture of a real clip, through a device with no window: the frame asked for, at the size asked for.

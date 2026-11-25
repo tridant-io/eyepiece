@@ -7,6 +7,7 @@ use super::ff::{self, Input, Sample};
 use super::hap::{self, Tex};
 use super::still::{self, Samples};
 use super::timeline::Timeline;
+use crate::view::Look;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::UNIX_EPOCH;
@@ -61,6 +62,7 @@ impl Meta {
         let (count, hidden, all_key) = (stored.len(), stored.iter().filter(|s| s.hidden).count(), stored.iter().all(|s| s.key));
         let (samples, timeline, _) = clip::frames(&video, stored, shown);
         let keys = key_row(&samples);
+        let rotation = input.turn(video.index).and_then(|(degrees, mirror)| rotation_row(degrees, mirror));
         // before `probe`, which mixes in what the decoder finds or assumes
         let container = input.color(video.index);
         let audio = input.audio();
@@ -162,7 +164,9 @@ impl Meta {
         };
         let mut picture = vec![codec];
         picture.extend(profile);
-        picture.extend([row("size", format!("{} × {}", video.width, video.height), Tone::Plain), aspect_row(input.pixel_aspect(video.index), video.width, video.height), rate_row(&timeline), row("frames", frames, Tone::Plain)]);
+        picture.extend([row("size", format!("{} × {}", video.width, video.height), Tone::Plain), aspect_row(input.pixel_aspect(video.index), video.width, video.height)]);
+        picture.extend(rotation);
+        picture.extend([rate_row(&timeline), row("frames", frames, Tone::Plain)]);
         picture.extend(keys);
         picture.extend([duration_row(&timeline), rate, depth, alpha]);
         picture.extend(color);
@@ -448,6 +452,20 @@ fn aspect_row((container, stream): (Option<(i32, i32)>, Option<(i32, i32)>), wid
     }
 }
 
+/// how the file asks the picture to be turned (its display matrix: `ff::rotation`), in the quarter turns clockwise
+/// the player makes, as the chip counts them. none when it asks for no change. a turn that is not a quarter is not
+/// made, and the row says so.
+fn rotation_row(degrees: f64, mirror: bool) -> Option<Row> {
+    let value = match Look::upright(degrees, mirror) {
+        Some(look) if look == Look::default() => return None,
+        Some(look) if mirror => format!("{}° · mirrored, then turned, as the file asks", look.turns as u32 * 90),
+        Some(look) => format!("{}° · turned as the file asks", look.turns as u32 * 90),
+        None if degrees.is_finite() => format!("{}° · not a quarter turn: shown as stored", decimal(degrees, 2)),
+        None => return Some(row("rotation", "a display matrix that is not a turn: shown as stored", Tone::Fault)),
+    };
+    Some(row("rotation", value, Tone::Plain))
+}
+
 /// the coded stream's profile and level, in the forms the codecs' own documents give: h.264's level 51 is 5.1,
 /// hevc's 153 (thirty times the level) is 5.1 too.
 fn profile_row(codec: &str, (name, level): (Option<String>, Option<i32>)) -> Row {
@@ -580,6 +598,23 @@ mod tests {
         assert_eq!(key_row(&samples(&[true, false, false])).unwrap().value, "one, the first");
         let m = read("h264_320.mp4");
         assert_eq!((get(&m, "profile").0, get(&m, "key frames").0), ("high · level 1.3", "every 8 frames · 3 in all"));
+    }
+
+    /// a file that asks to be turned (a phone held upright stores its picture on its side) says by how much, in the
+    /// quarter turns clockwise the player makes, as the chip counts them. its size is still the file's, as stored. a
+    /// file that asks nothing has no row.
+    #[test]
+    fn rotation_is_what_the_file_asks_and_the_player_does() {
+        for (name, said) in [("h264_320_turn90.mp4", "90° · turned as the file asks"), ("h264_320_turn180.mp4", "180° · turned as the file asks"), ("h264_320_turn270.mp4", "270° · turned as the file asks")] {
+            let m = read(name);
+            assert_eq!((get(&m, "rotation"), get(&m, "size").0), ((said, Tone::Plain), "320 × 180"), "{name}");
+        }
+        assert!(read("h264_320.mp4").groups.iter().flatten().all(|r| r.label != "rotation"));
+        let said = |degrees: f64, mirror: bool| rotation_row(degrees, mirror).map(|r| (r.value, r.tone));
+        assert_eq!(said(0.0, false), None, "a matrix that changes nothing");
+        assert_eq!(said(90.0, true), Some(("90° · mirrored, then turned, as the file asks".to_string(), Tone::Plain)));
+        assert_eq!(said(45.0, false), Some(("45° · not a quarter turn: shown as stored".to_string(), Tone::Plain)));
+        assert_eq!(said(f64::NAN, false).map(|s| s.1), Some(Tone::Fault));
     }
 
     #[test]

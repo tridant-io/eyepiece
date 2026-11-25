@@ -25,6 +25,22 @@ pub struct Look {
 }
 
 impl Look {
+    /// the look a file asks for (`ff::Input::turn`): `degrees` clockwise, mirrored first when `mirror`. None when
+    /// that is not a quarter turn, which is shown as stored.
+    pub fn upright(degrees: f64, mirror: bool) -> Option<Look> {
+        let quarters = (degrees / 90.0).round();
+        // within a degree, as ffmpeg's own player takes it
+        ((degrees - quarters * 90.0).abs() < 1.0).then(|| Look { mirror, turns: quarters.rem_euclid(4.0) as u8, ..Look::default() })
+    }
+
+    /// this look with `then` on top: the file's own turn, then the user's, whose mirror and flip are of the picture
+    /// as this look shows it. the channel is `then`'s.
+    pub fn then(self, then: Look) -> Look {
+        // a picture turned a quarter is mirrored, as shown, by flipping it before the turn
+        let (mirror, flip) = if self.turns % 2 == 1 { (then.flip, then.mirror) } else { (then.mirror, then.flip) };
+        Look { channel: then.channel, mirror: self.mirror != mirror, flip: self.flip != flip, turns: (self.turns + then.turns) % 4 }
+    }
+
     /// the picture's size as shown: a quarter turn swaps its sides.
     pub fn shown(&self, size: (usize, usize)) -> (usize, usize) {
         if self.turns % 2 == 1 {
@@ -310,6 +326,33 @@ mod tests {
         let both = Look { mirror: true, turns: 1, ..Look::default() };
         assert_eq!(both.source_pixel((1, 0), size), (3, 0));
         assert_eq!(Look { flip: true, turns: 3, channel: Channel::Red, ..Look::default() }.label().unwrap(), "flipped · rotated 270° · red only");
+    }
+
+    /// a file's turn is taken to the nearest quarter within a degree, counted clockwise; anything else is no quarter
+    #[test]
+    fn a_files_angle_is_a_quarter_turn_or_none() {
+        let turns = |degrees: f64| Look::upright(degrees, false).map(|look| look.turns);
+        assert_eq!([0.0, 90.0, 180.0, 270.0, -90.0, 360.0, 90.6, 269.4].map(turns), [0, 1, 2, 3, 3, 0, 1, 3].map(Some));
+        assert_eq!([45.0, 91.5, f64::NAN].map(turns), [None; 3]);
+        assert_eq!(Look::upright(180.0, true), Some(Look { mirror: true, turns: 2, ..Look::default() }));
+    }
+
+    /// the user's look on top of the file's own turn reads the same pixel of the file as the two one after the other,
+    /// for every turn a file can ask for and every look the user can choose; the user's channel is the one shown
+    #[test]
+    fn the_users_look_on_top_of_the_files_turn_reads_the_same_pixel() {
+        let looks: Vec<Look> = (0..16).map(|i| Look { channel: Channel::Rgb, mirror: i & 1 != 0, flip: i & 2 != 0, turns: (i >> 2) as u8 }).collect();
+        let size = (5, 3);
+        for file in looks.iter().filter(|l| !l.flip) {
+            let upright = file.shown(size);
+            for user in &looks {
+                let both = file.then(Look { channel: Channel::Red, ..*user });
+                assert_eq!((both.shown(size), both.channel), (user.shown(upright), Channel::Red));
+                for shown in (0..both.shown(size).0).flat_map(|x| (0..both.shown(size).1).map(move |y| (x, y))) {
+                    assert_eq!(both.source_pixel(shown, size), file.source_pixel(user.source_pixel(shown, upright), size), "{file:?} then {user:?} at {shown:?}");
+                }
+            }
+        }
     }
 
     #[test]

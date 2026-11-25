@@ -315,6 +315,15 @@ impl Input {
         }
     }
 
+    /// how a stream asks to be turned for the screen, from its display matrix (`rotation`). None when it has none.
+    pub fn turn(&self, stream: usize) -> Option<(f64, bool)> {
+        unsafe {
+            let par = (**(*self.ctx).streams.add(stream)).codecpar;
+            let side = ffi::av_packet_side_data_get((*par).coded_side_data, (*par).nb_coded_side_data, ffi::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX);
+            (!side.is_null() && (*side).size >= 36).then(|| rotation(ptr::read_unaligned((*side).data as *const [i32; 9])))
+        }
+    }
+
     /// after `probe`: the coded stream's profile, by the codec's own name for it, and its level as the stream numbers
     /// it. none where the stream does not say.
     pub fn profile(&self, stream: usize) -> (Option<String>, Option<i32>) {
@@ -371,6 +380,18 @@ impl Drop for Input {
             drop(Box::from_raw(self.io));
         }
     }
+}
+
+/// what a display matrix asks of a player: degrees clockwise from 0 to 360, and whether the picture is mirrored
+/// first. ffmpeg's angle is counter-clockwise. a matrix that turns the picture over (its determinant is negative) has
+/// its mirror taken out first, as a mirror of the stored picture's left and right.
+pub fn rotation(mut m: [i32; 9]) -> (f64, bool) {
+    let mirror = (m[0] as i64 * m[4] as i64) < (m[1] as i64 * m[3] as i64);
+    if mirror {
+        // the stored picture's x is what these two multiply
+        (m[0], m[1]) = (-m[0], -m[1]);
+    }
+    ((-unsafe { ffi::av_display_rotation_get(m.as_ptr()) }).rem_euclid(360.0), mirror)
 }
 
 /// one audio stream as the container describes it.

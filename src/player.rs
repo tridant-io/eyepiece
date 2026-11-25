@@ -72,7 +72,7 @@ impl View {
         let mut transport = Transport::new(clip.timeline.frames(), clip.timeline.fps(), hz).with_starts(clip.timeline.starts());
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
-        let framing = Framing::new((clip.width, clip.height));
+        let framing = Framing::new(clip.upright());
         Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None })
     }
 
@@ -180,39 +180,54 @@ impl View {
         (self.clip.width, self.clip.height)
     }
 
-    /// the picture, turned as the look has it, where the framing puts it. nothing during the pause on black.
+    /// how the picture is turned for the screen: as the file asks, then as the look has it.
+    fn turned(&self) -> Look {
+        self.clip.turn.then(self.look)
+    }
+
+    /// the file's pixel under a point of the window, when the picture is there.
+    fn pixel_at(&self, at: (f32, f32), window: (f32, f32)) -> Option<(usize, usize)> {
+        self.framing.pixel_at(at, window).map(|shown| self.turned().source_pixel(shown, self.size()))
+    }
+
+    /// the picture, turned as the file asks and the look has it, where the framing puts it. nothing during the pause
+    /// on black.
     fn draw(&self, gpu: &Gpu) {
         let (true, Show::Frame(_)) = (self.drawable(), self.transport.show()) else { return };
-        let (to_source, to_source_add) = self.look.to_source(self.size());
-        let channel = match self.look.channel {
+        self.draw_in(gpu, self.framing.rect((gpu.w as f32, gpu.h as f32)), self.turned());
+    }
+
+    /// the frame in the painter, turned by `look`, drawn into `rect` of the target.
+    fn draw_in(&self, gpu: &Gpu, rect: (f32, f32, f32, f32), look: Look) {
+        let (to_source, to_source_add) = look.to_source(self.size());
+        let channel = match look.channel {
             Channel::Rgb => 0.0,
             Channel::Red => 1.0,
             Channel::Green => 2.0,
             Channel::Blue => 3.0,
             Channel::Alpha => 4.0,
         };
-        let shown = self.look.shown(self.size());
-        self.paint.draw(gpu, self.framing.rect((gpu.w as f32, gpu.h as f32)), (shown.0 as f32, shown.1 as f32), Some((to_source, to_source_add, channel)));
+        let shown = look.shown(self.size());
+        self.paint.draw(gpu, rect, (shown.0 as f32, shown.1 as f32), Some((to_source, to_source_add, channel)));
     }
 
     /// the frame in the painter, drawn `w` x `h` into a picture of our own and read back (`Gpu::read_pixels`): the
-    /// file's own frame as it is stored, whatever the window shows.
+    /// file's own frame, upright as the file asks, whatever the window shows.
     pub(crate) fn read(&self, gpu: &Gpu, w: u32, h: u32) -> Option<Vec<u16>> {
         self.picture(gpu, (w, h), Some((0.0, 0.0, w as f32, h as f32)), |_| {})
     }
 
     /// the frame in the painter drawn into a picture of our own `size` big and read back, with `over` painted after
-    /// it: the file's own frame as it is stored, at `at`; or with no place, the window's picture as it is shown (zoom,
-    /// pan and look) without the controls.
+    /// it: the file's own frame, upright as the file asks, at `at`; or with no place, the window's picture as it is
+    /// shown (zoom, pan and look) without the controls.
     fn picture(&self, gpu: &Gpu, size: (u32, u32), at: Option<(f32, f32, f32, f32)>, over: impl FnOnce(&Gpu)) -> Option<Vec<u16>> {
         if !self.drawable() {
             return None;
         }
-        let file = (self.clip.width as f32, self.clip.height as f32);
         let _lock = gpu.locked();
         gpu.read_pixels(size.0, size.1, |gpu| {
             match at {
-                Some(rect) => self.paint.draw(gpu, rect, file, None),
+                Some(rect) => self.draw_in(gpu, rect, self.clip.turn),
                 None => self.draw(gpu),
             }
             over(gpu);
@@ -301,7 +316,7 @@ impl View {
     /// the zoom as it is.
     fn set_look(&mut self, look: Look) {
         if (look.mirror, look.flip, look.turns) != (self.look.mirror, self.look.flip, self.look.turns) {
-            self.framing = Framing::new(look.shown(self.size()));
+            self.framing = Framing::new(self.clip.turn.then(look).shown(self.size()));
         }
         self.look = look;
     }
@@ -397,8 +412,9 @@ impl View {
             pixel,
             value: self.probe.filter(|(_, at, _)| Some(*at) == pixel).map(|(.., value)| value),
             picture: self.framing.rect(window),
-            shown_size: self.look.shown(self.size()),
+            shown_size: self.turned().shown(self.size()),
             look: self.look,
+            turned: self.turned(),
             guides: guides(settings),
             extras: Extras { caption: settings.screenshot_caption, guides: settings.screenshot_guides, markup: settings.screenshot_markup },
             // the tab's, not the clip's: `play` fills them in
@@ -741,7 +757,7 @@ fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: O
         (why, Some(old)) => {
             view.transport.set_speed(old.transport.speed());
             view.set_look(old.look);
-            let same = (view.size() == old.size(), view.clip.timeline.frames() == old.clip.timeline.frames());
+            let same = (view.clip.upright() == old.clip.upright(), view.clip.timeline.frames() == old.clip.timeline.frames());
             if why == Why::Changed || (why == Why::Stepped && same == (true, true)) {
                 view.transport.go(old.transport.frame() as i64);
             }
@@ -1006,11 +1022,11 @@ impl Tabs {
         }
         let carried = self.tab().view.as_mut().map(|v| {
             v.transport.set_playing(false);
-            (v.size(), v.clip.timeline.frames(), v.transport.frame(), v.framing.clone(), v.look)
+            (v.clip.upright(), v.clip.timeline.frames(), v.transport.frame(), v.framing.clone(), v.look)
         });
         self.up = to;
         if let (Some((size, frames, frame, framing, look)), Some(v)) = (carried, self.tab().view.as_mut()) {
-            if (v.size(), v.clip.timeline.frames()) == (size, frames) {
+            if (v.clip.upright(), v.clip.timeline.frames()) == (size, frames) {
                 v.transport.go(frame as i64);
                 (v.framing, v.look) = (framing, look);
             }
@@ -1292,7 +1308,7 @@ impl Tabs {
             tab.played = coming.played.take();
             // a folder's window is sized when its headers are read; where they are not read, to its first clip
             if tab.played.as_ref().is_none_or(|played| !played.local) {
-                window::fit(window, window::client_for((view.clip.width, view.clip.height)));
+                window::fit(window, window::client_for(view.clip.upright()));
             }
             tab.mode = opening_mode(tab.played.is_some(), settings);
             tab.held = 0;
@@ -1355,7 +1371,7 @@ fn shoot(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Sett
     let alpha = what == Shot::Frame && v.carries_alpha() && shot::transparent(&pixels);
     let stem = shot::stem(&v.clip.name, v.transport.frame() + settings.first_frame) + if what == Shot::View { ".view" } else { "" };
     let (deep, folder, wake) = (v.depth() > 8, shots_folder(settings), wake.clone());
-    let mut detail = if what == Shot::View { "as shown".to_string() } else { format!("{} × {}", v.clip.width, v.clip.height) };
+    let mut detail = if what == Shot::View { "as shown".to_string() } else { format!("{} × {}", v.clip.upright().0, v.clip.upright().1) };
     if !with.is_empty() {
         detail += &format!(" · with {}", with.join(", "));
     }
@@ -1369,18 +1385,18 @@ fn shoot(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Sett
 }
 
 /// what a screenshot is made of: its size, its pixels as `shot::save` takes them, and what the screenshot menu's
-/// switches put in it besides the picture. the frame is the file's own at its own size, with the guides and the marks
-/// drawn as fig. 20 draws them on a frame 1200 wide, scaled to its width (never smaller than at 100% on screen); the
-/// view is the window's picture, with them as the window shows them. a caption goes under either. the copy is the
-/// frame alone.
+/// switches put in it besides the picture. the frame is the file's own at its own size, upright as the file asks, with
+/// the guides and the marks drawn as fig. 20 draws them on a frame 1200 wide, scaled to its width (never smaller than
+/// at 100% on screen); the view is the window's picture, with them as the window shows them. a caption goes under
+/// either. the copy is the frame alone.
 fn shot_pixels(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Settings, scale: f32) -> Option<((u32, u32), Vec<u16>, Vec<&'static str>)> {
     let frame = v.transport.frame();
-    let (w, h) = (v.clip.width as u32, v.clip.height as u32);
+    let (w, h) = (v.clip.upright().0 as u32, v.clip.upright().1 as u32);
     let (size, at, place, unit) = match what {
-        Shot::View => ((gpu.w, gpu.h), None, Placing { picture: v.framing.rect((gpu.w as f32, gpu.h as f32)), look: v.look, size: v.size() }, scale),
+        Shot::View => ((gpu.w, gpu.h), None, Placing { picture: v.framing.rect((gpu.w as f32, gpu.h as f32)), look: v.turned(), size: v.size() }, scale),
         Shot::Frame | Shot::Copy => {
             let whole = (0.0, 0.0, w as f32, h as f32);
-            ((w, h), Some(whole), Placing { picture: whole, look: Look::default(), size: v.size() }, (2.1 * w as f32 / 1200.0).max(1.0))
+            ((w, h), Some(whole), Placing { picture: whole, look: v.clip.turn, size: v.size() }, (2.1 * w as f32 / 1200.0).max(1.0))
         }
     };
     let extras = what != Shot::Copy;
@@ -1934,7 +1950,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         // fetched, so a click and its picture are one refresh apart
         let size = (gpu.w as f32, gpu.h as f32);
         // the pixel the zoom chip names: the file's pixel under the pointer, while a zoom is set
-        let pixel_of = |v: &View| over_picture(pointer, size, scale).filter(|_| v.framing.zoomed()).and_then(|p| v.framing.pixel_at(p, size)).map(|shown| v.look.source_pixel(shown, v.size()));
+        let pixel_of = |v: &View| over_picture(pointer, size, scale).filter(|_| v.framing.zoomed()).and_then(|p| v.pixel_at(p, size));
         if let Some(facts) = &mut tabs.tab().facts {
             facts.poll();
         }
@@ -2460,13 +2476,37 @@ mod tests {
         let at = |x: usize, y: usize| -> [i32; 3] { std::array::from_fn(|c| pixels[(y * 64 + x) * 4 + c] as i32) };
         let close = |a: [i32; 3], b: [i32; 3]| (0..3).all(|c| (a[c] - b[c]).abs() < 700);
         // the rectangle's left side, x = 10 of the file, is shown mirrored at x = 54 of the window
-        let side = Placing { picture: view.framing.rect((64.0, 64.0)), look: view.look, size: view.size() }.to_window((10.0, 25.0));
+        let side = Placing { picture: view.framing.rect((64.0, 64.0)), look: view.turned(), size: view.size() }.to_window((10.0, 25.0));
         assert_eq!(side, (54.0, 25.0));
         let red = [65535, 0x3b * 257, 0x30 * 257];
         assert!(close(at(53, 25), red) && close(at(54, 25), red), "{:?} {:?}", at(53, 25), at(54, 25));
         assert!(!close(at(9, 25), red) && !close(at(10, 25), red), "nothing where the file has it unmirrored");
         // the center line, one pixel wide at 100%, in the guides' color
         assert!(close(at(32, 5), [0x3d * 257, 0xf0 * 257, 0xff * 257]), "{:?}", at(32, 5));
+    }
+
+    /// a clip whose file asks to be turned is shown, saved and copied upright. the chip and the title speak only of
+    /// what the user turned, never of the file's own turn.
+    #[test]
+    fn a_clip_the_file_turns_is_upright_and_the_chip_speaks_only_of_the_users_turn() {
+        let (gpu, mut turned) = view("h264_320_turn90.mp4");
+        let (settings, window) = (Settings::default(), (64.0, 64.0));
+        let said = |v: &View| (v.title(window, &settings, ("", "")), v.model(window, None, &settings, ui::Facts::Reading, "", (settings::Loop::One, false)).look.label());
+        let (title, chip) = said(&turned);
+        assert!(chip.is_none() && !title.contains("rotated"), "{title}");
+        // fitted as 180 wide and 320 high, and saved so; the copy is the frame alone, read upright
+        assert_eq!(turned.framing.rect(window), (14.0, 0.0, 36.0, 64.0));
+        assert_eq!(shot_pixels(&turned, None, &gpu, Shot::Frame, &settings, 1.0).expect("a frame").0, (180, 320));
+        assert!(shot_pixels(&turned, None, &gpu, Shot::Copy, &settings, 1.0).expect("a copy").1 == turned.read(&gpu, 180, 320).expect("the frame"));
+        // at 1:1 the pixel named under a point is the file's as stored: right of the middle of the window is up the
+        // stored picture, which was turned a quarter clockwise
+        turned.framing.set_zoom(Some(1.0), None, window);
+        assert_eq!((turned.pixel_at((32.0, 32.0), window), turned.pixel_at((42.0, 32.0), window)), (Some((160, 89)), Some((160, 79))));
+        // the user's quarter turn comes on top, and is all the chip says
+        turned.set_look(Look { turns: 1, ..Look::default() });
+        let (title, chip) = said(&turned);
+        assert!(chip.as_deref() == Some("rotated 90°") && title.ends_with(" · rotated 90°"), "{title}");
+        assert_eq!(turned.framing.rect(window), (0.0, 14.0, 64.0, 36.0));
     }
 
     /// what a frame read back holds of the file's alpha, by lane: a still's own (here a png with clear pixels), which a

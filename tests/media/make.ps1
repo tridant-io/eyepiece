@@ -44,6 +44,10 @@ ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=30,setparams=range=tv:color_p
 ffmpeg -v error -y -f lavfi -i 'color=c=gray:s=1280x720:r=30' -frames:v 2 -c:v libx264 -pix_fmt yuv420p -an (Out-Clip 'h264_720.mp4')
 # tagged bt.709 and video range in the stream alone, with no tags in the container
 ffmpeg -v error -y -i (Out-Clip 'h264_64.mp4') -c copy -bsf:v 'h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0' (Out-Clip 'h264_vui709_64.mp4')
+# tagged to be turned, as a phone held upright tags what it stores on its side: named for the quarter turns clockwise
+# a player makes, which ffmpeg's -display_rotation counts the other way. the 720-line one opens a window taller than wide
+foreach ($turn in 90, 180, 270) { ffmpeg -v error -y -display_rotation (360 - $turn) -i (Out-Clip 'h264_320.mp4') -c copy (Out-Clip "h264_320_turn$turn.mp4") }
+ffmpeg -v error -y -display_rotation 270 -i (Out-Clip 'h264_720.mp4') -c copy (Out-Clip 'h264_720_turn90.mp4')
 # prores 4444 with alpha, tagged bt.709 in its frame header
 ffmpeg -v error -y -f lavfi -i 'testsrc2=s=64x64:r=24,format=yuva444p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709' -frames:v 1 -c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le -an (Out-Clip 'prores4444_64.mov')
 # the same with an alpha that is not opaque: clear at the left, 16 of 1023 more each pixel across

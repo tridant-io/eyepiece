@@ -269,7 +269,10 @@ pub struct Model<'a> {
     /// where the picture is in the window, in physical pixels, and its size in video pixels as shown
     pub picture: (f32, f32, f32, f32),
     pub shown_size: (usize, usize),
+    /// the look the user chose, which the chip and the view menu say; and how the picture is turned as drawn, which
+    /// is the file's own turn with the look on top
     pub look: Look,
+    pub turned: Look,
     pub guides: Guides,
     pub facts: Facts<'a>,
     /// how the clip is decoded, in the panel's words
@@ -2093,6 +2096,7 @@ pub(super) mod tests {
             picture: (140.0, 0.0, 360.0, 360.0),
             shown_size: (64, 64),
             look: Look::default(),
+            turned: Look::default(),
             guides: Guides { grid: false, center: false, tile: (120, 120), color: [61, 240, 255] },
             facts: Facts::Reading,
             decoded: "",

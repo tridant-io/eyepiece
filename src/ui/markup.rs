@@ -65,7 +65,7 @@ struct Writing {
 
 /// where the clip on screen is in the window, for putting marks on it
 fn placing(model: &Model) -> Placing {
-    Placing { picture: model.picture, look: model.look, size: model.look.shown(model.shown_size) }
+    Placing { picture: model.picture, look: model.turned, size: model.turned.shown(model.shown_size) }
 }
 
 fn ink(rgb: [u8; 3]) -> Color32 {
