@@ -133,8 +133,13 @@ impl Cache {
         let (mut files, mut total) = (Vec::new(), 0);
         for item in fs::read_dir(&self.root)? {
             let item = item?;
-            // from the listing, which does not follow links: a folder or a link is never one of ours
-            let meta = item.metadata()?;
+            // from the listing, which does not follow links: a folder or a link is never one of ours. one gone since
+            // it was listed is another writer's temporary file, renamed: off windows the look at a file is a second
+            // step after the listing, and it is not there to count
+            let meta = match item.metadata() {
+                Err(gone) if gone.kind() == io::ErrorKind::NotFound => continue,
+                looked => looked?,
+            };
             let used = meta.modified()?;
             let name = item.file_name().into_string().unwrap_or_default();
             if meta.is_file() && ours(&name, used < day_ago) {
@@ -147,7 +152,11 @@ impl Cache {
             if total <= self.budget {
                 break;
             }
-            fs::remove_file(self.root.join(&name))?;
+            // one gone already was taken by another player making room: any other failure is said
+            match fs::remove_file(self.root.join(&name)) {
+                Err(gone) if gone.kind() == io::ErrorKind::NotFound => {}
+                removed => removed?,
+            }
             total -= len;
         }
         Ok(())
