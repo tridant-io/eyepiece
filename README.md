@@ -1,3 +1,5 @@
+<img src="assets/icon/eyepiece.png" alt="the eyepiece icon" width="128">
+
 # eyepiece
 
 a video review player for video professionals: extremely fast, lightweight, and only what you need.
