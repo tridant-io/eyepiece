@@ -76,7 +76,12 @@ _Avoid_: manifest alone (cargo's is Cargo.toml), checksums, SHA256SUMS
 what an update does with an installed file it replaces: renamed `<name>.old-<version>` beside it, since a running program's files cannot be written over, and removed by its exact name at the next start or the next try. a download that failed is set aside too, as `<name>.failed` in the update's folder, which only that file's next failure replaces.
 _Avoid_: backup, deleted, moved to trash
 
+**panel**:
+settings or help, drawn inside the window over whatever is up: a sidebar of pages and the page, 760 × 500 at the design's scale. the picture behind darkens, the bar steps aside and the strip stays. esc, its close mark, its button on the strip or a press outside it closes it.
+_Avoid_: dialog, modal (the update's modal is another thing), window, preferences
+
 ## Flagged ambiguities
 
 - **read-only** means the app never writes to media. **look-only** means the app does not even open files on a network folder. a local folder is read-only but not look-only.
 - **strip** alone is the row of tabs at the top of the window. the design's section 06 also calls the frames made ready for the timebar a strip: that is always the **timebar strip**.
+- **panel** alone is settings or help. the code and the design also say "the metadata panel" for the file's facts over the bar: that one is always named in full.
