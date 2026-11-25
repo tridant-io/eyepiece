@@ -657,11 +657,39 @@ Confirm-That 'a folder''s name typed into the address goes into that folder' ($k
 Start-Player
 Start-Sleep -Milliseconds 1000
 $names = $shots -split '\\'
-$x = 150 + 14; foreach ($name in $names[0..($names.Count - 3)]) { $x += $name.Length * 6.9 + 20.7 }
+$x = 150 + 14; foreach ($part in $names[0..($names.Count - 3)]) { $x += $part.Length * 6.9 + 20.7 }
 Click-At ($x + $names[-2].Length * 6.9 / 2) (32 + 18); Start-Sleep -Milliseconds 800
 Stop-Player
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'a press on a folder of the address goes to that folder' ($kept -contains "browser_folder = $tree") "the settings say: $($kept -match 'browser_folder')"
+# a path that is not there: the browser says the folder cannot be read (the unit tests read the words), and the
+# address takes the next path all the same, here a whole one
+Start-Player
+Start-Sleep -Milliseconds 1000
+Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Char 'nothere'; Send-Key 0x0D; Start-Sleep -Milliseconds 800
+Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Char $shots; Send-Key 0x0D; Start-Sleep -Milliseconds 800
+Stop-Player
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+Confirm-That 'after a path that is not there, the address goes to a whole path typed into it' ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
+# copy and paste in the field go by the clipboard, which is this pc's own: the check is left out when it holds more
+# than plain text, which a test could not put back, and what it held is put back after
+Add-Type -AssemblyName System.Windows.Forms
+$held = [System.Windows.Forms.Clipboard]::GetDataObject()
+$more = if ($held) { @($held.GetFormats() | Where-Object { $_ -notin 'System.String', 'UnicodeText', 'Text', 'OEMText', 'Locale' }) } else { @() }
+if ($more.Count -eq 0) {
+    $was = Get-Clipboard -Raw
+    Start-Player
+    Start-Sleep -Milliseconds 1000
+    Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Key 0x43 1 4; Start-Sleep -Milliseconds 400
+    $copied = Get-Clipboard -Raw
+    Set-Clipboard -Value "`"$tree`""
+    Send-Key 0x56 1 4; Start-Sleep -Milliseconds 300; Send-Key 0x0D; Start-Sleep -Milliseconds 800
+    Stop-Player
+    if ($was) { Set-Clipboard -Value $was } else { [System.Windows.Forms.Clipboard]::Clear() }
+    $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+    Confirm-That 'control + C in the address copies the path selected in it' ($copied -eq $shots) 'the clipboard does not hold the path of the folder shown'
+    Confirm-That 'control + V types a path into the address, in quotes as explorer copies one' ($kept -contains "browser_folder = $tree") "the settings say: $($kept -match 'browser_folder')"
+} else { Write-Host 'skip  copy and paste in the address: the clipboard holds more than plain text, which this test would not put back' }
 
 # ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order.
 # here hap_64.mov (3 frames), prores_64.mov (4), x_roll.mov (3) and y_broken.mov, which is no clip at all; the one

@@ -6,7 +6,7 @@
 mod jobs;
 mod nav;
 
-use super::{cut_middle, font, text_top, ACCENT, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
+use super::{cut_middle, font, text_top, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
 use crate::browse::{self, Entry, Group, Kind, Place, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
@@ -568,8 +568,8 @@ impl State {
     }
 
     /// the address as a field: the path as the system writes it, all of it selected, to type over or paste into.
-    /// enter goes there; escape, or a press elsewhere, leaves the browser where it was. outlined in the accent, as
-    /// the menus' fields are while they have the keyboard.
+    /// enter goes there; escape, or a press elsewhere, leaves the browser where it was. outlined as markup's field
+    /// is: the accent is for the menus' fields alone.
     fn address_field(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let fresh = std::mem::take(&mut self.address_fresh);
         let Some(text) = &mut self.address else { return };
@@ -578,7 +578,7 @@ impl State {
         egui::Area::new(egui::Id::unique("brw-address-field")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ui.ctx(), |ui| {
             // an area keeps the width it first had (egui's 600 at most): the line's own, every pass
             ui.set_width(rect.width());
-            egui::Frame::new().fill(BACK).stroke((1.0, ACCENT)).inner_margin(egui::Margin::symmetric(7, 5)).show(ui, |ui| {
+            egui::Frame::new().fill(BACK).stroke((1.0, FG)).inner_margin(egui::Margin::symmetric(7, 5)).show(ui, |ui| {
                 let edit = ui.add(egui::TextEdit::singleline(text).id(id).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(font(MONO, 11.5)).text_color(FG).desired_width(rect.width() - 16.0));
                 if fresh {
                     edit.request_focus();
@@ -769,15 +769,13 @@ impl State {
         let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
         painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
         painter.galley(Pos2::new(cap.center().x - keys.size().x / 2.0, top_of(&painter, &keys, cap.center().y)), keys, DIM);
-        let name = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
-        let (left, room) = (line.left() + 14.0, play.left() - 10.0 - line.left() - 14.0);
-        let named = text(&painter, left, middle, &name, font(MONO_MEDIUM, 11.5), FG, room);
+        // the folder's name is the address's last word, right over this line, and is not said again here
         let holds = match self.nav.listings.get(&folder) {
             None => "reading…".to_string(),
             Some(Err(_)) => String::new(),
             Some(Ok(entries)) => holds(entries),
         };
-        text(&painter, left + named + 10.0, middle, &holds, font(MONO, 11.5), DIM, room - named - 10.0);
+        text(&painter, line.left() + 14.0, middle, &holds, font(MONO, 11.5), DIM, play.left() - 10.0 - line.left() - 14.0);
 
         // on a network volume, a note that nothing is opened without asking, and at its right the button that asks
         // for the folder's previews, saying how many files they read (fig. 29)
@@ -1440,6 +1438,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         panic!("the folder was not listed");
+    }
+
+    /// what is typed into the address is gone to: a folder's name alone goes into that folder, a path to a video is
+    /// asked to be opened and the browser stays where it is, and a folder that is not there says so in the main
+    /// area, where the places are.
+    #[cfg(windows)]
+    #[test]
+    fn what_is_typed_into_the_address_is_gone_to_and_a_folder_not_there_says_so() {
+        let mut made = Scratch(Vec::new());
+        let top = made.folder(std::env::temp_dir().join(format!("eyepiece-address-{}", std::process::id())));
+        let shots = made.folder(top.join("shots"));
+        let mut state = State::new(Some(top.clone()), Vec::new(), None);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut time = 0.0;
+        listed(&ctx, &mut state, &top, &mut time);
+        state.click(Click::Go(PathBuf::from("shots")));
+        assert_eq!(state.nav.main().folder, shots);
+        state.click(Click::Go(top.join("wall_v012.mov")));
+        assert!(matches!(&state.chosen, Some(Chosen::Open(file)) if *file == top.join("wall_v012.mov")));
+        assert_eq!(state.nav.main().folder, shots);
+        let gone = top.join("nothere");
+        state.click(Click::Go(gone.clone()));
+        listed(&ctx, &mut state, &gone, &mut time);
+        let raw = egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            state.draw(ui, ui.max_rect());
+        });
+        out.textures_delta.clear();
+        let said = |words: &str| out.shapes.iter().any(|drawn| matches!(&drawn.shape, egui::Shape::Text(text) if text.galley.text() == words));
+        assert!(said("this folder cannot be read") && said("nothere"), "the main area says so, under an address that ends in what was typed");
+        // and as a field the address holds that path, to put right
+        state.click(Click::Address);
+        assert_eq!(state.address, Some(gone.to_string_lossy().into_owned()));
     }
 
     /// adr 0004 through the browser itself, on a folder of this pc's own share: with a card selected and the pointer

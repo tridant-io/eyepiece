@@ -1902,6 +1902,37 @@ mod tests {
         assert_eq!(drive_on(&mut ui, &screen(model()), &click(at.0, at.1)), vec![Action::TogglePlay], "fitted, no navigator");
     }
 
+    /// the address as a field, through the controls: control + L makes it one with the whole path selected, control
+    /// + C hands that path over for the clipboard, and what the clipboard held is typed over it, here a path in
+    /// quotes as the system's file browser copies one, gone to on enter.
+    #[test]
+    fn the_address_field_copies_its_path_and_takes_a_pasted_one() {
+        let folder = std::env::temp_dir();
+        let mut ui = Ui::new((1240, 700), 1.0, false, Some(folder.clone()), None);
+        let screen = Screen { tabs: vec!["new tab"], current: 0, places: Vec::new(), clip: None, error: None, opening: None, list: None, browsing: true, fullscreen: false, toast: None };
+        let pass = |ui: &mut Ui| {
+            let mut out = ui.run(&screen);
+            out.textures.clear();
+            out.copied
+        };
+        pass(&mut ui);
+        assert!(!ui.typing());
+        ui.browser_address();
+        pass(&mut ui);
+        pass(&mut ui);
+        assert!(ui.typing());
+        ui.key(Key::C, Mods { ctrl: true, ..Mods::default() });
+        assert_eq!(pass(&mut ui), Some(ui.browser_folder().to_string_lossy().into_owned()));
+        let other = folder.join("eyepiece nowhere");
+        ui.paste(format!("\"{}\"", other.display()));
+        pass(&mut ui);
+        ui.key(Key::Enter, Mods::default());
+        pass(&mut ui);
+        pass(&mut ui);
+        assert!(!ui.typing());
+        assert_eq!(ui.browser_folder(), other);
+    }
+
     /// a name with letters our type lacks is written with the system's, not with empty boxes: ours has no ł, which
     /// a folder of the owner's is named with.
     #[test]
