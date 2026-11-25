@@ -258,6 +258,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\notices.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\notices.ps1 -Check
 ```
 
+## releases and updates
+
+a release is cut from that folder with `scripts\release.ps1`. it writes `dist\eyepiece-release.txt`, the release manifest (adr 0007): the version from Cargo.toml, the day, a line for each change in the notes file, and every file of `dist\eyepiece` with its size and sha-256. it refuses a program that does not carry that version in its user agent (one built from another version, or, until the player calls the update, every build), and a file the player would not take. with `-Publish` it makes the release `v<version>` on github with `gh`, the files and the manifest as its assets and the notes as its text, and refuses first if a program or library is not signed, or not all by one signer. the four ffmpeg libraries are signed with the program now, by `scripts\package.ps1`, for this.
+
+```powershell
+# the manifest for dist\eyepiece. notes.md is written as release notes are: a heading for added, changed, fixed; a bullet a change
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release.ps1 -Notes notes.md
+# the same, then the release on github
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release.ps1 -Notes notes.md -Publish
+```
+
+what the player checks (`src/update`; the player does not call it yet): it reads the manifest of the latest release, `releases/latest/download/eyepiece-release.txt`, and offers only a greater version, compared number by number. it downloads only the files that differ from the installed ones, each on its own into `%LOCALAPPDATA%\eyepiece\update\<version>`, never into the install folder, checking each one's size and sha-256 as it lands, and a file that fails is set aside there as `<name>.failed` (its next failure replaces it). before anything is replaced it checks them all again, and takes a program or library only when windows trusts its signature and its signer is the running program's (the certificate's subject and its root; nothing is fetched to decide it). then each installed file is renamed `<name>.old-<version>` and the new one copied in; if one fails, every step is put back. the next start, or the next try, removes the `.old-` files by their names. a build that is not signed itself (a developer build) checks but never updates itself. nothing is sent but the requests, as `eyepiece/<version>`. `EYEPIECE_UPDATE_FROM` (as `http://127.0.0.1:8123/`) reads releases from a folder served by hand, laid out as github's (`latest/download/eyepiece-release.txt`, `download/v<version>/<file>`), with every check as it is; plain http is taken only from 127.0.0.1. none of it has run against a real release or server: the repo is private and adr 0005 holds public downloads. on macos only the check is written, and it has been neither compiled nor run there.
+
 ## the gates (phase 0)
 
 the gate programs live in `spike/`, with their own setup and their own test clips, and are kept until the mac renderer has rerun them.
