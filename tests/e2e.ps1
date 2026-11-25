@@ -64,9 +64,10 @@ $env:EYEPIECE_POSTED_POINTER = '1'
 # defaults and the owner's own settings are left alone
 $env:APPDATA = Join-Path $env:TEMP "eyepiece-e2e-$PID"
 # and muted, so nothing the tests play is heard. the browser starts in that folder too: a new tab then shows nothing
-# of the owner's, and makes no pictures of it
+# of the owner's, and makes no pictures of it. files open paused, so each check finds the frame it expects; one check
+# below runs on the default, which plays a file as it opens
 New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on', "browser_folder = $env:APPDATA"
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
 # the browser's pictures are kept in the os cache folder. the tests name a folder of their own to stand for it, so
 # nothing they make lands in the owner's cache
 $env:EYEPIECE_CACHE = Join-Path $env:APPDATA 'os-cache'
@@ -160,6 +161,17 @@ function Get-Middle { ((Get-Width) / 2), ((Get-Height) / 2) }
 
 $media = Join-Path $PSScriptRoot 'media'
 
+# ---- a file opens playing unless the settings say otherwise (the owner's ask, 2026-11-24). the title is left alone
+# during play, so it still names no clip a second after the clip came; space stops it, and the title then does
+$settings = Join-Path $env:APPDATA 'eyepiece\settings.txt'
+Set-Content -LiteralPath $settings -Value 'mute = on', "browser_folder = $env:APPDATA"
+Start-Player (Join-Path $media 'h264_64.mp4')
+Start-Sleep -Milliseconds 1500
+Confirm-That 'by default a file opens playing' ((Get-Title) -eq 'eyepiece') "the title is '$(Get-Title)'"
+Send-Key 0x20; Start-Sleep -Milliseconds 500
+Confirm-That 'and space stops it' ((Get-Title) -match '^h264_64\.mp4 . \d+ / 12') "the title is '$(Get-Title)'"
+Stop-Player
+Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
 # ---- hap: our own lane, and everything about the window
 Start-Player (Join-Path $media 'hapq_64.mov')
 Assert-Title 'hap q opens on frame 0 and reads the file exactly' '^hapq_64\.mov . 0 / 3 . 64 . 64 . hap q . 60000/1001 fps$'
@@ -517,7 +529,7 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
 # ---- markup (fig. 19), and what a saved screenshot carries (figs 18, 20). E turns the pointer into a pen: a drag on
 # the picture draws a rectangle on the frame on screen, and control + Z takes it back. the screenshot menu's three
 # switches put the marks, the guides and a caption into a saved frame, and are kept between runs
-Set-Content -LiteralPath $settings -Value 'mute = on', "browser_folder = $env:APPDATA", "screenshot_folder = $shots"
+Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA", "screenshot_folder = $shots"
 # a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other
 function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
     Move-Pointer $x0 $y0
@@ -585,7 +597,7 @@ Set-Content -LiteralPath (Join-Path $tree 'notes.txt') -Value 'not a clip'
 Set-Content -LiteralPath (Join-Path $tree 'y_broken.mov') -Value 'not a clip either, whatever its name says'
 (Get-Item -LiteralPath (Join-Path $tree 'z_away.mov')).Attributes = 'Offline'
 # the browser starts in the folder it was last in, which the settings name
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
 Start-Player
 Assert-Title 'started with no file, the browser is up' '^eyepiece$'
 # folders are listed off the drawing thread: each gets a moment to arrive before the keys move in it
@@ -641,7 +653,7 @@ Confirm-That 'the folders files were opened from are kept as the recent ones, th
 # ---- the address: a line across the top of the browser, right of the sidebar, with every folder from the drive
 # down to the one shown. control + L makes it a field with the path selected: a folder's name typed over it goes into
 # that folder, and the browser keeps where it is between runs, which is how this is read back
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
 Start-Player
 Start-Sleep -Milliseconds 1000
 # pressed again once the field has the keyboard, it types no letter into it
@@ -678,7 +690,7 @@ Confirm-That 'after a path that is not there, the address goes to a whole path t
 # shown. here from the tree into shots (typed) and to the tree again by its place in the address; two steps back and
 # two forward end in the tree, whichever way they are asked for
 function Test-Retrace([string]$by, [scriptblock]$back, [scriptblock]$forward) {
-    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
     Start-Player
     Set-Wide
     Start-Sleep -Milliseconds 1000
@@ -698,7 +710,7 @@ Test-Retrace 'the mouse''s side buttons' { Send-Side 1 } { Send-Side 2 }
 # read again, the third button, and f5 and control + R: a folder made since the browser listed the one it is in is
 # not there until then. each is found by its first letter and entered, which the folder the browser ends in tells
 $fresh = Join-Path $env:APPDATA 'fresh'; New-Item -ItemType Directory $fresh | Out-Null
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $fresh", 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $fresh", 'mute = on', 'play_on_open = off'
 Start-Player
 Start-Sleep -Milliseconds 1000
 $late = $fresh
@@ -716,7 +728,7 @@ $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt'
 Confirm-That 'the read-again button, f5 and control + R each show a folder made since the last listing' ($kept -contains "browser_folder = $late") "the settings say: $($kept -match 'browser_folder')"
 # what the browser shows of a folder is chosen at the address's right end and kept: its button stands 10 from the
 # window's right, a little over 100 wide, so 66 in from there is on it; its list opens 4 under it, rows of 26 after 4
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
 Start-Player
 Start-Sleep -Milliseconds 1000
 $viewAt = (Get-Width) - 10 - 66
@@ -732,7 +744,7 @@ $held = [System.Windows.Forms.Clipboard]::GetDataObject()
 $more = if ($held) { @($held.GetFormats() | Where-Object { $_ -notin 'System.String', 'UnicodeText', 'Text', 'OEMText', 'Locale' }) } else { @() }
 if ($more.Count -eq 0) {
     $was = Get-Clipboard -Raw
-    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $shots", 'mute = on'
+    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $shots", 'mute = on', 'play_on_open = off'
     Start-Player
     Start-Sleep -Milliseconds 1000
     Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Key 0x43 1 4; Start-Sleep -Milliseconds 400
@@ -749,7 +761,7 @@ if ($more.Count -eq 0) {
 # ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order.
 # here hap_64.mov (3 frames), prores_64.mov (4), x_roll.mov (3) and y_broken.mov, which is no clip at all; the one
 # marked as not on the disk is left out
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on', 'play_on_open = off'
 Start-Player
 Start-Sleep -Milliseconds 1000
 function Get-ClipUp { if ((Get-Title) -match ' . clip (\d) of 4') { [int]$Matches[1] } else { 0 } }
@@ -803,7 +815,7 @@ $netCopies = [ordered]@{ (Join-Path $net 'hap_64.mov') = 'hap_64.mov'; (Join-Pat
 New-Item -ItemType Directory $share, $deep, $net | Out-Null
 foreach ($to in $netCopies.Keys) { Copy-Item -LiteralPath (Join-Path $media $netCopies[$to]) -Destination $to }
 $unc = '\\localhost\' + $net.Substring(0, 1) + '$' + $net.Substring(2)
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $unc", 'mute = on'
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $unc", 'mute = on', 'play_on_open = off'
 $had = (Get-Kept).Count
 Start-Player
 Start-Sleep -Milliseconds 3000

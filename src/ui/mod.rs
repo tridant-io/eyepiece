@@ -358,6 +358,8 @@ pub struct Output {
     pub hovered: Option<usize>,
     /// the pointer is where a drag would draw a mark: it is shown as a cross
     pub cross: bool,
+    /// the pointer is on an edge of the browser that resizes a part: it is shown as a two-way arrow
+    pub resize: bool,
 }
 
 /// the menus that open over the bar
@@ -554,6 +556,14 @@ impl Ui {
 
     pub fn set_browser_recent(&mut self, recent: Vec<PathBuf>) {
         self.browser.set_recent(recent);
+    }
+
+    pub fn browser_widths(&self) -> crate::browse::Widths {
+        self.browser.widths()
+    }
+
+    pub fn set_browser_widths(&mut self, widths: crate::browse::Widths) {
+        self.browser.set_widths(widths);
     }
 
     pub fn browser_view(&self) -> crate::browse::View {
@@ -759,7 +769,7 @@ impl Ui {
             _ => None,
         });
         self.moved = false;
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown: self.shown, hovered: self.time_hover, cross: self.cross }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown: self.shown, hovered: self.time_hover, cross: self.cross , resize: screen.browsing && self.browser.over_edge()}
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {

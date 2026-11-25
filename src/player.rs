@@ -951,6 +951,8 @@ struct Tabs {
     hz: f64,
     /// opening threads of clips that were let go before they were done (`let_go`)
     stragglers: Vec<std::thread::JoinHandle<()>>,
+    /// a file opened starts playing
+    play_on_open: bool,
 }
 
 impl Drop for Tabs {
@@ -1036,7 +1038,9 @@ impl Tabs {
         if let Some(before) = tab.coming.take() {
             let_go(before, stragglers);
         }
-        tab.coming.insert(Coming::start(0, path, Why::Opened, gpu.hardware(), wake.clone()))
+        let coming = tab.coming.insert(Coming::start(0, path, Why::Opened, gpu.hardware(), wake.clone()));
+        coming.play = self.play_on_open;
+        coming
     }
 
     /// plays the files picked in the browser one after another, in the order given, as a played folder plays its
@@ -1449,6 +1453,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
     ui.set_browser_view(settings.browser_view);
+    ui.set_browser_widths(settings.browser_widths);
     ui.set_pinned(settings.pin_controls);
     ui.set_buttons_room(window::buttons_room());
     // the player's one way out to the speakers, as loud as it was left
@@ -1479,7 +1484,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // what just happened, said in the window until then; and where screenshots go, as the menu names it
     let mut toast: Option<(String, Instant)> = None;
     let shots_label = shots_to(&shots_folder(settings));
-    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new() };
+    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open };
+    // the file given at launch, opened before there were tabs, plays as any file opened does
+    if let Some(view) = tabs.view().filter(|_| settings.play_on_open) {
+        view.transport.set_playing(true);
+    }
     if let Some(path) = to_count {
         tabs.open(&gpu, path, &wake, true);
     }
@@ -1808,7 +1817,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if settings.browser_folder.as_deref() != Some(ui.browser_folder()) {
             settings.browser_folder = Some(ui.browser_folder().to_path_buf());
         }
-        settings.browser_view = ui.browser_view();
+        (settings.browser_view, settings.browser_widths) = (ui.browser_view(), ui.browser_widths());
         if settings.browser_recent != ui.browser_recent() {
             settings.browser_recent = ui.browser_recent().to_vec();
         }
@@ -1910,6 +1919,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         let pointer_now = match (out.cross, fullscreen && !out.shown) {
             (true, _) => window::Pointer::Cross,
             (false, true) => window::Pointer::Hidden,
+            (false, false) if out.resize => window::Pointer::Resize,
             (false, false) => window::Pointer::Arrow,
         };
         if pointer_shown != pointer_now {

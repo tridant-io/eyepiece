@@ -268,6 +268,8 @@ pub enum Pointer {
     Hidden,
     Arrow,
     Cross,
+    /// two ways, left and right: on an edge that resizes a part of the browser
+    Resize,
 }
 
 /// room at the strip's left for window buttons the system draws itself: none here, where the strip draws its own.
@@ -288,6 +290,7 @@ unsafe fn cursor(pointer: usize) -> Option<HCURSOR> {
     match pointer {
         0 => None,
         2 => LoadCursorW(None, IDC_CROSS).ok(),
+        3 => LoadCursorW(None, IDC_SIZEWE).ok(),
         _ => LoadCursorW(None, IDC_ARROW).ok(),
     }
 }

@@ -66,6 +66,29 @@ pub enum View {
     List,
 }
 
+/// how wide the browser's parts are, in the design's px: the sidebar, each folder's column, the metadata column.
+/// each is dragged by its edge and kept between runs; a double click on an edge puts it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Widths {
+    pub side: f32,
+    pub column: f32,
+    pub meta: f32,
+}
+
+impl Default for Widths {
+    /// the design's (figs. 27 and 28)
+    fn default() -> Widths {
+        Widths { side: 150.0, column: 168.0, meta: 316.0 }
+    }
+}
+
+impl Widths {
+    /// within what keeps every part usable: a sidebar row's name, a column's names, the metadata's facts
+    pub fn kept(self) -> Widths {
+        Widths { side: self.side.clamp(110.0, 360.0), column: self.column.clamp(120.0, 480.0), meta: self.meta.clamp(240.0, 640.0) }
+    }
+}
+
 const CLIPS: &[&str] = &["mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm"];
 const STILLS: &[&str] = &["exr", "dpx", "png", "jpg", "jpeg", "tif", "tiff", "tga"];
 /// a numbered run wider than this is unrelated numbers (dates, timestamps), not frames. it also bounds `missing`.

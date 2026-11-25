@@ -10,6 +10,9 @@ if (-not $Exe) { $Exe = Join-Path (Split-Path $PSScriptRoot -Parent) 'target\rel
 # players of this script's own: never handed to one the owner has open, and with settings of their own
 $env:EYEPIECE_INSTANCE = "launch-$PID"
 $env:APPDATA = Join-Path $env:TEMP "eyepiece-launch-$PID"
+# clips open paused, as they always have here: the measurement starts play itself
+New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'play_on_open = off'
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class EyepieceLaunch {

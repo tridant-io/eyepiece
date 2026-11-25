@@ -8,7 +8,7 @@ mod nav;
 
 use super::icons::{self, Icon};
 use super::{cut_middle, font, icon_button, text_top, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS};
-use crate::browse::{self, Entry, Group, Kind, Place, View, Volume};
+use crate::browse::{self, Entry, Group, Kind, Place, View, Volume, Widths};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
 use crate::preview::make::{self, Pictures, Want};
@@ -49,9 +49,6 @@ const STRONG: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
 const ON_STRONG: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 
 // ---- the design's measurements (fig. 28)
-const SIDE: f32 = 150.0;
-const COLUMN: f32 = 168.0;
-const META: f32 = 316.0;
 /// the main area keeps this much before another column is drawn; the metadata column comes before the columns
 const MAIN_MIN: f32 = 360.0;
 /// cards are at least this wide: as many go across as fit
@@ -94,6 +91,7 @@ pub struct Browser {
     recent: Vec<PathBuf>,
     pictures: Option<Pictures>,
     view: View,
+    widths: Widths,
     state: Option<State>,
 }
 
@@ -101,7 +99,7 @@ impl Browser {
     /// starts in `folder`; with none, in the first of the system's places (downloads). without `pictures` the
     /// cards stay plain.
     pub fn new(folder: Option<PathBuf>, pictures: Option<Pictures>) -> Browser {
-        Browser { start: folder, recent: Vec::new(), pictures, view: View::Both, state: None }
+        Browser { start: folder, recent: Vec::new(), pictures, view: View::Both, widths: Widths::default(), state: None }
     }
 
     /// the folders it last opened files from, the newest first: kept between runs.
@@ -132,10 +130,10 @@ impl Browser {
     }
 
     fn state(&mut self) -> &mut State {
-        let (start, recent, pictures, view) = (&mut self.start, &mut self.recent, &mut self.pictures, self.view);
+        let (start, recent, pictures, view, widths) = (&mut self.start, &mut self.recent, &mut self.pictures, self.view, self.widths);
         self.state.get_or_insert_with(|| {
             let mut state = State::new(start.take(), std::mem::take(recent), pictures.take());
-            state.nav.view = view;
+            (state.nav.view, state.widths) = (view, widths);
             state
         })
     }
@@ -158,6 +156,23 @@ impl Browser {
         if let Some(state) = &mut self.state {
             state.held = (shift, more);
         }
+    }
+
+    /// how wide its parts are: kept between runs.
+    pub fn widths(&self) -> Widths {
+        self.state.as_ref().map_or(self.widths, |state| state.widths)
+    }
+
+    pub fn set_widths(&mut self, widths: Widths) {
+        self.widths = widths.kept();
+        if let Some(state) = &mut self.state {
+            state.widths = widths.kept();
+        }
+    }
+
+    /// the pointer is on an edge that resizes a part, or is dragging one: the window shows the pointer for that.
+    pub fn over_edge(&self) -> bool {
+        self.state.as_ref().is_some_and(|state| state.over_edge)
     }
 
     /// what is shown of a folder: kept between runs.
@@ -262,6 +277,9 @@ struct State {
     anchor: Option<PathBuf>,
     /// shift and control, as held with the last pointer press
     held: (bool, bool),
+    /// how wide the parts are, and whether the pointer is on an edge that resizes one
+    widths: Widths,
+    over_edge: bool,
     /// the pass it was last drawn in
     drawn: u64,
 }
@@ -312,23 +330,24 @@ struct Layout {
 
 impl Layout {
     /// `shown` columns on the path; `card`: one is selected, so the metadata column is wanted.
-    fn new(area: Rect, shown: usize, card: bool, view: View) -> Layout {
+    fn new(area: Rect, shown: usize, card: bool, view: View, widths: Widths) -> Layout {
+        let Widths { side, column, meta: wide } = widths;
         // with the column alone showing, the cards keep no room
         let least = if view == View::List { 0.0 } else { MAIN_MIN };
-        let meta = card && area.width() - SIDE - COLUMN - META >= least;
-        let room = area.width() - SIDE - if meta { META } else { 0.0 };
-        let fit = (((room - least) / COLUMN).floor().max(1.0) as usize).min(shown);
+        let meta = card && area.width() - side - column - wide >= least;
+        let room = area.width() - side - if meta { wide } else { 0.0 };
+        let fit = (((room - least) / column).floor().max(1.0) as usize).min(shown);
         let x = |offset: f32| area.left() + offset;
         let top = area.top() + PATH_LINE;
         let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, top), Pos2::new(to.max(from), area.bottom()));
-        let main = x(SIDE + fit as f32 * COLUMN);
+        let main = x(side + fit as f32 * column);
         Layout {
-            side: Rect::from_min_max(area.min, Pos2::new(x(SIDE), area.bottom())),
-            address: Rect::from_min_max(Pos2::new(x(SIDE), area.top()), Pos2::new(area.right(), top)),
+            side: Rect::from_min_max(area.min, Pos2::new(x(side), area.bottom())),
+            address: Rect::from_min_max(Pos2::new(x(side), area.top()), Pos2::new(area.right(), top)),
             first: shown - fit,
-            columns: (0..fit).map(|i| span(x(SIDE + i as f32 * COLUMN), x(SIDE + (i + 1) as f32 * COLUMN))).collect(),
-            main: span(main, if meta { area.right() - META } else { area.right() }),
-            meta: meta.then(|| span(area.right() - META, area.right())),
+            columns: (0..fit).map(|i| span(x(side + i as f32 * column), x(side + (i + 1) as f32 * column))).collect(),
+            main: span(main, if meta { area.right() - wide } else { area.right() }),
+            meta: meta.then(|| span(area.right() - wide, area.right())),
         }
     }
 }
@@ -408,6 +427,8 @@ impl State {
             picked: Vec::new(),
             anchor: None,
             held: (false, false),
+            widths: Widths::default(),
+            over_edge: false,
             drawn: 0,
         }
     }
@@ -514,7 +535,7 @@ impl State {
         if self.picked.first().is_some_and(|picked| picked.parent() != Some(self.nav.main().folder.as_path())) {
             self.picked.clear();
         }
-        let layout = Layout::new(area, self.nav.drawn(), self.nav.card().is_some(), self.nav.view);
+        let layout = Layout::new(area, self.nav.drawn(), self.nav.card().is_some(), self.nav.view, self.widths);
         self.scroll(ui, &layout);
         let mut clicks = Vec::new();
         self.side(ui, layout.side, &mut clicks);
@@ -530,6 +551,8 @@ impl State {
         if let Some(rect) = layout.meta {
             self.metadata(ui, rect, &mut clicks);
         }
+        // after the parts, so an edge takes the pointer before the rows and cards under it
+        self.edges(ui, &layout);
         // a double click acts on what its first press was on, not on what its second one lands on. a press on nothing
         // leaves nothing for one
         let (single, double) = ui.input(|i| {
@@ -638,6 +661,50 @@ impl State {
             self.anchor = Some(card.clone());
         }
         self.nav.choose_card(self.picked.last().cloned().filter(|_| !self.picked.contains(&card)).unwrap_or(card));
+    }
+
+    /// the edges the parts are resized by, each 7 wide over its rule: the sidebar's right, every folder column's right
+    /// (they share one width, so the edge stays under the pointer whichever is dragged), the metadata column's left.
+    /// a double click puts an edge back where the design has it.
+    fn edges(&mut self, ui: &egui::Ui, layout: &Layout) {
+        let at = ui.ctx().pointer_latest_pos();
+        let grab = |name: usize, x: f32, rect: Rect| {
+            let edge = Rect::from_min_max(Pos2::new(x - 3.5, rect.top()), Pos2::new(x + 3.5, rect.bottom()));
+            let response = ui.interact(edge, ui.scope_id().with(("brw-edge", name)), Sense::click_and_drag());
+            let to = at.filter(|_| response.dragged()).map(|at| at.x);
+            (response.hovered() || response.dragged(), to, response.double_clicked())
+        };
+        let start = layout.side.left();
+        let mut over = false;
+        let (on, to, back) = grab(0, layout.side.right(), layout.side);
+        over |= on;
+        if let Some(x) = to {
+            self.widths.side = x - start;
+        }
+        if back {
+            self.widths.side = Widths::default().side;
+        }
+        for (i, rect) in layout.columns.iter().enumerate() {
+            let (on, to, back) = grab(1 + i, rect.right(), *rect);
+            over |= on;
+            if let Some(x) = to {
+                self.widths.column = (x - layout.side.right()) / (i + 1) as f32;
+            }
+            if back {
+                self.widths.column = Widths::default().column;
+            }
+        }
+        if let Some(rect) = layout.meta {
+            let (on, to, back) = grab(usize::MAX, rect.left(), rect);
+            over |= on;
+            if let Some(x) = to {
+                self.widths.meta = rect.right() - x;
+            }
+            if back {
+                self.widths.meta = Widths::default().meta;
+            }
+        }
+        (self.widths, self.over_edge) = (self.widths.kept(), over);
     }
 
     /// what is listed is listed again: it stays on screen until the new listing comes.
@@ -1549,18 +1616,21 @@ mod tests {
     fn the_columns_give_way_to_the_main_area_and_the_metadata_column() {
         let area = |w: f32| Rect::from_min_size(Pos2::ZERO, Vec2::new(w, 668.0));
         // fig. 28's width with a card selected: two columns, the main area, the metadata column
-        let layout = Layout::new(area(1240.0), 5, true, View::Both);
+        let layout = Layout::new(area(1240.0), 5, true, View::Both, Widths::default());
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_some()), (3, 2, true));
-        assert_eq!((layout.main.left(), layout.main.width()), (SIDE + 2.0 * COLUMN, 1240.0 - SIDE - 2.0 * COLUMN - META));
+        assert_eq!((layout.main.left(), layout.main.width()), { let w = Widths::default(); (w.side + 2.0 * w.column, 1240.0 - w.side - 2.0 * w.column - w.meta) });
         // with nothing selected there is no metadata column, and more columns fit
-        assert_eq!(Layout::new(area(1240.0), 5, false, View::Both).columns.len(), 4);
+        assert_eq!(Layout::new(area(1240.0), 5, false, View::Both, Widths::default()).columns.len(), 4);
         // with the column alone showing, the cards keep no room: the columns have it
-        assert_eq!(Layout::new(area(1240.0), 9, false, View::List).columns.len(), 6);
+        assert_eq!(Layout::new(area(1240.0), 9, false, View::List, Widths::default()).columns.len(), 6);
+        // wider columns, fewer of them; a wider sidebar moves all after it
+        let wide = Layout::new(area(1240.0), 5, false, View::Both, Widths { side: 200.0, column: 240.0, meta: 316.0 });
+        assert_eq!((wide.columns.len(), wide.columns[0].left(), wide.main.left()), (2, 200.0, 680.0));
         // narrow: one column, the deepest, and no metadata column
-        let layout = Layout::new(area(700.0), 5, true, View::Both);
+        let layout = Layout::new(area(700.0), 5, true, View::Both, Widths::default());
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_none()), (4, 1, true));
         // never more columns than the path has
-        assert_eq!(Layout::new(area(2400.0), 1, false, View::Both).columns.len(), 1);
+        assert_eq!(Layout::new(area(2400.0), 1, false, View::Both, Widths::default()).columns.len(), 1);
     }
 
     /// a sign the fonts do not have is drawn as an empty box
@@ -1710,6 +1780,50 @@ mod tests {
         // and as a field the address holds that path, to put right
         state.click(Click::Address);
         assert_eq!(state.address, Some(gone.to_string_lossy().into_owned()));
+    }
+
+    /// an edge dragged resizes its part, and the folders' columns share one width, so the edge of the second stays
+    /// under the pointer; a double click on an edge puts it back. the widths keep within what keeps every part usable.
+    #[test]
+    fn the_parts_are_resized_by_their_edges() {
+        let folder = std::env::temp_dir().join("eyepiece-no-such-edges");
+        let mut state = State::new(Some(folder.clone()), Vec::new(), None);
+        state.nav.listings.insert(folder.clone(), Ok(Vec::new()));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut time = 0.0;
+        let mut pass_with = |state: &mut State, events: Vec<egui::Event>| {
+            let mut raw = egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), ..Default::default() };
+            raw.events = events;
+            let mut out = ctx.run_ui(raw, |ui| {
+                state.draw(ui, ui.max_rect());
+            });
+            out.textures_delta.clear();
+            time += 0.05;
+        };
+        let press = |x: f32, down: bool| egui::Event::PointerButton { pos: Pos2::new(x, 300.0), button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE };
+        let drag = |state: &mut State, pass_with: &mut dyn FnMut(&mut State, Vec<egui::Event>), from: f32, to: f32| {
+            pass_with(state, vec![egui::Event::PointerMoved(Pos2::new(from, 300.0))]);
+            pass_with(state, vec![press(from, true)]);
+            for step in 1..=4 {
+                pass_with(state, vec![egui::Event::PointerMoved(Pos2::new(from + (to - from) * step as f32 / 4.0, 300.0))]);
+            }
+            pass_with(state, vec![press(to, false)]);
+        };
+        drag(&mut state, &mut pass_with, 150.0, 210.0);
+        assert_eq!(state.widths.side, 210.0);
+        // the second column's right edge, at 210 + 2 x 168, dragged 40 right: each column is 20 wider
+        let columns = state.nav.drawn();
+        if columns >= 2 {
+            drag(&mut state, &mut pass_with, 210.0 + 2.0 * 168.0, 210.0 + 2.0 * 168.0 + 40.0);
+            assert_eq!(state.widths.column, 188.0);
+        }
+        drag(&mut state, &mut pass_with, 210.0, 20.0);
+        assert_eq!(state.widths.side, 110.0, "no narrower than a row's name needs");
+        for _ in 0..2 {
+            pass_with(&mut state, vec![egui::Event::PointerMoved(Pos2::new(110.0, 300.0)), press(110.0, true), press(110.0, false)]);
+        }
+        assert_eq!(state.widths.side, 150.0, "a double click puts it back");
     }
 
     /// shift picks a run of videos from the one last pressed, control one more or one less, and the videos picked

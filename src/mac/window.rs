@@ -399,7 +399,11 @@ define_class!(
         // which pointer shows over the picture: appkit asks whenever it might have changed
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
-            let cursor = if self.ivars().pointer.get() == Pointer::Cross { NSCursor::crosshairCursor() } else { NSCursor::arrowCursor() };
+            let cursor = match self.ivars().pointer.get() {
+                Pointer::Cross => NSCursor::crosshairCursor(),
+                Pointer::Resize => NSCursor::resizeLeftRightCursor(),
+                _ => NSCursor::arrowCursor(),
+            };
             self.addCursorRect_cursor(self.bounds(), &cursor);
         }
 
@@ -781,6 +785,8 @@ pub enum Pointer {
     Hidden,
     Arrow,
     Cross,
+    /// two ways, left and right: on an edge that resizes a part of the browser
+    Resize,
 }
 
 /// room at the strip's left for the system's window buttons, in the design's pixels.

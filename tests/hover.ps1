@@ -43,7 +43,7 @@ $env:EYEPIECE_POSTED_POINTER = '1'
 $env:EYEPIECE_INSTANCE = "hover-$PID"
 $env:APPDATA = Join-Path $env:TEMP "eyepiece-hover-$PID"
 New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on', "browser_folder = $env:APPDATA"
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
 foreach ($clip in $Clips) {
     $p = Start-Process $Exe -ArgumentList "`"$clip`"" -PassThru
     $h = [IntPtr]::Zero

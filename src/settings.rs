@@ -51,6 +51,10 @@ pub struct Settings {
     pub browser_recent: Vec<PathBuf>,
     /// what the browser shows of a folder: its column and its cards, the cards, or the column
     pub browser_view: crate::browse::View,
+    /// how wide the sidebar, the folders' columns and the metadata column are
+    pub browser_widths: crate::browse::Widths,
+    /// a file starts playing when it opens (the owner's ask, 2026-11-24); off, it opens paused on its first frame
+    pub play_on_open: bool,
     pub window_size: Option<(u32, u32)>,
     /// none means the pictures folder (`shot::folder`)
     pub screenshot_folder: Option<PathBuf>,
@@ -78,6 +82,8 @@ impl Default for Settings {
             browser_folder: None,
             browser_recent: Vec::new(),
             browser_view: crate::browse::View::Both,
+            browser_widths: crate::browse::Widths::default(),
+            play_on_open: true,
             window_size: None,
             screenshot_folder: None,
         }
@@ -131,7 +137,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 21] {
+    fn pairs(&self) -> [(&'static str, String); 23] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -156,6 +162,8 @@ impl Settings {
             ("browser_folder", path(&self.browser_folder)),
             ("browser_recent", recent.join(" | ")),
             ("browser_view", word(&VIEWS, self.browser_view)),
+            ("browser_widths", format!("{} {} {}", self.browser_widths.side, self.browser_widths.column, self.browser_widths.meta)),
+            ("play_on_open", word(&SWITCH, self.play_on_open)),
             ("window_size", self.window_size.map_or(String::new(), wxh)),
             ("screenshot_folder", path(&self.screenshot_folder)),
         ]
@@ -184,6 +192,11 @@ impl Settings {
             // a bar cannot be in a windows path
             "browser_recent" => self.browser_recent = v.split('|').filter_map(|p| folder(p.trim())).collect(),
             "browser_view" => self.browser_view = pick(&VIEWS, v)?,
+            "browser_widths" => {
+                let [side, column, meta]: [f32; 3] = v.split_whitespace().map(|n| n.parse().ok()).collect::<Option<Vec<f32>>>()?.try_into().ok()?;
+                self.browser_widths = crate::browse::Widths { side, column, meta }.kept();
+            }
+            "play_on_open" => self.play_on_open = pick(&SWITCH, v)?,
             "window_size" => self.window_size = if v.is_empty() { None } else { Some(size(v)?) },
             "screenshot_folder" => self.screenshot_folder = folder(v),
             _ => return None,
@@ -299,6 +312,8 @@ mod tests {
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
             browser_view: crate::browse::View::List,
+            browser_widths: crate::browse::Widths { side: 180.0, column: 200.5, meta: 300.0 },
+            play_on_open: false,
             window_size: Some((1280, 720)),
             screenshot_folder: Some(PathBuf::from(r"\\nas\review = notes")),
         };
