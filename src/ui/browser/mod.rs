@@ -754,9 +754,11 @@ impl State {
                 self.pick(card, run);
                 self.nav.focus = focus;
             }
-            // in the order the folder lists them, whatever order they were picked in
+            // in name order, as a played folder plays, whatever order they were picked in or the browser sorts them in
             Click::OpenPicked => {
-                let files: Vec<PathBuf> = self.nav.cards().map(|e| e.path.clone()).filter(|path| self.picked.contains(path)).collect();
+                let mut picked: Vec<&Entry> = self.nav.cards().filter(|e| self.picked.contains(&e.path)).collect();
+                picked.sort_by(|a, b| browse::natural_cmp(&a.name, &b.name));
+                let files = picked.into_iter().map(|e| e.path.clone()).collect();
                 self.choose(Chosen::PlayFiles(files));
             }
             Click::Open(file) => self.choose(Chosen::Open(file)),
@@ -2274,6 +2276,15 @@ mod tests {
         assert_eq!(state.sort, Sort { by: browse::By::Size, descending: true });
         assert_eq!(names(&state), ["dome", "a.mov", "c.mov", "b.mov"]);
         assert_eq!(cards(&state), ["a.mov", "c.mov", "b.mov"]);
+        // the sort is only how the browser lists them: videos picked together play in name order, as a played folder
+        state.click(Click::Card(folder.join("c.mov")));
+        state.click(Click::Pick(folder.join("b.mov"), false, nav::Focus::Grid));
+        state.click(Click::OpenPicked);
+        let played = match state.chosen.take() {
+            Some(Chosen::PlayFiles(files)) => files,
+            _ => Vec::new(),
+        };
+        assert_eq!(played, [folder.join("b.mov"), folder.join("c.mov")]);
 
         // resting on the sort's icon, its tooltip names the sort a moment later
         pass(&mut state, vec![egui::Event::PointerMoved(sort.center())], 0.05);
