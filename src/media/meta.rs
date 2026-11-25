@@ -458,6 +458,7 @@ fn aspect_row((container, stream): (Option<(i32, i32)>, Option<(i32, i32)>), wid
 fn rotation_row(degrees: f64, mirror: bool) -> Option<Row> {
     let value = match Look::upright(degrees, mirror) {
         Some(look) if look == Look::default() => return None,
+        Some(look) if mirror && look.turns == 0 => "0° · mirrored as the file asks".to_string(),
         Some(look) if mirror => format!("{}° · mirrored, then turned, as the file asks", look.turns as u32 * 90),
         Some(look) => format!("{}° · turned as the file asks", look.turns as u32 * 90),
         None if degrees.is_finite() => format!("{}° · not a quarter turn: shown as stored", decimal(degrees, 2)),
@@ -613,6 +614,7 @@ mod tests {
         let said = |degrees: f64, mirror: bool| rotation_row(degrees, mirror).map(|r| (r.value, r.tone));
         assert_eq!(said(0.0, false), None, "a matrix that changes nothing");
         assert_eq!(said(90.0, true), Some(("90° · mirrored, then turned, as the file asks".to_string(), Tone::Plain)));
+        assert_eq!(said(0.0, true), Some(("0° · mirrored as the file asks".to_string(), Tone::Plain)), "a mirror alone");
         assert_eq!(said(45.0, false), Some(("45° · not a quarter turn: shown as stored".to_string(), Tone::Plain)));
         assert_eq!(said(f64::NAN, false).map(|s| s.1), Some(Tone::Fault));
     }
