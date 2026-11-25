@@ -2115,7 +2115,7 @@ mod tests {
         let (r, shots) = (place.join("r"), place.join("r").join("shots"));
         let mut state = State::new(Some(r.clone()), Vec::new(), None);
         state.nav = Nav::new(&r, std::slice::from_ref(&place));
-        let entry = |dir: &Path, name: &str, kind| Entry { name: name.into(), path: dir.join(name), kind, size: Some(10), modified: None, away: false };
+        let entry = |dir: &Path, name: &str, kind| Entry { name: name.into(), path: dir.join(name), kind, size: Some(10), modified: None, away: false, link: false };
         let listings = || [(place.clone(), vec![entry(&place, "r", Kind::Folder)]), (r.clone(), vec![entry(&r, "shots", Kind::Folder), entry(&r, "a.mov", Kind::Clip)]), (shots.clone(), vec![entry(&shots, "c.mov", Kind::Clip), entry(&shots, "d.mov", Kind::Clip)])];
         let ctx = egui::Context::default();
         ctx.set_fonts(super::super::fonts());
