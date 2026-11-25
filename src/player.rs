@@ -452,7 +452,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::BrowsePlayed | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
             Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
         }
     }
@@ -583,6 +583,8 @@ impl Drop for Watching {
 /// the folder a tab plays: its clips in name order, and which of them is up
 struct Played {
     title: String,
+    /// the folder it plays, which its tab's name opens in the browser
+    folder: std::path::PathBuf,
     items: Vec<std::path::PathBuf>,
     at: usize,
     /// on a volume where files may be read ahead of their turn: their headers for the list, and the clips before
@@ -600,7 +602,7 @@ impl Played {
     fn new(title: String, folder: &Path, items: Vec<std::path::PathBuf>, wake: &Sender<Event>, local: bool) -> Played {
         let names: Vec<String> = items.iter().map(|file| folder::name_in(folder, file)).collect();
         if !local {
-            return Played { title, at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: None };
+            return Played { title, folder: folder.to_path_buf(), at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: None };
         }
         let (read, reading) = mpsc::channel();
         let (files, wake) = (items.clone(), wake.clone());
@@ -617,7 +619,7 @@ impl Played {
             drop(read);
             let _ = wake.send(Event::Wake);
         });
-        Played { title, at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading) }
+        Played { title, folder: folder.to_path_buf(), at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading) }
     }
 }
 
@@ -2098,6 +2100,17 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     loudness(&mut speaker, settings);
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
+                // as O does, on the folder the tab plays
+                Action::BrowsePlayed => {
+                    let tab = tabs.tab();
+                    if let Some(played) = &tab.played {
+                        ui.browse_to(&played.folder);
+                        tab.browsing = true;
+                        if let Some(v) = &mut tab.view {
+                            v.transport.set_playing(false);
+                        }
+                    }
+                }
                 Action::PlayFiles(files) => tabs.play_files(&gpu, files, &wake),
                 Action::PlayFolder(folder) => {
                     if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, folder::listed(folder), &wake, true, &mut asked_folder) {

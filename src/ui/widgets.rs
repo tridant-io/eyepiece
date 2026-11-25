@@ -61,12 +61,15 @@ pub fn heading(ui: &mut egui::Ui, text: &str, keys: &[&str]) {
     }
 }
 
-/// a section's name with a few dim words at its right.
+/// a section's name with a few dim words at its right, cut in their middle where they would run into the name.
 pub fn heading_note(ui: &mut egui::Ui, text: &str, note: &str) {
     heading(ui, text, &[]);
     let rect = ui.min_rect();
     let last = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 16.0), rect.max);
-    let galley = ui.painter().layout_no_wrap(note.to_string(), font(MONO_MEDIUM, 10.0), DIM);
+    let mut job = LayoutJob::default();
+    job.append(&text.to_uppercase(), 0.0, TextFormat { font_id: font(MONO_MEDIUM, 10.0), color: DIM, extra_letter_spacing: 1.6, ..Default::default() });
+    let taken = ui.painter().layout_job(job).size().x + 12.0;
+    let galley = super::cut_middle(ui.painter(), note, font(MONO_MEDIUM, 10.0), DIM, last.width() - taken);
     ui.painter().galley(Pos2::new(last.right() - galley.size().x, text_top(ui.painter(), font(MONO_MEDIUM, 10.0), last.center().y)), galley, DIM);
 }
 

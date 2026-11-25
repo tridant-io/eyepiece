@@ -59,6 +59,8 @@ const TAB_MAX: f32 = 310.0;
 const TAB_PAD: f32 = 40.0;
 /// tabs narrow to this before they run under the window's buttons
 const TAB_MIN: f32 = 64.0;
+/// a played folder's name on its tab is cut to no less than this, for the clip's place and name
+const FOLDER_MIN: f32 = 72.0;
 /// room each side of the arrows on a folder's tab
 const NAV_PAD: f32 = 5.0;
 const PLUS: f32 = 32.0;
@@ -332,6 +334,8 @@ pub enum Action {
     PlayFiles(Vec<PathBuf>),
     /// lay the browser over the clip, or take it away
     Browse(bool),
+    /// lay the browser over the clip, on the folder the tab plays
+    BrowsePlayed,
     Shot(Shot),
     Extras(Extras),
     /// a mark drawn on this frame of the clip; every mark taken off the frame on screen
@@ -476,7 +480,7 @@ pub struct Ui {
     still: bool,
     /// the button the pointer is on in this pass, where it is and what its tooltip says; and the one it came onto,
     /// and when
-    hinted: Option<(egui::Id, Rect, (String, String))>,
+    hinted: Option<(egui::Id, Rect, (String, String), &'static str)>,
     tip: Option<(egui::Id, f64)>,
     browser: browser::Browser,
     markup: markup::Markup,
@@ -576,6 +580,11 @@ impl Ui {
     }
 
     /// the folder the browser is in, and the ones it last opened files from: kept between runs.
+    /// the browser on `folder`, as if its path were typed in the address
+    pub fn browse_to(&mut self, folder: &Path) {
+        self.browser.go(folder);
+    }
+
     pub fn browser_folder(&self) -> &Path {
         self.browser.folder()
     }
@@ -1309,7 +1318,12 @@ impl Ui {
                 }
                 None => painter.layout_no_wrap(name.to_string(), font(MONO_MEDIUM, 11.5), FG).size().x,
             };
-            (label + pad).min(TAB_MAX)
+            // a folder's name, its arrows and the clip's place come on top of the room a clip's name has
+            let more = place(i).map_or(0.0, |place| {
+                let [title, arrow, count, space] = folder_pieces(&painter, place, MONO_MEDIUM);
+                title.min(FOLDER_MIN) + 2.0 * arrow + count + space
+            });
+            (label + pad).min(TAB_MAX + more)
         };
         let mut widths: Vec<f32> = screen.tabs.iter().enumerate().map(|(i, name)| wide(i, name)).collect();
         if widths.iter().sum::<f32>() > room {
@@ -1334,7 +1348,14 @@ impl Ui {
                 continue;
             }
             let up = i == screen.current;
-            let clicked = ui.interact(tab.intersect(view), ui.scope_id().with(("tab", i)), Sense::click()).clicked();
+            let response = ui.interact(tab.intersect(view), ui.scope_id().with(("tab", i)), Sense::click());
+            // what the tab plays, its whole name, however much of it fits
+            let whole: &str = match place(i) {
+                Some(place) => place.clip,
+                None => name,
+            };
+            self.hint_name(&response, whole);
+            let clicked = response.clicked();
             if clicked && !up {
                 actions.push(Action::SelectTab(i));
             } else if clicked && screen.list.is_some() && screen.clip.is_some() && !screen.browsing {
@@ -1471,7 +1492,26 @@ impl Ui {
         let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
         let top = text_top(&painter, font(family, 11.5), text.center().y);
         let [title, arrow, count, space] = folder_pieces(&painter, place, family);
-        painter.galley(Pos2::new(text.left(), top), painter.layout_no_wrap(format!("{} /", place.folder), font(family, 11.5), DIM), DIM);
+        // the clip's place and name come first: the folder's name is cut in its middle to what they leave, but never
+        // to less than FOLDER_MIN
+        let name_wide = painter.layout_no_wrap(place.clip.to_string(), font(family, 11.5), color).size().x;
+        let title = title.min((text.width() - 2.0 * arrow - count - space - name_wide).max(FOLDER_MIN));
+        // the folder's name opens the browser on that folder
+        let folder = Rect::from_min_max(text.min, Pos2::new(text.left() + title, text.bottom())).intersect(text);
+        let mut lit = false;
+        if folder.is_positive() {
+            let response = ui.interact(folder, ui.scope_id().with(("tab-folder", i)), Sense::click());
+            if response.clicked() {
+                if !up {
+                    actions.push(Action::SelectTab(i));
+                }
+                actions.push(Action::BrowsePlayed);
+            }
+            self.hint(&response, Some(("the folder in the browser".to_string(), String::new())));
+            lit = response.hovered();
+        }
+        let ink = if lit { FG } else { DIM };
+        painter.galley(Pos2::new(text.left(), top), cut_middle(&painter, &format!("{} /", place.folder), font(family, 11.5), ink, title), ink);
         let at = text.left() + title + arrow;
         for (left, glyph, key) in [(at - arrow, "‹", Key::Left), (at + count, "›", Key::Right)] {
             let hit = Rect::from_min_max(Pos2::new(left, text.top()), Pos2::new(left + arrow, text.bottom())).intersect(text);
@@ -1679,7 +1719,14 @@ impl Ui {
     /// key.
     fn hint(&mut self, button: &egui::Response, tip: Option<(String, String)>) {
         if button.hovered() {
-            self.hinted = tip.map(|tip| (button.id, button.rect, tip));
+            self.hinted = tip.map(|tip| (button.id, button.rect, tip, SANS));
+        }
+    }
+
+    /// a tooltip that names a file: in mono, as names are
+    fn hint_name(&mut self, over: &egui::Response, name: &str) {
+        if over.hovered() {
+            self.hinted = Some((over.id, over.rect, (name.to_string(), String::new()), MONO));
         }
     }
 
@@ -1688,7 +1735,7 @@ impl Ui {
     /// while a menu, the metadata panel, the mark's card or a panel is up, or a button is held.
     fn tooltip(&mut self, ui: &egui::Ui, full: Rect, now: f64) {
         let quiet = self.menu.is_some() || self.commands.is_some() || self.panel.is_some() || self.card.is_some() || self.facts_up || ui.input(|i| i.pointer.any_down());
-        let Some((id, button, (does, key))) = self.hinted.take().filter(|_| !quiet) else {
+        let Some((id, button, (does, key), family)) = self.hinted.take().filter(|_| !quiet) else {
             self.tip = None;
             return;
         };
@@ -1704,7 +1751,7 @@ impl Ui {
         // on a mac command does what control does, and a hint names the key held there
         let key = if cfg!(target_os = "macos") { key.replace("ctrl", "cmd") } else { key };
         let key = if key.is_empty() { key } else { format!(" · {key}") };
-        chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0, SANS);
+        chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0, family);
     }
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
@@ -2359,6 +2406,19 @@ pub(super) mod tests {
         // a clip of the folder that did not open: its tab steps on all the same
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
         assert_eq!(drive_on(&mut ui, &screen(None, Some("it does not open")), &click(next, 16.0)), vec![Action::Key(Key::Right, keys::CTRL)]);
+        // the folder's name opens the browser on it, on its own tab or on another's
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        assert_eq!(drive_on(&mut ui, &up, &click(12.0 + 20.0, 16.0)), vec![Action::BrowsePlayed]);
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive_on(&mut ui, &up, &click(other + 12.0 + 20.0, 16.0)), vec![Action::SelectTab(1), Action::BrowsePlayed]);
+        // a folder's name too long for the tab (60 letters, 414 wide) is cut so the clip's place and name keep their
+        // room: the tab is 464.1 wide (310, and the least of the name kept, 72, the arrows, the place and its space),
+        // its text 424.1, and the name is cut to 273 (424.1 less the arrows, the place, the space and hap_64.mov)
+        let long = "a-project-folder-whose-name-runs-on-and-on-past-any-tab-room";
+        let place = |at| Some(Place { folder: long, at, count: 4, clip: "hap_64.mov" });
+        let screen = Screen { tabs: vec!["long"], current: 0, places: vec![place(0)], ..screen(Some(model()), None) };
+        let mut ui = Ui::new((900, 360), 1.0, false, None, None);
+        assert_eq!(drive_on(&mut ui, &screen, &click(12.0 + 273.0 + 16.9 + 41.4 + 8.45, 16.0)), vec![Action::Key(Key::Right, keys::CTRL)], "the next arrow stays on the tab");
         // and the type has the arrows: a sign it lacks is drawn as an empty box
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts());
