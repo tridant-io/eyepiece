@@ -2498,6 +2498,14 @@ mod tests {
         assert_eq!(turned.framing.rect(window), (14.0, 0.0, 36.0, 64.0));
         assert_eq!(shot_pixels(&turned, None, &gpu, Shot::Frame, &settings, 1.0).expect("a frame").0, (180, 320));
         assert!(shot_pixels(&turned, None, &gpu, Shot::Copy, &settings, 1.0).expect("a copy").1 == turned.read(&gpu, 180, 320).expect("the frame"));
+        // a mark is saved over the file's pixels it was drawn on: this one's left side, x = 10 of the file, runs
+        // along row 10 of the frame turned a quarter clockwise, and not down its column 10
+        use crate::markup::{Mark, Shape, INKS};
+        let mut marks = Marks::default();
+        marks.add(0, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] });
+        let (_, pixels, _) = shot_pixels(&turned, Some(&marks), &gpu, Shot::Frame, &Settings { screenshot_markup: true, ..Settings::default() }, 1.0).expect("a frame");
+        let red = |x: usize, y: usize| pixels[(y * 180 + x) * 4..][..3].iter().zip([65535, 0x3b * 257, 0x30 * 257]).all(|(&got, want): (&u16, i32)| (got as i32 - want).abs() < 700);
+        assert!(red(150, 9) && red(150, 10) && !red(150, 20) && !red(10, 25));
         // at 1:1 the pixel named under a point is the file's as stored: right of the middle of the window is up the
         // stored picture, which was turned a quarter clockwise
         turned.framing.set_zoom(Some(1.0), None, window);
