@@ -32,9 +32,6 @@ const PLAIN_TEXT: Color32 = Color32::from_rgb(0x5f, 0x5f, 0x5f);
 /// the row the keys act on, rgba(255,255,255,.2); a row selected on the way to it, .08, as a selected place is
 const ROW_ON: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51);
 const PLACE_ON: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
-/// the column or grid the keys act in, with nothing selected in it: outlined, as the design's focused player is,
-/// rgba(255,255,255,.45)
-const RING: Color32 = Color32::from_rgba_premultiplied(115, 115, 115, 115);
 /// a card selected on the way to the one the keys act on
 const CARD_PATH: Color32 = Color32::from_rgb(0x6d, 0x6d, 0x6d);
 const ROW_TEXT: Color32 = Color32::from_rgb(0xc9, 0xc9, 0xc9);
@@ -227,6 +224,11 @@ impl Browser {
     /// back (-1) or forward (1) along the folders the browser has shown.
     pub fn retrace(&mut self, by: isize) {
         self.state().click(Click::Retrace(by));
+    }
+
+    /// goes to `folder`, as the address does when it is typed there.
+    pub fn go(&mut self, folder: &Path) {
+        self.state().click(Click::Go(folder.to_path_buf()));
     }
 
     /// reads the folders on screen again.
@@ -1117,16 +1119,12 @@ impl State {
     }
 
     /// one folder on the path as a column: its entries, the selected one lit, brightly where the keys act and dimly
-    /// on the way there. where the keys act and nothing is selected, the column is outlined.
+    /// on the way there.
     fn column(&mut self, ui: &egui::Ui, at: usize, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         rule(&painter, rect.right() - 1.0, rect);
         let inner = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 1.0, rect.bottom()));
         let current = self.nav.current_column() == Some(at);
-        let column = &self.nav.path[at];
-        if current && !self.nav.listed(&column.folder).any(|e| Some(&e.path) == column.selected.as_ref()) {
-            painter.rect_stroke(inner, 0.0, (1.0, RING), StrokeKind::Inside);
-        }
         let entries = match self.nav.listings.get(&self.nav.path[at].folder) {
             None => {
                 text(&painter, inner.left() + 12.0, inner.top() + 8.0 + ROW / 2.0, "reading…", font(SANS, 12.5), DIM, inner.width() - 22.0);
@@ -1282,12 +1280,8 @@ impl State {
         let pitch = height + 14.0;
         let selected = self.nav.main().selected.as_ref();
         let at = selected.and_then(|s| cards.iter().position(|c| &c.path == s));
-        // the selected card is outlined in white where the keys act, in gray on the way there; where the keys act
-        // and no card is selected, the grid is outlined
+        // the selected card is outlined in white where the keys act, in gray on the way there
         let current = self.nav.in_grid();
-        if current && at.is_none() {
-            painter.rect_stroke(rect, 0.0, (1.0, RING), StrokeKind::Inside);
-        }
         // a card newly selected is brought into view; otherwise the wheel moves freely
         let mut scroll = self.grid_scroll;
         if let Some(i) = at.filter(|_| self.revealed.as_ref() != selected) {
@@ -2107,7 +2101,7 @@ mod tests {
     }
 
     /// what is selected where the keys act is drawn brightly, and what is selected on the way there dimly, in the
-    /// columns and in the grid; where the keys act and nothing is selected, the column is outlined. a press on a row
+    /// columns and in the grid, with no border round either. a press on a row
     /// gives the keys to its column, and a press on a card to the grid.
     #[test]
     fn the_current_item_and_the_way_to_it_are_drawn_apart() {
@@ -2120,7 +2114,8 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(super::super::fonts());
         // a pass over a window this wide (fig. 28's is 1240), the folders listed as above: the fill of the row each
-        // name is on, the outlines of the selected cards, and whether a column or the grid is outlined
+        // name is on, the outlines of the selected cards, and whether a column or the grid is outlined (never: the
+        // owner's word, 2026-11-25)
         let seen_at = |state: &mut State, wide: f32| {
             for (folder, entries) in listings() {
                 state.nav.listings.insert(folder, Ok(entries));
@@ -2137,7 +2132,7 @@ mod tests {
             };
             let fills = ["r", "shots", "a.mov", "c.mov", "d.mov"].map(fill);
             let cards: Vec<Color32> = rects.iter().filter(|r| r.stroke.width == 2.0).map(|r| r.stroke.color).collect();
-            (fills, cards, rects.iter().any(|r| r.stroke.color == RING))
+            (fills, cards, rects.iter().any(|r| r.stroke.width > 0.0 && r.rect.height() > 300.0))
         };
         let seen = |state: &mut State| seen_at(state, 1240.0);
         let press = |state: &mut State, key| {
@@ -2145,8 +2140,8 @@ mod tests {
             state.nav.settle();
         };
         let (on, path) = (Some(ROW_ON), Some(PLACE_ON));
-        // at the start the keys are in the folder's column, where nothing is selected
-        assert_eq!(seen(&mut state), ([path, None, None, None, None], vec![], true));
+        // at the start the keys are in the folder's column, where nothing is selected, and it has no border
+        assert_eq!(seen(&mut state), ([path, None, None, None, None], vec![], false));
         press(&mut state, Key::Down);
         assert_eq!(seen(&mut state), ([path, on, None, None, None], vec![], false));
         // where one column fits, it is the one the keys act in, not the one it shows the folder in
