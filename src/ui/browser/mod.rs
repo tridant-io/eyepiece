@@ -6,7 +6,8 @@
 mod jobs;
 mod nav;
 
-use super::{cut_middle, font, text_top, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
+use super::icons::{self, Icon};
+use super::{cut_middle, font, icon_button, text_top, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS};
 use crate::browse::{self, Entry, Group, Kind, Place, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
@@ -74,9 +75,8 @@ const RECENT: usize = 5;
 
 /// what was chosen in the browser
 pub enum Chosen {
-    /// open this file, in the tab the browser is in, or in a tab of its own. a sequence is opened by its first file
+    /// open this file, in the tab the browser is in. a sequence is opened by its first file
     Open(PathBuf),
-    NewTab(PathBuf),
     /// show this file in the system's own file browser
     Reveal(PathBuf),
     /// play this folder
@@ -139,6 +139,16 @@ impl Browser {
         if let Some(chosen) = state.nav.key(key, mods, state.per_row) {
             state.choose(chosen);
         }
+    }
+
+    /// back (-1) or forward (1) along the folders the browser has shown.
+    pub fn retrace(&mut self, by: isize) {
+        self.state().click(Click::Retrace(by));
+    }
+
+    /// reads the folders on screen again.
+    pub fn refresh(&mut self) {
+        self.state().click(Click::Refresh);
     }
 
     /// makes the address a field to type into (control + L, as in the system's file browser and a web browser).
@@ -212,6 +222,7 @@ struct State {
     /// the address while it is a field being typed into, and that it has just become one
     address: Option<String>,
     address_fresh: bool,
+    address_at: f64,
     /// the pass it was last drawn in
     drawn: u64,
 }
@@ -220,6 +231,7 @@ struct State {
 /// asks for
 type Press = (Click, Option<Click>);
 
+#[derive(Clone)]
 enum Click {
     Place(PathBuf),
     /// an entry of the drawn column at this place on the path; true for a folder
@@ -227,7 +239,6 @@ enum Click {
     Enter,
     Card(PathBuf),
     Open(PathBuf),
-    NewTab(PathBuf),
     Reveal(PathBuf),
     PlayFolder,
     Read(PathBuf),
@@ -236,6 +247,9 @@ enum Click {
     /// the address becomes a field to type into; and what was typed there, entered
     Address,
     Go(PathBuf),
+    /// back (-1) or forward (1) along the folders shown; and the folders on screen read again
+    Retrace(isize),
+    Refresh,
 }
 
 /// where the parts go: the sidebar, the address across the top of the rest, and under it the columns that fit (the
@@ -341,6 +355,7 @@ impl State {
             chosen: None,
             address: None,
             address_fresh: false,
+            address_at: 0.0,
             drawn: 0,
         }
     }
@@ -349,7 +364,7 @@ impl State {
     /// played from becomes the newest recent one.
     fn choose(&mut self, chosen: Chosen) {
         match &chosen {
-            Chosen::Open(file) | Chosen::NewTab(file) => {
+            Chosen::Open(file) => {
                 self.asked.insert(file.clone());
                 if let Some(folder) = file.parent() {
                     self.remember(folder.to_path_buf());
@@ -429,7 +444,7 @@ impl State {
         // away since the last pass (a clip was up): what is on screen may have changed, so it is listed again
         let pass = ui.ctx().cumulative_pass_nr();
         if pass > self.drawn + 1 {
-            self.stale = self.nav.listings.keys().cloned().collect();
+            self.reread();
         }
         self.drawn = pass;
         self.take_answers();
@@ -489,7 +504,6 @@ impl State {
             Click::Enter => self.nav.enter(),
             Click::Card(card) => self.nav.choose_card(card),
             Click::Open(file) => self.choose(Chosen::Open(file)),
-            Click::NewTab(file) => self.choose(Chosen::NewTab(file)),
             Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
             Click::PlayFolder => self.choose(Chosen::PlayFolder(self.nav.main().folder.clone())),
             Click::Read(file) => {
@@ -512,7 +526,19 @@ impl State {
                     self.nav.go(&to, &self.roots);
                 }
             }
+            Click::Retrace(by) => self.nav.retrace(by, &self.roots),
+            // what was read of the files is read again as well: a render may have written over one
+            Click::Refresh => {
+                self.reread();
+                self.read.clear();
+            }
         }
+        self.nav.visit(false);
+    }
+
+    /// what is listed is listed again: it stays on screen until the new listing comes.
+    fn reread(&mut self) {
+        self.stale = self.nav.listings.keys().cloned().collect();
     }
 
     /// the address (the owner's ask, 2026-11-24): a line across the top, over the columns and the main area, with
@@ -520,7 +546,20 @@ impl State {
     fn address_line(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 1.0), rect.max), 0.0, LINE);
-        let (left, middle, room) = (rect.left() + 14.0, rect.top() + (PATH_LINE - 1.0) / 2.0, rect.width() - 28.0);
+        let middle = rect.top() + (PATH_LINE - 1.0) / 2.0;
+        // at its left, as a file browser has them: back and forward along the folders shown, dim where there is
+        // nowhere to go, and read again (the owner's ask, 2026-11-24). pressed twice fast, each acts twice
+        let mut left = rect.left() + 6.0;
+        for (name, icon, click) in [("brw-back", Icon::Back, Click::Retrace(-1)), ("brw-forward", Icon::Forward, Click::Retrace(1)), ("brw-refresh", Icon::Refresh, Click::Refresh)] {
+            let button = Rect::from_min_size(Pos2::new(left, middle - ICON_BUTTON.y / 2.0), ICON_BUTTON);
+            left = button.right() + 2.0;
+            if matches!(click, Click::Retrace(by) if !self.nav.can_retrace(by)) {
+                icons::draw(&painter, button, icon, ROW_DIM);
+            } else if icon_button(ui, button, name, icon, Lit::No).clicked() {
+                clicks.push((click.clone(), Some(click)));
+            }
+        }
+        let (left, room) = (left + 6.0, rect.right() - 14.0 - left - 6.0);
         if self.address.is_some() {
             self.address_field(ui, Rect::from_min_size(Pos2::new(left - 8.0, middle - 13.75), Vec2::new(room + 16.0, 27.5)), clicks);
         } else {
@@ -572,16 +611,31 @@ impl State {
     /// is: the accent is for the menus' fields alone.
     fn address_field(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let fresh = std::mem::take(&mut self.address_fresh);
+        let now = ui.input(|i| i.time);
+        if fresh {
+            self.address_at = now;
+        }
+        // a double click that made the line a field would leave the word under its second press selected: the
+        // whole path stays selected
+        let whole = fresh || now - self.address_at < 0.5 && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
         let Some(text) = &mut self.address else { return };
         let id = egui::Id::unique("brw-address-edit");
         let mut entered = None;
         egui::Area::new(egui::Id::unique("brw-address-field")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ui.ctx(), |ui| {
             // an area keeps the width it first had (egui's 600 at most): the line's own, every pass
             ui.set_width(rect.width());
-            egui::Frame::new().fill(BACK).stroke((1.0, FG)).inner_margin(egui::Margin::symmetric(7, 5)).show(ui, |ui| {
+            // the line stands in the middle of the field's height, as much room over it as under: egui would give
+            // the field its own least height and leave the line at the top
+            ui.spacing_mut().interact_size.y = 0.0;
+            let line = ui.painter().layout_no_wrap("0".to_string(), font(MONO, 11.5), FG).size().y;
+            let over = ((rect.height() - 2.0 - line) / 2.0).floor();
+            let margin = egui::Margin { left: 7, right: 7, top: over as i8, bottom: (rect.height() - 2.0 - line - over).ceil() as i8 };
+            egui::Frame::new().fill(BACK).stroke((1.0, FG)).inner_margin(margin).show(ui, |ui| {
                 let edit = ui.add(egui::TextEdit::singleline(text).id(id).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(font(MONO, 11.5)).text_color(FG).desired_width(rect.width() - 16.0));
                 if fresh {
                     edit.request_focus();
+                }
+                if whole {
                     let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
                     state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
                     state.store(ui.ctx(), id);
@@ -938,7 +992,7 @@ impl State {
         let (left, width) = (rect.left() + 1.0 + 14.0, rect.width() - 1.0 - 28.0);
         let readable = nav::readable(card);
         let reads = readable && nav::reads_metadata(self.nav.volume, card, self.asked.contains(&card.path));
-        // at the foot: open, open in a tab of its own, and then on a network volume read metadata until it is read
+        // at the foot: open, and then on a network volume read metadata until it is read
         // (fig. 29), or for a local file that is on the disk reveal (fig. 28). explorer would read a network folder
         // to show it, so a file there is not revealed
         let foot = rect.bottom() - 12.0 - 25.0;
@@ -948,7 +1002,7 @@ impl State {
             (false, true) => Some(("reveal", Click::Reveal(card.path.clone()))),
             (false, false) => None,
         };
-        let acts = [("open", Click::Open(card.path.clone())), ("new tab", Click::NewTab(card.path.clone()))].into_iter().chain(third);
+        let acts = [("open", Click::Open(card.path.clone()))].into_iter().chain(third);
         for (i, (label, click)) in acts.enumerate() {
             let strong = i == 0;
             let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), if strong { ON_STRONG } else { FG });
@@ -1205,7 +1259,8 @@ fn rows(painter: &Painter, left: f32, mut y: f32, width: f32, groups: &[Vec<Row>
             painter.rect_filled(Rect::from_min_size(Pos2::new(left, y + 2.0), Vec2::new(width, 1.0)), 0.0, LINE);
             y += 2.0 + 1.0 + 2.0 + 5.0;
         }
-        for row in group {
+        // not the file's path: the address says where it is, and the row over this one its name
+        for row in group.iter().filter(|row| row.label != "path") {
             let mut label = LayoutJob::default();
             label.wrap.max_width = 86.0;
             label.append(row.label, 0.0, format(DIM));
@@ -1333,7 +1388,7 @@ mod tests {
         ctx.set_fonts(super::super::fonts());
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let has = |family: &str, words: &str| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 11.5), words));
-            assert!(["PLACES", "PINNED IN EXPLORER", "VOLUMES", "RECENT", "net", "open", "new tab", "reveal", "read metadata"].iter().all(|w| has(MONO_MEDIUM, w)));
+            assert!(["PLACES", "PINNED IN EXPLORER", "VOLUMES", "RECENT", "net", "open", "reveal", "read metadata"].iter().all(|w| has(MONO_MEDIUM, w)));
             assert!(has(SANS, &recent_name(Path::new(r"D:\delivery_2026-11-20\wall"), |n| n.len() < 12)) && has(SANS, "system (C:)"));
             for (previews, opened) in [(false, false), (false, true), (true, false)] {
                 let (head, rest) = network_note(previews, opened);
@@ -1365,7 +1420,7 @@ mod tests {
         for file in [wall.join("a.mov"), PathBuf::from(r"C:\u\Downloads\b.mov"), PathBuf::from(r"C:\show_content\totems\c.mov")] {
             state.choose(Chosen::Open(file));
         }
-        state.choose(Chosen::NewTab(wall.join("d.mov")));
+        state.choose(Chosen::Open(wall.join("d.mov")));
         assert_eq!(state.recent, [wall.clone(), PathBuf::from(r"C:\show_content\totems")]);
         // named by the folder above and its own; where that does not fit, the folder above is cut short first
         assert_eq!(recent_name(&state.recent[0], |_| true), "delivery_2026-11-20 / wall");
@@ -1474,6 +1529,35 @@ mod tests {
         assert_eq!(state.address, Some(gone.to_string_lossy().into_owned()));
     }
 
+    /// read again, a folder shows what was put in it since, and not before; what was read of its files goes, to be
+    /// read again.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_read_again_shows_what_is_new_in_it() {
+        let mut made = Scratch(Vec::new());
+        let top = made.folder(std::env::temp_dir().join(format!("eyepiece-again-{}", std::process::id())));
+        let mut state = State::new(Some(top.clone()), Vec::new(), None);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut time = 0.0;
+        listed(&ctx, &mut state, &top, &mut time);
+        let late = made.folder(top.join("late"));
+        pass(&ctx, &mut state, time, None);
+        assert!(state.nav.entries(&top).is_empty(), "nothing is read again unasked");
+        state.read.insert(top.join("a.mov"), Err("read before".to_string()));
+        state.click(Click::Refresh);
+        assert!(state.read.is_empty());
+        for _ in 0..200 {
+            if !state.nav.entries(&top).is_empty() {
+                break;
+            }
+            time += 0.05;
+            pass(&ctx, &mut state, time, None);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(state.nav.entries(&top).iter().map(|e| e.path.clone()).collect::<Vec<_>>(), [late]);
+    }
+
     /// adr 0004 through the browser itself, on a folder of this pc's own share: with a card selected and the pointer
     /// resting all over the cards, no picture and no metadata is asked of a file. asked for, the folder's previews are
     /// wanted of its cards and of no other folder's.
@@ -1506,6 +1590,17 @@ mod tests {
                 time += 1.0;
             }
         }
+        // read again, the share's folders are listed again and nothing more is asked of them
+        state.click(Click::Refresh);
+        for _ in 0..200 {
+            pass(&ctx, &mut state, time, Some(Pos2::new(560.0, 200.0)));
+            time += 1.0;
+            if !state.stale.contains(&shared(&shots)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!state.stale.contains(&shared(&shots)), "the folder shown was not listed again");
         assert_eq!(wants.try_iter().flatten().count(), 0, "a picture was wanted of a file on a share");
         assert!(!state.metas.busy() && state.read.is_empty(), "a file on a share was read for its metadata");
 

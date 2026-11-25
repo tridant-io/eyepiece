@@ -436,7 +436,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenTab(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
             Action::Extras(_) | Action::Mark(..) | Action::ClearMarks => {}
         }
     }
@@ -926,7 +926,7 @@ impl Tab {
         match (&self.view, &self.path) {
             (Some(view), _) => &view.clip.name,
             (None, Some(path)) => Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path),
-            (None, None) => "new tab",
+            (None, None) => "browser",
         }
     }
 
@@ -1580,6 +1580,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 // in the browser control + L makes the address a field to type a path into
                 Event::Key { key: Key::L, mods } if browsing && mods.ctrl => ui.browser_address(),
+                // in the browser back and forward go along the folders it has shown: alt with left and right, as in
+                // the system's file browser, control with them for the mac's command, and the keys and mouse buttons
+                // made for it. f5 or control + R reads the folders on screen again
+                Event::Key { key: key @ (Key::Left | Key::Right), mods } if browsing && (mods.alt || mods.ctrl) => ui.browser_retrace(if key == Key::Left { -1 } else { 1 }),
+                Event::Key { key: key @ (Key::BrowserBack | Key::BrowserForward), .. } if browsing => ui.browser_retrace(if key == Key::BrowserBack { -1 } else { 1 }),
+                Event::Key { key, mods } if browsing && (key == Key::F5 || key == Key::R && mods.ctrl) => ui.browser_refresh(),
                 // in the browser the keys move about it and letters select by name
                 Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key, mods),
                 // the character a command's own press types is not typed. a field being typed into takes every
@@ -1778,10 +1784,6 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::GoClip(to) => tabs.go_item(*to, Why::Stepped, &gpu, &wake),
                 Action::CloseTab(at) => tabs.close(*at),
                 Action::Open(path) => {
-                    tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
-                }
-                Action::OpenTab(path) => {
-                    tabs.new_tab();
                     tabs.open(&gpu, path.to_string_lossy().into_owned(), &wake, true);
                 }
                 Action::Reveal(file) => window::reveal(file, wake.clone()),

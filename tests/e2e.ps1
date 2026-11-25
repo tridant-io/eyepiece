@@ -626,14 +626,12 @@ Click-At (150 + 168 * $columns - 84) (32 + 36 + 8 + 26.25 * 3.5); Start-Sleep -M
 DoubleClick-At (150 + 168 * $columns + 100) ((Get-Height) - 80); Start-Sleep -Milliseconds 1000
 Assert-Title 'a double click on nothing opens nothing' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
-# the selected card's actions at the foot of the metadata column (fig. 28): open, new tab and reveal, 25 high and 12
-# from the bottom, from 15 in, 44.4, 64.2 and 57.6 wide with 6 between. new tab opens the card in a tab of its own
-# and leaves the browser where it was
-Send-Key 0x4F; Start-Sleep -Milliseconds 500
-Click-At -218.5 -24.5
-Assert-Frame 'new tab opens the selected card in a tab of its own' 0 4
-Send-Key 0xDB; Assert-Title 'and the tab it was chosen in still shows the browser' '^prores_64\.mov . .* . browser$'
-Send-Key 0x1B
+# the selected card's actions at the foot of the metadata column (fig. 28, less its "new tab", which the owner had
+# no use for): open and reveal, 25 high and 12 from the bottom, from 15 in, 44.4 and 57.6 wide with 6 between.
+# only open is pressed: reveal would put an explorer window in front of whoever is at the pc
+Send-Key 0x4F; Assert-Title 'the browser is over the clip once more' ' . browser$'; Start-Sleep -Milliseconds 500
+Click-At (-316 + 15 + 22) -24.5
+Assert-Frame 'open, at the foot of the metadata column, opens the selected card' 0 4
 Stop-Player
 # the folders files were opened from, newest first: the tree's last, the folder of shots before
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
@@ -653,12 +651,14 @@ Stop-Player
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'a folder''s name typed into the address goes into that folder' ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
 # a press on a folder of the address goes to it: here the one above the folder shown. the names are 6.9 a letter in
-# the address's type, from 14 in, with 20.7 of " / " between them; the line's middle is 18 under the strip
+# the address's type, from 108 in (after the three buttons), with 20.7 of " / " between them; the line's middle is
+# 18 under the strip
 Start-Player
 Start-Sleep -Milliseconds 1000
 $names = $shots -split '\\'
-$x = 150 + 14; foreach ($part in $names[0..($names.Count - 3)]) { $x += $part.Length * 6.9 + 20.7 }
-Click-At ($x + $names[-2].Length * 6.9 / 2) (32 + 18); Start-Sleep -Milliseconds 800
+$x = 150 + 108; foreach ($part in $names[0..($names.Count - 3)]) { $x += $part.Length * 6.9 + 20.7 }
+$crumb = $x + $names[-2].Length * 6.9 / 2
+Click-At $crumb (32 + 18); Start-Sleep -Milliseconds 800
 Stop-Player
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'a press on a folder of the address goes to that folder' ($kept -contains "browser_folder = $tree") "the settings say: $($kept -match 'browser_folder')"
@@ -671,6 +671,44 @@ Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Char $shots; Send-Key 0x0
 Stop-Player
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'after a path that is not there, the address goes to a whole path typed into it' ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
+# back and forward, the first two buttons at the left of the address: the browser goes along the folders it has
+# shown. here from the tree into shots (typed) and to the tree again by its place in the address; two steps back and
+# one forward end in shots, whichever way they are asked for
+function Test-Retrace([string]$by, [scriptblock]$back, [scriptblock]$forward) {
+    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+    Start-Player
+    Start-Sleep -Milliseconds 1000
+    Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Char 'shots'; Send-Key 0x0D; Start-Sleep -Milliseconds 800
+    Click-At $crumb (32 + 18); Start-Sleep -Milliseconds 800
+    & $back; Start-Sleep -Milliseconds 500; & $back; Start-Sleep -Milliseconds 500; & $forward; Start-Sleep -Milliseconds 800
+    Stop-Player
+    $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+    Confirm-That "two steps back and one forward by $by end in the folder between" ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
+}
+Test-Retrace 'the address''s buttons' { Click-At 171 50 } { Click-At 203 50 }
+Test-Retrace 'alt with left and right' { Send-Key 0x25 1 2 } { Send-Key 0x27 1 2 }
+# the side buttons say which of them in the high half of the message's first parameter, and carry the tests' mark
+function Send-Side([int]$which) { [void][EyepieceE2e]::PostMessage($script:h, 0x20B, [IntPtr](($which -shl 16) -bor 0x8000), [IntPtr]0) }
+Test-Retrace 'the mouse''s side buttons' { Send-Side 1 } { Send-Side 2 }
+# read again, the third button, and f5 and control + R: a folder made since the browser listed the one it is in is
+# not there until then. each is found by its first letter and entered, which the folder the browser ends in tells
+$fresh = Join-Path $env:APPDATA 'fresh'; New-Item -ItemType Directory $fresh | Out-Null
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $fresh", 'mute = on'
+Start-Player
+Start-Sleep -Milliseconds 1000
+$late = $fresh
+foreach ($again in { Click-At 235 50 }, { Send-Key 0x74 }, { Send-Key 0x52 1 4 }) {
+    $late = Join-Path $late 'late'; New-Item -ItemType Directory $late | Out-Null
+    & $again; Start-Sleep -Milliseconds 700
+    # the letter comes with its key, as from a keyboard: a character alone after control + R would be taken for R's own
+    Send-Key 0x4C; Start-Sleep -Milliseconds 300; Send-Key 0x0D; Start-Sleep -Milliseconds 500
+}
+Stop-Player
+foreach ($made in $late, (Split-Path $late), (Split-Path (Split-Path $late)), $fresh) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+Confirm-That 'the read-again button, f5 and control + R each show a folder made since the last listing' ($kept -contains "browser_folder = $late") "the settings say: $($kept -match 'browser_folder')"
 # copy and paste in the field go by the clipboard, which is this pc's own: the check is left out when it holds more
 # than plain text, which a test could not put back, and what it held is put back after
 Add-Type -AssemblyName System.Windows.Forms
@@ -678,6 +716,7 @@ $held = [System.Windows.Forms.Clipboard]::GetDataObject()
 $more = if ($held) { @($held.GetFormats() | Where-Object { $_ -notin 'System.String', 'UnicodeText', 'Text', 'OEMText', 'Locale' }) } else { @() }
 if ($more.Count -eq 0) {
     $was = Get-Clipboard -Raw
+    Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $shots", 'mute = on'
     Start-Player
     Start-Sleep -Milliseconds 1000
     Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Key 0x43 1 4; Start-Sleep -Milliseconds 400

@@ -18,6 +18,10 @@ pub enum Icon {
     Full,
     Close,
     Pin,
+    // the browser's: back and forward along the folders shown, and read again
+    Back,
+    Forward,
+    Refresh,
     // markup's tools, and undo
     Rectangle,
     Circle,
@@ -85,9 +89,10 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
             painter.circle_stroke(p(8.0, 8.0), 2.7 * unit, stroke);
         }
         Icon::Info => {
+            // an i in a ring: its dot stands clear of its stem (as one line the two read as a bar, the owner saw)
             painter.circle_stroke(p(8.0, 8.0), 5.7 * unit, stroke);
-            line(&[(8.0, 7.3), (8.0, 10.9)]);
-            line(&[(8.0, 5.0), (8.0, 5.3)]);
+            painter.circle_filled(p(8.0, 5.0), 0.95 * unit, color);
+            painter.line_segment([p(8.0, 7.4), p(8.0, 11.2)], stroke);
         }
         Icon::Shot => {
             painter.add(Shape::closed_line([(2.5, 5.5), (4.7, 5.5), (5.7, 4.0), (10.3, 4.0), (11.3, 5.5), (13.5, 5.5), (13.5, 12.5), (2.5, 12.5)].iter().map(|&(x, y)| p(x, y)).collect(), stroke));
@@ -131,6 +136,19 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Text => {
             line(&[(4.0, 4.5), (12.0, 4.5)]);
             line(&[(8.0, 4.5), (8.0, 12.5)]);
+        }
+        Icon::Back => {
+            line(&[(12.5, 8.0), (4.0, 8.0)]);
+            line(&[(7.5, 4.2), (3.7, 8.0), (7.5, 11.8)]);
+        }
+        Icon::Forward => {
+            line(&[(3.5, 8.0), (12.0, 8.0)]);
+            line(&[(8.5, 4.2), (12.3, 8.0), (8.5, 11.8)]);
+        }
+        // three quarters of a ring, round by the bottom and the left to the top right, where its head points on round
+        Icon::Refresh => {
+            painter.add(Shape::line([arc(8.0, 8.4, 4.8, 20.0, 110.0), arc(8.0, 8.4, 4.8, 110.0, 200.0), arc(8.0, 8.4, 4.8, 200.0, 290.0)].concat().iter().map(|&(x, y)| p(x, y)).collect(), stroke));
+            fill(&[(10.43, 1.73), (12.46, 4.92), (8.85, 6.05)]);
         }
         Icon::Undo => {
             line(&[(5.5, 4.0), (3.0, 6.5), (5.5, 9.0)]);

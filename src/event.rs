@@ -17,6 +17,10 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    F5,
+    /// the keyboard's own back and forward keys, which the mouse's side buttons press too
+    BrowserBack,
+    BrowserForward,
     /// any key the player has no use for: it is still a key pressed, which a character typed may follow
     Other,
     Digit0,

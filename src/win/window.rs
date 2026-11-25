@@ -417,6 +417,9 @@ fn key(vk: u16) -> Option<Key> {
         0x23 => Key::End,
         0x21 => Key::PageUp,
         0x22 => Key::PageDown,
+        0x74 => Key::F5,
+        0xa6 => Key::BrowserBack,
+        0xa7 => Key::BrowserForward,
         0x30 | 0x60 => Key::Digit0,
         0x31 | 0x61 => Key::Digit1,
         0x32 | 0x62 => Key::Digit2,
@@ -552,7 +555,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     // characters carry no scan code
     if (*shared).posted {
         let theirs = match msg {
-            WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => wp.0 & POSTED != 0,
+            WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_XBUTTONDOWN => wp.0 & POSTED != 0,
             WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR => (lp.0 >> 16) & 0xff == 0,
             _ => true,
         };
@@ -626,6 +629,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             (*shared).tracking = false;
             let _ = (*shared).events.send(Event::PointerLeave);
             LRESULT(0)
+        }
+        // the mouse's side buttons press the keyboard's back and forward keys
+        WM_XBUTTONDOWN => {
+            send(Event::Key { key: if (wp.0 >> 16) & 0xffff == 1 { Key::BrowserBack } else { Key::BrowserForward }, mods: Mods::default() });
+            LRESULT(1)
         }
         WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => {
             let (button, down) = match msg {

@@ -520,6 +520,7 @@ fn key(event: &NSEvent) -> Option<Key> {
         119 => Key::End,
         116 => Key::PageUp,
         121 => Key::PageDown,
+        96 => Key::F5,
         _ => match event.charactersIgnoringModifiers().and_then(|typed| typed.to_string().chars().next()).map(|c| c.to_ascii_lowercase()) {
             Some('0' | ')') => Key::Digit0,
             Some('1' | '!') => Key::Digit1,

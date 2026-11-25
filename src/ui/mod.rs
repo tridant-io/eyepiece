@@ -310,9 +310,8 @@ pub enum Action {
     CloseTab(usize),
     /// go to this clip of the played folder
     GoClip(usize),
-    /// open this file in the tab that is up, or in a tab of its own
+    /// open this file in the tab that is up
     Open(PathBuf),
-    OpenTab(PathBuf),
     /// show this file in the system's own file browser
     Reveal(PathBuf),
     /// play this folder: asked for in the browser
@@ -506,6 +505,14 @@ impl Ui {
 
     pub fn browser_address(&mut self) {
         self.browser.edit_address();
+    }
+
+    pub fn browser_retrace(&mut self, by: isize) {
+        self.browser.retrace(by);
+    }
+
+    pub fn browser_refresh(&mut self) {
+        self.browser.refresh();
     }
 
     pub fn browser_char(&mut self, c: char) {
@@ -761,7 +768,6 @@ impl Ui {
                     }
                     (None, None) => match self.browser.draw(ui, body) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
-                        Some(browser::Chosen::NewTab(path)) => actions.push(Action::OpenTab(path)),
                         Some(browser::Chosen::Reveal(path)) => actions.push(Action::Reveal(path)),
                         Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),
                         Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
@@ -1140,6 +1146,10 @@ impl Ui {
         // as wide as its name up to a limit; too many for the strip, and they all narrow
         let room = (x - from - PLUS).max(0.0);
         let place = |i: usize| screen.places.get(i).copied().flatten();
+        // the one tab there is, with nothing in it but the browser: closing it would leave the same, so it has no close
+        // mark, and no room kept for one (the owner's word, 2026-11-24)
+        let lone = screen.tabs.len() == 1 && screen.clip.is_none() && screen.error.is_none() && screen.opening.is_none();
+        let pad = if lone { 24.0 } else { TAB_PAD };
         let wide = |i: usize, name: &str| {
             let label = match place(i) {
                 Some(place) => {
@@ -1148,7 +1158,7 @@ impl Ui {
                 }
                 None => painter.layout_no_wrap(name.to_string(), font(MONO_MEDIUM, 11.5), FG).size().x,
             };
-            (label + TAB_PAD).min(TAB_MAX)
+            (label + pad).min(TAB_MAX)
         };
         let mut widths: Vec<f32> = screen.tabs.iter().enumerate().map(|(i, name)| wide(i, name)).collect();
         if widths.iter().sum::<f32>() > room {
@@ -1183,6 +1193,8 @@ impl Ui {
             }
             if up {
                 clipped.rect_filled(tab, 0.0, TAB_ON);
+            }
+            if up && !lone {
                 let close = Rect::from_center_size(Pos2::new(tab.right() - 8.0 - 6.0, tab.center().y), Vec2::splat(16.0));
                 let mark = ui.interact(close.intersect(view), ui.scope_id().with(("tab-close", i)), Sense::click());
                 if mark.clicked() {
@@ -1198,7 +1210,7 @@ impl Ui {
                 self.folder_tab(ui, text, (i, up), place, actions);
                 continue;
             }
-            let galley = cut_middle(&clipped, name, font(family, 11.5), color, width - TAB_PAD);
+            let galley = cut_middle(&clipped, name, font(family, 11.5), color, width - pad);
             clipped.galley(Pos2::new(tab.left() + 12.0, text_top(&clipped, font(family, 11.5), tab.center().y)), galley, color);
         }
         // the + that opens a new tab
@@ -1661,7 +1673,7 @@ enum Lit {
 }
 
 /// a 30 x 28 button holding one icon.
-fn icon_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) -> egui::Response {
+fn icon_button(ui: &egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) -> egui::Response {
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
     if response.is_pointer_button_down_on() || lit == Lit::Active {
         ui.painter().rect_filled(rect, 3.0, PRESSED);
@@ -1931,6 +1943,32 @@ mod tests {
         pass(&mut ui);
         assert!(!ui.typing());
         assert_eq!(ui.browser_folder(), other);
+    }
+
+    /// back, at the left of the address, pressed twice as fast as a double click goes back two folders, not one.
+    #[test]
+    fn back_pressed_twice_fast_goes_back_two_folders() {
+        let mut ui = Ui::new((1240, 700), 1.0, false, Some(std::env::temp_dir()), None);
+        let screen = Screen { tabs: vec!["browser"], current: 0, places: Vec::new(), clip: None, error: None, opening: None, list: None, browsing: true, fullscreen: false, toast: None };
+        let pass = |ui: &mut Ui| ui.run(&screen).textures.clear();
+        pass(&mut ui);
+        let start = ui.browser_folder().to_path_buf();
+        for name in ["one", "two"] {
+            ui.browser_address();
+            pass(&mut ui);
+            pass(&mut ui);
+            ui.paste(name.to_string());
+            pass(&mut ui);
+            ui.key(Key::Enter, Mods::default());
+            pass(&mut ui);
+            pass(&mut ui);
+        }
+        assert_eq!(ui.browser_folder(), start.join("one").join("two"));
+        // the first of the address's buttons, 6 in from the sidebar's 150, in the line under the strip
+        drive_on(&mut ui, &screen, &click(171.0, 50.0));
+        assert_eq!(ui.browser_folder(), start.join("one"));
+        drive_on(&mut ui, &screen, &click(171.0, 50.0));
+        assert_eq!(ui.browser_folder(), start);
     }
 
     /// a name with letters our type lacks is written with the system's, not with empty boxes: ours has no ł, which

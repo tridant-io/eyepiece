@@ -106,6 +106,11 @@ pub struct Nav {
     /// what has been typed to select by name, and when the last letter came
     typed: String,
     typed_at: Option<Instant>,
+    /// the folders the main area has shown, oldest first, and which of them it shows now: back and forward go along
+    /// them. `stepped`: the one it is on came by a step up or down a column, and the next such step takes its place
+    visited: Vec<PathBuf>,
+    at: usize,
+    stepped: bool,
 }
 
 impl Nav {
@@ -120,6 +125,9 @@ impl Nav {
             listings: HashMap::new(),
             typed: String::new(),
             typed_at: None,
+            visited: vec![folder.to_path_buf()],
+            at: 0,
+            stepped: false,
         }
     }
 
@@ -129,6 +137,41 @@ impl Nav {
         let root = root_of(folder, places);
         (self.path, self.previewing, self.focus) = (columns(&root, folder), false, Focus::Columns);
         self.volume = browse::volume_of(&root);
+    }
+
+    /// notes the folder the main area shows now, when it is another than before: the folders that lay forward of the
+    /// old one go. a run of steps up and down a column (`stepping`) leaves the folder it ends on, not every one it
+    /// passed, and a run that ends where it began leaves none. anything else done in a folder stepped to keeps it.
+    pub fn visit(&mut self, stepping: bool) {
+        let folder = self.main().folder.clone();
+        if self.visited[self.at] == folder {
+            self.stepped &= stepping;
+            return;
+        }
+        if !(stepping && self.stepped) {
+            self.at += 1;
+        }
+        self.visited.truncate(self.at);
+        self.stepped = stepping;
+        if self.at > 0 && self.visited[self.at - 1] == folder {
+            (self.at, self.stepped) = (self.at - 1, false);
+        } else {
+            self.visited.push(folder);
+        }
+    }
+
+    /// whether there is a folder `by` along those visited: -1 the one before the one shown, 1 the one after
+    pub fn can_retrace(&self, by: isize) -> bool {
+        self.at.checked_add_signed(by).is_some_and(|to| to < self.visited.len())
+    }
+
+    /// back (-1) or forward (1) along the folders visited: there, as `go` goes. nothing at either end.
+    pub fn retrace(&mut self, by: isize, places: &[PathBuf]) {
+        if self.can_retrace(by) {
+            (self.at, self.stepped) = (self.at.wrapping_add_signed(by), false);
+            let folder = self.visited[self.at].clone();
+            self.go(&folder, places);
+        }
     }
 
     /// the columns drawn: the whole path but a folder only shown
@@ -311,6 +354,7 @@ impl Nav {
             },
             _ => {}
         }
+        self.visit(matches!(key, Key::Up | Key::Down | Key::Home | Key::End));
         None
     }
 
@@ -327,6 +371,7 @@ impl Nav {
         if let Some((path, folder)) = found.map(|e| (e.path.clone(), e.kind == Kind::Folder)) {
             self.select(at, path, folder);
         }
+        self.visit(true);
     }
 
     /// a card clicked: its folder is entered if it was only shown, and the card selected.
@@ -646,5 +691,39 @@ mod tests {
         assert_eq!(nav.needed(0), [r.join("shots"), r.clone(), at("no/such")]);
         // the columns scrolled off the left are not listed
         assert_eq!(nav.needed(1), [r.join("shots"), r]);
+    }
+
+    /// back and forward go along the folders the main area has shown. a run of steps up and down a column leaves
+    /// the folder it ends on, not every one passed, and a run that ends where it began leaves none; going somewhere
+    /// new from the middle drops the folders that lay forward.
+    #[test]
+    fn the_folders_shown_are_gone_back_and_forward_along() {
+        let (mut nav, r) = tree();
+        let (places, shots) = ([at("no/such")], r.join("shots"));
+        assert!(!nav.can_retrace(-1) && !nav.can_retrace(1));
+        // down the column: shots is shown, then a file selected puts r back in the main area
+        press(&mut nav, Key::Down);
+        assert!(nav.main().folder == shots && nav.can_retrace(-1));
+        press(&mut nav, Key::Down);
+        assert!(nav.main().folder == r && !nav.can_retrace(-1));
+        // shown again and entered, then up from it: r, shots, r
+        press(&mut nav, Key::Up);
+        press(&mut nav, Key::Right);
+        press(&mut nav, Key::Backspace);
+        assert_eq!(nav.main().folder, r);
+        nav.retrace(-1, &places);
+        assert_eq!(nav.main().folder, shots);
+        nav.retrace(-1, &places);
+        assert!(nav.main().folder == r && !nav.can_retrace(-1) && nav.can_retrace(1));
+        nav.retrace(-1, &places);
+        assert_eq!(nav.main().folder, r, "there is nowhere further back");
+        nav.retrace(1, &places);
+        assert_eq!(nav.main().folder, shots);
+        // somewhere new from the middle: what lay forward is gone
+        nav.go(&at("no/such/other"), &places);
+        nav.visit(false);
+        assert!(!nav.can_retrace(1));
+        nav.retrace(-1, &places);
+        assert_eq!(nav.main().folder, shots);
     }
 }
