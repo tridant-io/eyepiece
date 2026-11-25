@@ -1535,7 +1535,14 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Key { key: Key::Escape | Key::Slash, .. } if table_up => {}
                 // a field being typed into takes the keys; escape closes it and its menu
                 Event::Key { key, mods } if ui.typing() => {
-                    ui.key(key, mods);
+                    // control + V types what the clipboard holds
+                    if key == Key::V && mods.ctrl {
+                        if let Some(text) = window::pasted_text() {
+                            ui.paste(text);
+                        }
+                    } else {
+                        ui.key(key, mods);
+                    }
                     if key == Key::Escape {
                         ui.escape();
                     }
@@ -1571,13 +1578,15 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         ui.escape();
                     }
                 }
+                // in the browser control + L makes the address a field to type a path into
+                Event::Key { key: Key::L, mods } if browsing && mods.ctrl => ui.browser_address(),
                 // in the browser the keys move about it and letters select by name
                 Event::Key { key, mods } if browsing && !mods.ctrl && !mods.alt => ui.browser_key(key, mods),
                 // the character a command's own press types is not typed. a field being typed into takes every
                 // character: one that comes without a key of its own, after a command chosen with the pointer (undo
                 // from the row of tools), is no command's
                 Event::Char(_) if command && !ui.typing() => command = false,
-                Event::Char(c) if browsing => ui.browser_char(c),
+                Event::Char(c) if browsing && !ui.typing() => ui.browser_char(c),
                 // ? (or the slash alone) shows the table of keys over the clip
                 Event::Key { key: Key::Slash, mods } if !mods.ctrl && !mods.alt => ui.show_keys(),
                 // the keys that are not one clip's: a new tab, the browser over this one, fullscreen (with shift, on
@@ -1759,6 +1768,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             settings.browser_recent = ui.browser_recent().to_vec();
         }
         settings.pin_controls = ui.pinned();
+        if let Some(text) = &out.copied {
+            window::copy_text(text);
+        }
         for action in &out.actions {
             match action {
                 Action::NewTab => tabs.new_tab(),

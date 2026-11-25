@@ -111,6 +111,26 @@ fn fonts() -> egui::FontDefinitions {
     fonts
 }
 
+/// our type, and after it the system's own for the letters ours lacks: the two faces hold western european
+/// letters, and a folder named in polish came out with an empty box. the system's ui face (segoe ui on windows, san
+/// francisco on macos) is read from the system's own folder when the controls are made; it adds the rest of
+/// latin, greek and cyrillic. a name in a script it lacks too is still drawn with boxes.
+fn fonts_with_system() -> egui::FontDefinitions {
+    let mut fonts = fonts();
+    let file = if cfg!(windows) {
+        std::env::var_os("WINDIR").map(|windows| std::path::Path::new(&windows).join("Fonts").join("segoeui.ttf"))
+    } else {
+        Some(PathBuf::from("/System/Library/Fonts/SFNS.ttf"))
+    };
+    if let Some(bytes) = file.and_then(|file| std::fs::read(file).ok()) {
+        fonts.font_data.insert("system".to_string(), Arc::new(egui::FontData::from_owned(bytes)));
+        for family in fonts.families.values_mut() {
+            family.push("system".to_string());
+        }
+    }
+    fonts
+}
+
 /// where the top of a line of this type goes for the line to look centered on `middle`: by eye, which takes the
 /// middle of the figures and capitals for the middle of the text. the line's own box has more room above the letters
 /// than below them, so centering the box leaves the text low.
@@ -329,6 +349,8 @@ pub struct Output {
     /// when the controls want drawing again with nothing new from the window: an animation is running, or the
     /// controls are due to fade. None when they are at rest.
     pub again: Option<Duration>,
+    /// text copied from a field, for the clipboard
+    pub copied: Option<String>,
     /// the strip and the bar are up
     pub shown: bool,
     /// the frame under the pointer on the timebar: its picture is wanted
@@ -423,7 +445,7 @@ impl Ui {
     /// `folder` is where the browser starts: the one it was last in.
     pub fn new(size: (u32, u32), scale: f32, timecode: bool, folder: Option<PathBuf>, pictures: Option<Pictures>) -> Ui {
         let ctx = egui::Context::default();
-        ctx.set_fonts(fonts());
+        ctx.set_fonts(fonts_with_system());
         let mut visuals = egui::Visuals::dark();
         // the one text field style: the design's
         visuals.selection.bg_fill = ACCENT.gamma_multiply(0.5);
@@ -480,6 +502,10 @@ impl Ui {
     /// a key, a typed character and the wheel for the browser, while it is up.
     pub fn browser_key(&mut self, key: Key, mods: Mods) {
         self.browser.key(key, mods);
+    }
+
+    pub fn browser_address(&mut self) {
+        self.browser.edit_address();
     }
 
     pub fn browser_char(&mut self, c: char) {
@@ -554,8 +580,16 @@ impl Ui {
         self.ctx.egui_wants_keyboard_input()
     }
 
-    /// a key for the field being typed into.
+    /// what the clipboard holds is typed into the field that has the keyboard.
+    pub fn paste(&mut self, text: String) {
+        self.events.push(egui::Event::Paste(text));
+    }
+
+    /// a key for the field being typed into. control + C copies what is selected in it (`Output::copied`).
     pub fn key(&mut self, key: Key, mods: Mods) {
+        if key == Key::C && mods.ctrl {
+            return self.events.push(egui::Event::Copy);
+        }
         let key = match key {
             Key::Backspace => egui::Key::Backspace,
             Key::Delete => egui::Key::Delete,
@@ -694,8 +728,12 @@ impl Ui {
             self.draw(ui, screen, now, &mut actions)
         });
         let again = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < Duration::from_secs(3600));
+        let copied = out.platform_output.commands.iter().find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        });
         self.moved = false;
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, shown: self.shown, hovered: self.time_hover, cross: self.cross }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown: self.shown, hovered: self.time_hover, cross: self.cross }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -1862,6 +1900,24 @@ mod tests {
         assert_eq!(drive_on(&mut ui, &screen(zoomed()), &click(at.0, at.1)), vec![Action::Pan((480.0, 270.0))]);
         std::thread::sleep(Duration::from_millis(350));
         assert_eq!(drive_on(&mut ui, &screen(model()), &click(at.0, at.1)), vec![Action::TogglePlay], "fitted, no navigator");
+    }
+
+    /// a name with letters our type lacks is written with the system's, not with empty boxes: ours has no ł, which
+    /// a folder of the owner's is named with.
+    #[test]
+    fn letters_our_type_lacks_are_written_in_the_systems() {
+        let writes = |fonts: egui::FontDefinitions| {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(fonts);
+            let mut all = false;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                all = [SANS, MONO, MONO_MEDIUM].iter().all(|family| ui.ctx().fonts_mut(|f| f.has_glyphs(&font(family, 12.0), "Sławek, Ελένη, Юрий")));
+            });
+            out.textures_delta.clear();
+            all
+        };
+        assert!(!writes(fonts()), "our own type writes these after all: the system's is not needed");
+        assert!(writes(fonts_with_system()));
     }
 
     /// the pin at the bar's far left keeps the controls up when the pointer leaves the window, where they go at

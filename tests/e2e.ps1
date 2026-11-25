@@ -601,7 +601,7 @@ Confirm-That 'the browser at rest, its folders listed and its posters made, uses
 # cards along. here the first card, beside as many columns as fit and no metadata column
 $columns = [math]::Floor(((Get-Width) - 150 - 360) / 168); $main = 150 + 168 * $columns; $inner = (Get-Width) - $main - 28
 $across = [math]::Floor(($inner + 12) / 172); $card = [math]::Floor(($inner - 12 * ($across - 1)) / $across)
-$script:name = 'hap_64.mov'; DoubleClick-At ($main + 14 + $card / 2) (32 + 36 + 14 + $card * 9 / 32)
+$script:name = 'hap_64.mov'; DoubleClick-At ($main + 14 + $card / 2) (32 + 36 + 36 + 14 + $card * 9 / 32)
 Assert-Frame 'a double click opens the card it was on' 0 3
 # left from the grid's first card goes back to the columns, home selects the folder of shots there and the main area
 # shows it; right enters it on its first clip, down goes to the next
@@ -622,7 +622,7 @@ Send-Key 0x4F; Assert-Title 'the browser is over the clip again' ' . browser$'
 # a double click on nothing opens nothing, however recently a clip was clicked: here its row, the fourth of the last
 # column (the metadata column is up, so the columns that fit are fewer), then the empty grid at the bottom
 $columns = [math]::Floor(((Get-Width) - 150 - 316 - 360) / 168)
-Click-At (150 + 168 * $columns - 84) (32 + 8 + 26.25 * 3.5); Start-Sleep -Milliseconds 1000
+Click-At (150 + 168 * $columns - 84) (32 + 36 + 8 + 26.25 * 3.5); Start-Sleep -Milliseconds 1000
 DoubleClick-At (150 + 168 * $columns + 100) ((Get-Height) - 80); Start-Sleep -Milliseconds 1000
 Assert-Title 'a double click on nothing opens nothing' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
@@ -639,6 +639,29 @@ Stop-Player
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'the folders files were opened from are kept as the recent ones, the newest first' ($kept -contains "browser_recent = $tree | $shots") "the settings say: $($kept -match 'browser_recent')"
 # reveal (fig. 28) is not pressed here: it would put an explorer window in front of whoever is at the pc
+
+# ---- the address: a line across the top of the browser, right of the sidebar, with every folder from the drive
+# down to the one shown. control + L makes it a field with the path selected: a folder's name typed over it goes into
+# that folder, and the browser keeps where it is between runs, which is how this is read back
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $tree", 'mute = on'
+Start-Player
+Start-Sleep -Milliseconds 1000
+# pressed again once the field has the keyboard, it types no letter into it
+Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 400; Send-Key 0x4C 1 4; Start-Sleep -Milliseconds 300
+Send-Char 'shots'; Send-Key 0x0D; Start-Sleep -Milliseconds 800
+Stop-Player
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+Confirm-That 'a folder''s name typed into the address goes into that folder' ($kept -contains "browser_folder = $shots") "the settings say: $($kept -match 'browser_folder')"
+# a press on a folder of the address goes to it: here the one above the folder shown. the names are 6.9 a letter in
+# the address's type, from 14 in, with 20.7 of " / " between them; the line's middle is 18 under the strip
+Start-Player
+Start-Sleep -Milliseconds 1000
+$names = $shots -split '\\'
+$x = 150 + 14; foreach ($name in $names[0..($names.Count - 3)]) { $x += $name.Length * 6.9 + 20.7 }
+Click-At ($x + $names[-2].Length * 6.9 / 2) (32 + 18); Start-Sleep -Milliseconds 800
+Stop-Player
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
+Confirm-That 'a press on a folder of the address goes to that folder' ($kept -contains "browser_folder = $tree") "the settings say: $($kept -match 'browser_folder')"
 
 # ---- a played folder: shift + enter plays the folder the browser shows, its clips one after another in name order.
 # here hap_64.mov (3 frames), prores_64.mov (4), x_roll.mov (3) and y_broken.mov, which is no clip at all; the one
@@ -699,7 +722,7 @@ Start-Sleep -Milliseconds 3000
 Confirm-That 'a network folder is listed and none of its files is read: no poster is made' ((Get-Kept).Count -eq $had) "$((Get-Kept).Count - $had) files of pictures made"
 # the button stands at the note's right, 220 wide ("make previews · reads 2 files", 29 letters 6.9 wide, and its room)
 # and centered on the note's height: found by its white edge, the first bright line under the path line
-$top = Get-FirstBright -140 82 -134 400
+$top = Get-FirstBright -140 118 -134 436
 Confirm-That 'the network folder''s note offers its previews' ($top -gt 0) 'no button found at the right of the note'
 if ($top -gt 0) { Click-At -137 ($top + 15) }
 foreach ($i in 1..100) { if ((Get-Kept).Count -ge $had + 2) { break }; Start-Sleep -Milliseconds 100 }

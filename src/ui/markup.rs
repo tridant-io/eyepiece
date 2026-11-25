@@ -319,7 +319,7 @@ pub struct Saved {
 /// where `place` puts them, and the caption under it all, so the caption covers no pixel.
 pub fn saved(size: (u32, u32), scale: f32, place: &Placing, guides: Option<Guides>, marks: &[Mark], caption: Option<&str>) -> Saved {
     let ctx = egui::Context::default();
-    ctx.set_fonts(super::fonts());
+    ctx.set_fonts(super::fonts_with_system());
     let (w, h) = (size.0 as f32 / scale, size.1 as f32 / scale);
     let mut raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h + CAPTION_ROOM))), ..Default::default() };
     raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);

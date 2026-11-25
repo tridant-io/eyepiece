@@ -40,6 +40,10 @@ _Avoid_: ring, gop cache, frame cache
 the small plan of the whole picture that stands at the lower left while the picture is zoomed past the window, the part in view marked on it. a press or a drag in it pans.
 _Avoid_: minimap, overview, viewer, thumbnail
 
+**address**:
+the line across the top of the browser that names every folder from the drive or share down to the one shown. a press on a folder goes to it; a press on the rest of the line, or control + L, makes it a field a path is typed or pasted into.
+_Avoid_: address bar, path bar, breadcrumbs (the bar is the control bar and nothing else)
+
 **chip**:
 a small label that stays on the picture while the view differs from the plain clip: zoom, speed, loop analysis, mirror, a single channel.
 _Avoid_: badge, toast, pill

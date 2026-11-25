@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use windows::core::{w, Result, BOOL, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_VISIBLE_FRAME_BORDER_THICKNESS, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -323,6 +323,28 @@ pub fn copy_text(text: &str) -> bool {
     to_clipboard(UNICODE_TEXT, &wide)
 }
 
+/// the text on the clipboard, when it holds any: for a field being typed into.
+pub fn pasted_text() -> Option<String> {
+    const UNICODE_TEXT: u32 = 13;
+    unsafe {
+        OpenClipboard(None).ok()?;
+        let read = || -> Option<String> {
+            let held = HGLOBAL(GetClipboardData(UNICODE_TEXT).ok()?.0);
+            let at = GlobalLock(held) as *const u16;
+            if at.is_null() {
+                return None;
+            }
+            let length = (0..).take_while(|&i| *at.add(i) != 0).count();
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(at, length));
+            let _ = GlobalUnlock(held);
+            Some(text)
+        };
+        let text = read();
+        let _ = CloseClipboard();
+        text
+    }
+}
+
 /// puts a picture on the clipboard, 8 bits a channel. `pixels` is red, green, blue, alpha, 16 bits each, row by row
 /// from the top.
 pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
@@ -557,7 +579,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         },
         WM_CHAR => {
-            if let Some(c) = char::from_u32(wp.0 as u32).filter(|c| !c.is_control()) {
+            // a posted key marked as held with control or alt types nothing, as the keyboard's own does not: windows
+            // makes the letter of it all the same, and that character carries the key's marks
+            let typed = !((*shared).posted && lp.0 & 6 != 0);
+            if let Some(c) = char::from_u32(wp.0 as u32).filter(|c| typed && !c.is_control()) {
                 send(Event::Char(c));
             }
             LRESULT(0)

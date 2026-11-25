@@ -6,7 +6,7 @@
 mod jobs;
 mod nav;
 
-use super::{cut_middle, font, text_top, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
+use super::{cut_middle, font, text_top, ACCENT, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS};
 use crate::browse::{self, Entry, Group, Kind, Place, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
@@ -141,6 +141,11 @@ impl Browser {
         }
     }
 
+    /// makes the address a field to type into (control + L, as in the system's file browser and a web browser).
+    pub fn edit_address(&mut self) {
+        self.state().click(Click::Address);
+    }
+
     /// a typed character: letters select by name.
     pub fn char(&mut self, c: char) {
         let state = self.state();
@@ -204,6 +209,9 @@ struct State {
     /// what is under the pointer (a selected card brings in the metadata column)
     twice: Option<Click>,
     chosen: Option<Chosen>,
+    /// the address while it is a field being typed into, and that it has just become one
+    address: Option<String>,
+    address_fresh: bool,
     /// the pass it was last drawn in
     drawn: u64,
 }
@@ -225,11 +233,16 @@ enum Click {
     Read(PathBuf),
     /// the previews of this folder
     Previews(PathBuf),
+    /// the address becomes a field to type into; and what was typed there, entered
+    Address,
+    Go(PathBuf),
 }
 
-/// where the parts go: the sidebar, the columns that fit (the deepest ones), the main area, the metadata column
+/// where the parts go: the sidebar, the address across the top of the rest, and under it the columns that fit (the
+/// deepest ones), the main area, the metadata column
 struct Layout {
     side: Rect,
+    address: Rect,
     /// the first column on the path that is drawn, and where each drawn one goes
     first: usize,
     columns: Vec<Rect>,
@@ -244,10 +257,12 @@ impl Layout {
         let room = area.width() - SIDE - if meta { META } else { 0.0 };
         let fit = (((room - MAIN_MIN) / COLUMN).floor().max(1.0) as usize).min(shown);
         let x = |offset: f32| area.left() + offset;
-        let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, area.top()), Pos2::new(to.max(from), area.bottom()));
+        let top = area.top() + PATH_LINE;
+        let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, top), Pos2::new(to.max(from), area.bottom()));
         let main = x(SIDE + fit as f32 * COLUMN);
         Layout {
-            side: span(area.left(), x(SIDE)),
+            side: Rect::from_min_max(area.min, Pos2::new(x(SIDE), area.bottom())),
+            address: Rect::from_min_max(Pos2::new(x(SIDE), area.top()), Pos2::new(area.right(), top)),
             first: shown - fit,
             columns: (0..fit).map(|i| span(x(SIDE + i as f32 * COLUMN), x(SIDE + (i + 1) as f32 * COLUMN))).collect(),
             main: span(main, if meta { area.right() - META } else { area.right() }),
@@ -324,6 +339,8 @@ impl State {
             per_row: 1,
             twice: None,
             chosen: None,
+            address: None,
+            address_fresh: false,
             drawn: 0,
         }
     }
@@ -424,6 +441,7 @@ impl State {
         self.scroll(ui, &layout);
         let mut clicks = Vec::new();
         self.side(ui, layout.side, &mut clicks);
+        self.address_line(ui, layout.address, &mut clicks);
         for (i, rect) in layout.columns.iter().enumerate() {
             self.column(ui, layout.first + i, *rect, &mut clicks);
         }
@@ -479,6 +497,104 @@ impl State {
             }
             Click::Previews(folder) => {
                 self.previews.insert(folder);
+            }
+            Click::Address => {
+                self.address = Some(self.nav.main().folder.to_string_lossy().into_owned());
+                self.address_fresh = true;
+            }
+            // from the folder shown, so a folder's name alone goes into it. a file named by its type opens: the user
+            // asked for that file. anything else is taken for a folder, and listed
+            Click::Go(to) => {
+                let to = self.nav.main().folder.join(to);
+                if to.file_name().and_then(|name| name.to_str()).is_some_and(browse::is_media) {
+                    self.choose(Chosen::Open(to));
+                } else {
+                    self.nav.go(&to, &self.roots);
+                }
+            }
+        }
+    }
+
+    /// the address (the owner's ask, 2026-11-24): a line across the top, over the columns and the main area, with
+    /// every folder from the drive or share down to the one shown, or the field a path is typed into.
+    fn address_line(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 1.0), rect.max), 0.0, LINE);
+        let (left, middle, room) = (rect.left() + 14.0, rect.top() + (PATH_LINE - 1.0) / 2.0, rect.width() - 28.0);
+        if self.address.is_some() {
+            self.address_field(ui, Rect::from_min_size(Pos2::new(left - 8.0, middle - 13.75), Vec2::new(room + 16.0, 27.5)), clicks);
+        } else {
+            let folder = self.nav.main().folder.clone();
+            self.address_crumbs(ui, &painter, &folder, left, middle, room, clicks);
+        }
+    }
+
+    /// the address, while it is not being typed into: the folders from the drive or share down to the one shown,
+    /// each a press away, the first ones left out behind an ellipsis when the line is too short. a press on the rest
+    /// of the line, or on the folder shown, makes the line a field.
+    fn address_crumbs(&self, ui: &egui::Ui, painter: &Painter, folder: &Path, left: f32, middle: f32, room: f32, clicks: &mut Vec<Press>) {
+        let line = Rect::from_min_max(Pos2::new(left, middle - 13.75), Pos2::new(left + room, middle + 13.75));
+        if ui.interact(line, ui.scope_id().with("brw-address"), Sense::click()).clicked() {
+            clicks.push((Click::Address, None));
+        }
+        let crumbs = crumbs(folder);
+        let last = crumbs.len().saturating_sub(1);
+        let laid: Vec<Arc<Galley>> = crumbs.iter().enumerate().map(|(i, (name, _))| painter.layout_no_wrap(name.clone(), font(if i == last { MONO_MEDIUM } else { MONO }, 11.5), FG)).collect();
+        let between = painter.layout_no_wrap(" / ".to_string(), font(MONO, 11.5), ROW_DIM);
+        let more = painter.layout_no_wrap("…".to_string(), font(MONO, 11.5), ROW_DIM);
+        let wide = |first: usize| laid[first..].iter().map(|g| g.size().x).sum::<f32>() + between.size().x * (laid.len() - first - 1) as f32 + if first > 0 { more.size().x + between.size().x } else { 0.0 };
+        let first = (0..=last).find(|&first| wide(first) <= room).unwrap_or(last);
+        let mut x = left;
+        if first > 0 {
+            painter.galley(Pos2::new(x, top_of(painter, &more, middle)), more.clone(), ROW_DIM);
+            x += more.size().x;
+            painter.galley(Pos2::new(x, top_of(painter, &between, middle)), between.clone(), ROW_DIM);
+            x += between.size().x;
+        }
+        for (i, galley) in laid.into_iter().enumerate().skip(first) {
+            let at = Rect::from_min_size(Pos2::new(x, line.top()), Vec2::new(galley.size().x, line.height())).intersect(line);
+            let response = ui.interact(at, ui.scope_id().with(("brw-crumb", i)), Sense::click());
+            if response.clicked() {
+                clicks.push((if i == last { Click::Address } else { Click::Place(crumbs[i].1.clone()) }, None));
+            }
+            let color = if i == last || response.hovered() { FG } else { DIM };
+            x += galley.size().x;
+            painter.galley_with_override_text_color(Pos2::new(at.left(), top_of(painter, &galley, middle)), galley, color);
+            if i < last {
+                painter.galley(Pos2::new(x, top_of(painter, &between, middle)), between.clone(), ROW_DIM);
+                x += between.size().x;
+            }
+        }
+    }
+
+    /// the address as a field: the path as the system writes it, all of it selected, to type over or paste into.
+    /// enter goes there; escape, or a press elsewhere, leaves the browser where it was. outlined in the accent, as
+    /// the menus' fields are while they have the keyboard.
+    fn address_field(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
+        let fresh = std::mem::take(&mut self.address_fresh);
+        let Some(text) = &mut self.address else { return };
+        let id = egui::Id::unique("brw-address-edit");
+        let mut entered = None;
+        egui::Area::new(egui::Id::unique("brw-address-field")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ui.ctx(), |ui| {
+            // an area keeps the width it first had (egui's 600 at most): the line's own, every pass
+            ui.set_width(rect.width());
+            egui::Frame::new().fill(BACK).stroke((1.0, ACCENT)).inner_margin(egui::Margin::symmetric(7, 5)).show(ui, |ui| {
+                let edit = ui.add(egui::TextEdit::singleline(text).id(id).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(font(MONO, 11.5)).text_color(FG).desired_width(rect.width() - 16.0));
+                if fresh {
+                    edit.request_focus();
+                    let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+                    state.store(ui.ctx(), id);
+                }
+                if edit.lost_focus() {
+                    entered = Some(ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                }
+            });
+        });
+        if let Some(go) = entered {
+            let text = self.address.take().unwrap_or_default();
+            if let Some(to) = typed(&text).filter(|_| go) {
+                clicks.push((Click::Go(to), None));
             }
         }
     }
@@ -881,6 +997,20 @@ impl State {
 }
 
 /// how long the selection has still to rest on `file` before it is read: `REST` from when it got there.
+/// the folders from the top of a drive or share down to `folder`, each with the name the address shows for it.
+fn crumbs(folder: &Path) -> Vec<(String, PathBuf)> {
+    let mut down: Vec<&Path> = folder.ancestors().filter(|above| !above.as_os_str().is_empty()).collect();
+    down.reverse();
+    down.into_iter().map(|at| (browse::name_of(at), at.to_path_buf())).collect()
+}
+
+/// what was typed into the address: a path, as typed or as the system's file browser copies one, in quotes. none
+/// when nothing was.
+fn typed(text: &str) -> Option<PathBuf> {
+    let path = text.trim().trim_matches('"').trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
 fn rest(resting: &mut Option<(PathBuf, f64)>, file: &Path, now: f64) -> f64 {
     match resting {
         Some((on, since)) if on.as_path() == file => (REST - (now - *since)).max(0.0),
@@ -1148,6 +1278,23 @@ mod tests {
         assert_eq!(rest(&mut resting, b, 10.1), REST);
         assert!(rest(&mut resting, b, 10.1 + REST / 2.0) > 0.0);
         assert_eq!(rest(&mut resting, b, 11.0), 0.0);
+    }
+
+    /// the address names every folder from the top of the drive or share down to the one shown, and each goes to
+    /// its own folder. what is typed into it is a path as typed, or as the system's file browser copies one, in
+    /// quotes; nothing typed is nowhere to go.
+    #[test]
+    fn the_address_is_every_folder_from_the_top_down() {
+        let top = if cfg!(windows) { r"C:\" } else { "/" };
+        let folder = Path::new(top).join("delivery").join("wall");
+        let named: Vec<(String, PathBuf)> = crumbs(&folder);
+        assert_eq!(named.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), [if cfg!(windows) { "C:" } else { "/" }, "delivery", "wall"]);
+        assert_eq!(named.iter().map(|(_, to)| to.clone()).collect::<Vec<_>>(), [PathBuf::from(top), Path::new(top).join("delivery"), folder.clone()]);
+        assert_eq!(typed("  \"D:\\renders out\\wall\"  "), Some(PathBuf::from(r"D:\renders out\wall")));
+        assert_eq!(typed("shots"), Some(PathBuf::from("shots")));
+        assert_eq!((typed(""), typed("  \"\" ")), (None, None));
+        #[cfg(windows)]
+        assert_eq!(crumbs(Path::new(r"\\nas\renders\wall")).iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), [r"\\nas\renders", "wall"]);
     }
 
     #[test]

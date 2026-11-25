@@ -816,6 +816,11 @@ pub fn copy_text(text: &str) -> bool {
     board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
 }
 
+/// the text on the clipboard, when it holds any: for a field being typed into.
+pub fn pasted_text() -> Option<String> {
+    NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|text| text.to_string())
+}
+
 /// puts a picture on the clipboard, as a png of 8 bits a channel. `pixels` is red, green, blue, alpha, 16 bits each,
 /// row by row from the top.
 pub fn copy_picture(width: u32, height: u32, pixels: &[u16]) -> bool {
