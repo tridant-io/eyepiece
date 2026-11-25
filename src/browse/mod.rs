@@ -56,6 +56,16 @@ pub struct Entry {
     pub away: bool,
 }
 
+/// what the browser shows of the folder it is in: its entries as a column beside its videos as cards, the cards
+/// alone (the columns then list folders only), or the column alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum View {
+    #[default]
+    Both,
+    Gallery,
+    List,
+}
+
 const CLIPS: &[&str] = &["mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm"];
 const STILLS: &[&str] = &["exr", "dpx", "png", "jpg", "jpeg", "tif", "tiff", "tga"];
 /// a numbered run wider than this is unrelated numbers (dates, timestamps), not frames. it also bounds `missing`.

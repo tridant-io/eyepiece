@@ -316,6 +316,8 @@ pub enum Action {
     Reveal(PathBuf),
     /// play this folder: asked for in the browser
     PlayFolder(PathBuf),
+    /// play these files one after another: picked together in the browser
+    PlayFiles(Vec<PathBuf>),
     /// lay the browser over the clip, or take it away
     Browse(bool),
     Shot(Shot),
@@ -420,6 +422,8 @@ pub struct Ui {
     tabs_over: Option<Rect>,
     /// room kept at the strip's left for the system's own window buttons, where a system draws them itself (a mac)
     buttons_room: Option<f32>,
+    /// the keys held with the last press of a pointer button
+    held: egui::Modifiers,
     /// the frame under the pointer on the timebar; the pictures had for the timebar, each with the frame it is of and
     /// its size: the clip's timebar strip, in order, and the one read last; and the one shown
     time_hover: Option<usize>,
@@ -483,6 +487,7 @@ impl Ui {
             tab_seen: (0, 0, 0),
             tabs_over: None,
             buttons_room: None,
+            held: egui::Modifiers::NONE,
             time_hover: None,
             time_strip: Vec::new(),
             time_read: None,
@@ -551,6 +556,14 @@ impl Ui {
         self.browser.set_recent(recent);
     }
 
+    pub fn browser_view(&self) -> crate::browse::View {
+        self.browser.view()
+    }
+
+    pub fn set_browser_view(&mut self, view: crate::browse::View) {
+        self.browser.set_view(view);
+    }
+
     fn point(&self, x: f32, y: f32) -> Pos2 {
         Pos2::new(x / self.scale, y / self.scale)
     }
@@ -568,13 +581,19 @@ impl Ui {
         (self.moved, self.inside) = (true, true);
     }
 
+    /// the keys held with the pointer press that follows: a press with shift or control picks several in the browser.
+    pub fn set_held(&mut self, mods: Mods) {
+        self.held = egui::Modifiers { alt: mods.alt, ctrl: mods.ctrl, shift: mods.shift, mac_cmd: false, command: mods.ctrl };
+        self.browser.set_held(mods.shift, mods.ctrl);
+    }
+
     pub fn pointer_button(&mut self, button: crate::event::Button, down: bool, x: f32, y: f32) {
         let button = match button {
             crate::event::Button::Left => egui::PointerButton::Primary,
             crate::event::Button::Right => egui::PointerButton::Secondary,
             crate::event::Button::Middle => egui::PointerButton::Middle,
         };
-        self.events.push(egui::Event::PointerButton { pos: self.point(x, y), button, pressed: down, modifiers: egui::Modifiers::NONE });
+        self.events.push(egui::Event::PointerButton { pos: self.point(x, y), button, pressed: down, modifiers: self.held });
     }
 
     pub fn pointer_leave(&mut self) {
@@ -770,6 +789,7 @@ impl Ui {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
                         Some(browser::Chosen::Reveal(path)) => actions.push(Action::Reveal(path)),
                         Some(browser::Chosen::PlayFolder(folder)) => actions.push(Action::PlayFolder(folder)),
+                        Some(browser::Chosen::PlayFiles(files)) => actions.push(Action::PlayFiles(files)),
                         Some(browser::Chosen::Back) => actions.push(Action::Browse(false)),
                         None => {}
                     },

@@ -434,7 +434,7 @@ impl PictureView {
 
     fn button(&self, event: &NSEvent, button: Button, down: bool) {
         let (x, y) = self.place(event);
-        send(Event::PointerButton { button, down, x, y });
+        send(Event::PointerButton { button, down, x, y, mods: mods(event) });
     }
 
     fn moved(&self, event: &NSEvent) {

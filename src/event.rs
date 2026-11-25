@@ -78,7 +78,8 @@ pub enum Event {
     Wheel { notches: i32, mods: Mods },
     /// the pointer is at this place in the picture area, in physical pixels
     PointerMove { x: f32, y: f32 },
-    PointerButton { button: Button, down: bool, x: f32, y: f32 },
+    /// `mods`: the keys held with the press
+    PointerButton { button: Button, down: bool, x: f32, y: f32, mods: Mods },
     /// the pointer left the window
     PointerLeave,
     /// the picture area changed size, in physical pixels

@@ -613,7 +613,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut p = POINT::default();
             let _ = GetCursorPos(&mut p);
             let _ = ScreenToClient(hwnd, &mut p);
-            let _ = (*shared).events.send(Event::PointerButton { button: Button::Left, down: false, x: p.x as f32, y: p.y as f32 });
+            let _ = (*shared).events.send(Event::PointerButton { button: Button::Left, down: false, x: p.x as f32, y: p.y as f32, mods: Mods::default() });
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -656,7 +656,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
             }
             let (x, y) = xy(lp);
-            let _ = (*shared).events.send(Event::PointerButton { button, down, x: x as f32, y: y as f32 });
+            // shift and control come with the message itself (MK_SHIFT, MK_CONTROL), as the wheel's do
+            let mods = Mods { shift: wp.0 & 0x4 != 0, ctrl: wp.0 & 0x8 != 0, alt: GetKeyState(0x12) < 0 };
+            let _ = (*shared).events.send(Event::PointerButton { button, down, x: x as f32, y: y as f32, mods });
             LRESULT(0)
         }
         // the move is our own, not the system's: started this way (from a point that is no title bar, a moment after

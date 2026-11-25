@@ -49,6 +49,8 @@ pub struct Settings {
     pub browser_folder: Option<PathBuf>,
     /// the folders the browser last opened files from, the newest first
     pub browser_recent: Vec<PathBuf>,
+    /// what the browser shows of a folder: its column and its cards, the cards, or the column
+    pub browser_view: crate::browse::View,
     pub window_size: Option<(u32, u32)>,
     /// none means the pictures folder (`shot::folder`)
     pub screenshot_folder: Option<PathBuf>,
@@ -75,6 +77,7 @@ impl Default for Settings {
             screenshot_markup: true,
             browser_folder: None,
             browser_recent: Vec::new(),
+            browser_view: crate::browse::View::Both,
             window_size: None,
             screenshot_folder: None,
         }
@@ -128,7 +131,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 20] {
+    fn pairs(&self) -> [(&'static str, String); 21] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -152,6 +155,7 @@ impl Settings {
             ("screenshot_markup", word(&SWITCH, self.screenshot_markup)),
             ("browser_folder", path(&self.browser_folder)),
             ("browser_recent", recent.join(" | ")),
+            ("browser_view", word(&VIEWS, self.browser_view)),
             ("window_size", self.window_size.map_or(String::new(), wxh)),
             ("screenshot_folder", path(&self.screenshot_folder)),
         ]
@@ -179,6 +183,7 @@ impl Settings {
             "browser_folder" => self.browser_folder = folder(v),
             // a bar cannot be in a windows path
             "browser_recent" => self.browser_recent = v.split('|').filter_map(|p| folder(p.trim())).collect(),
+            "browser_view" => self.browser_view = pick(&VIEWS, v)?,
             "window_size" => self.window_size = if v.is_empty() { None } else { Some(size(v)?) },
             "screenshot_folder" => self.screenshot_folder = folder(v),
             _ => return None,
@@ -192,6 +197,7 @@ const READOUT: [(&str, bool); 2] = [("frames", false), ("timecode", true)];
 const SWITCH: [(&str, bool); 2] = [("off", false), ("on", true)];
 const LOOPS: [(&str, Loop); 3] = [("off", Loop::Off), ("one", Loop::One), ("all", Loop::All)];
 const CHROMA: [(&str, Chroma); 2] = [("bilinear", Chroma::Bilinear), ("nearest", Chroma::Nearest)];
+const VIEWS: [(&str, crate::browse::View); 3] = [("both", crate::browse::View::Both), ("gallery", crate::browse::View::Gallery), ("list", crate::browse::View::List)];
 
 fn word<T: Copy + PartialEq>(words: &[(&str, T)], value: T) -> String {
     words.iter().find(|w| w.1 == value).map_or("", |w| w.0).to_string()
@@ -292,6 +298,7 @@ mod tests {
             screenshot_markup: false,
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
+            browser_view: crate::browse::View::List,
             window_size: Some((1280, 720)),
             screenshot_folder: Some(PathBuf::from(r"\\nas\review = notes")),
         };

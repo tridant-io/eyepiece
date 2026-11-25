@@ -6,7 +6,7 @@
 //! with no column of its own; entering it (right, or a double click) gives it its column.
 
 use super::Chosen;
-use crate::browse::{self, Entry, Kind, Volume};
+use crate::browse::{self, Entry, Kind, View, Volume};
 use crate::event::{Key, Mods};
 use crate::preview::make;
 use std::collections::{HashMap, HashSet};
@@ -102,6 +102,8 @@ pub struct Nav {
     pub focus: Focus,
     /// what the path is on
     pub volume: Volume,
+    /// what is shown of the folder the main area is on: its column, its cards, or both
+    pub view: View,
     pub listings: HashMap<PathBuf, Listing>,
     /// what has been typed to select by name, and when the last letter came
     typed: String,
@@ -122,6 +124,7 @@ impl Nav {
             previewing: false,
             focus: Focus::Columns,
             volume: browse::volume_of(&root),
+            view: View::Both,
             listings: HashMap::new(),
             typed: String::new(),
             typed_at: None,
@@ -179,6 +182,25 @@ impl Nav {
         &self.path[..self.path.len() - self.previewing as usize]
     }
 
+    /// how many of the path's columns are drawn, from its end. with a folder's own column showing, every folder on
+    /// the path has one, a folder only shown too (the owner's ask, 2026-11-24: its files are listed from the start,
+    /// not once one of them is pressed). with the cards alone, the folders entered, less a last one that has no
+    /// folder in it to list.
+    pub fn drawn(&self) -> usize {
+        if self.view != View::Gallery {
+            return self.path.len();
+        }
+        let shown = self.shown().len();
+        let bare = shown > 1 && matches!(self.listings.get(&self.path[shown - 1].folder), Some(Ok(entries)) if !entries.iter().any(|e| e.kind == Kind::Folder));
+        shown - bare as usize
+    }
+
+    /// what a column lists of a folder: everything in it, or with the cards alone showing its files, its folders.
+    pub fn listed<'a>(&'a self, folder: &Path) -> impl Iterator<Item = &'a Entry> {
+        let all = self.view != View::Gallery;
+        self.entries(folder).iter().filter(move |e| all || e.kind == Kind::Folder)
+    }
+
     /// the folder the main area shows
     pub fn main(&self) -> &Column {
         self.path.last().expect("the path is never empty")
@@ -233,7 +255,7 @@ impl Nav {
     /// selects the entry at `index` of the active column.
     fn pick(&mut self, index: usize) {
         let at = self.active();
-        let Some(entry) = self.entries(&self.path[at].folder).get(index) else { return };
+        let Some(entry) = self.listed(&self.path[at].folder).nth(index) else { return };
         let (path, folder) = (entry.path.clone(), entry.kind == Kind::Folder);
         self.select(at, path, folder);
     }
@@ -296,7 +318,7 @@ impl Nav {
     /// up or down the active column. with nothing selected, either selects the first entry.
     fn step(&mut self, by: isize) {
         let column = &self.path[self.active()];
-        let entries = self.entries(&column.folder);
+        let entries: Vec<&Entry> = self.listed(&column.folder).collect();
         let last = entries.len().saturating_sub(1) as isize;
         let at = column.selected.as_ref().and_then(|s| entries.iter().position(|e| &e.path == s));
         self.pick(at.map_or(0, |i| (i as isize + by).clamp(0, last) as usize));
@@ -345,11 +367,12 @@ impl Nav {
             Key::Up => self.step(-1),
             Key::Down => self.step(1),
             Key::Home => self.pick(0),
-            Key::End => self.pick(self.entries(&self.path[self.active()].folder).len().saturating_sub(1)),
+            Key::End => self.pick(self.listed(&self.path[self.active()].folder).count().saturating_sub(1)),
             Key::Left => self.back(),
             Key::Right => match self.selected(&self.path[self.active()]) {
                 Some(e) if e.kind == Kind::Folder => self.enter(),
-                Some(e) if is_card(e) => self.focus = Focus::Grid,
+                // with the column alone showing there is no grid to go into
+                Some(e) if is_card(e) && self.view != View::List => self.focus = Focus::Grid,
                 _ => {}
             },
             _ => {}
@@ -367,7 +390,8 @@ impl Nav {
         self.typed_at = Some(now);
         self.typed.extend(c.to_lowercase());
         let (at, grid) = (self.active(), self.focus == Focus::Grid);
-        let found = self.entries(&self.path[at].folder).iter().find(|e| (!grid || is_card(e)) && e.name.to_lowercase().starts_with(&self.typed));
+        let folders = self.view == View::Gallery;
+        let found = self.entries(&self.path[at].folder).iter().find(|e| (if grid { is_card(e) } else { !folders || e.kind == Kind::Folder }) && e.name.to_lowercase().starts_with(&self.typed));
         if let Some((path, folder)) = found.map(|e| (e.path.clone(), e.kind == Kind::Folder)) {
             self.select(at, path, folder);
         }
@@ -725,5 +749,33 @@ mod tests {
         assert!(!nav.can_retrace(1));
         nav.retrace(-1, &places);
         assert_eq!(nav.main().folder, shots);
+    }
+
+    /// what is shown of a folder: with its own column, a folder only shown has one too; with the cards alone the
+    /// columns list folders only, the keys step over nothing else, and a column with no folder to list is not drawn;
+    /// with the column alone there is no grid for the keys to go into.
+    #[test]
+    fn the_view_says_which_columns_are_drawn_and_what_they_list() {
+        let (mut nav, r) = tree();
+        let shots = r.join("shots");
+        press(&mut nav, Key::Down);
+        assert!(nav.main().folder == shots && nav.previewing);
+        assert_eq!((nav.drawn(), nav.shown().len()), (3, 2), "the folder shown has its column from the start");
+        nav.view = View::Gallery;
+        assert_eq!(nav.listed(&r).map(|e| e.name.as_str()).collect::<Vec<_>>(), ["shots"]);
+        assert_eq!(nav.drawn(), 2);
+        // down again finds no other folder: the files are the cards' business
+        press(&mut nav, Key::Down);
+        assert_eq!(nav.main().folder, shots);
+        // entered, shots has no folder to list, so no column of its own; its first card is selected, and right goes to it
+        press(&mut nav, Key::Right);
+        assert_eq!((nav.shown().len(), nav.drawn()), (3, 2));
+        press(&mut nav, Key::Right);
+        assert!(nav.focus == Focus::Grid);
+        nav.view = View::List;
+        nav.focus = Focus::Columns;
+        assert_eq!(nav.drawn(), 3);
+        press(&mut nav, Key::Right);
+        assert!(nav.focus == Focus::Columns, "there is no grid to go into");
     }
 }

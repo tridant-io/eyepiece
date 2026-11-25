@@ -709,6 +709,17 @@ foreach ($made in $late, (Split-Path $late), (Split-Path (Split-Path $late)), $f
 }
 $kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt')
 Confirm-That 'the read-again button, f5 and control + R each show a folder made since the last listing' ($kept -contains "browser_folder = $late") "the settings say: $($kept -match 'browser_folder')"
+# what the browser shows of a folder is chosen at the address's right end and kept: the button's label is 14 letters
+# of 6.9, in a box 10 from the window's right with 10 and 25 round it; its list opens 4 under it, rows of 26 after 4
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiecesettings.txt') -Value "browser_folder = $tree", 'mute = on'
+Start-Player
+Start-Sleep -Milliseconds 1000
+$view = (Get-Width) - 10 - (10 + 14 * 6.9 + 25) / 2
+Click-At $view 50; Start-Sleep -Milliseconds 500
+Click-At $view (32 + 18 + 13.75 + 4 + 4 + 26 * 2.5); Start-Sleep -Milliseconds 500
+Stop-Player
+$kept = Get-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiecesettings.txt')
+Confirm-That 'the view chosen at the address''s right end is kept between runs' ($kept -contains 'browser_view = list') "the settings say: $($kept -match 'browser_view')"
 # copy and paste in the field go by the clipboard, which is this pc's own: the check is left out when it holds more
 # than plain text, which a test could not put back, and what it held is put back after
 Add-Type -AssemblyName System.Windows.Forms

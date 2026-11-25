@@ -436,7 +436,7 @@ impl View {
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
-            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
+            Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayFiles(_) | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close => {}
             Action::Extras(_) | Action::Mark(..) | Action::ClearMarks => {}
         }
     }
@@ -1039,6 +1039,17 @@ impl Tabs {
         tab.coming.insert(Coming::start(0, path, Why::Opened, gpu.hardware(), wake.clone()))
     }
 
+    /// plays the files picked in the browser one after another, in the order given, as a played folder plays its
+    /// clips, under their folder's name. they were picked by name, so on a network volume nothing more is asked.
+    fn play_files(&mut self, gpu: &Gpu, files: &[std::path::PathBuf], wake: &Sender<Event>) {
+        let Some(first) = files.first() else { return };
+        let folder = first.parent().unwrap_or(Path::new(""));
+        let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        let local = browse::volume_of(folder) != browse::Volume::Network;
+        let coming = self.open(gpu, first.to_string_lossy().into_owned(), wake, true);
+        (coming.played, coming.play) = (Some(Played::new(title, files.to_vec(), wake, local)), true);
+    }
+
     /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player.
     /// one that had to be asked about is kept in `asking` for a few seconds, and plays when it is asked for again
     /// in that time.
@@ -1437,6 +1448,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let playing_now = Arc::new(AtomicBool::new(false));
     let mut ui = Ui::new((w, h), window::scale(window), settings.timecode, settings.browser_folder.clone(), pictures::start(playing_now.clone()));
     ui.set_browser_recent(settings.browser_recent.clone());
+    ui.set_browser_view(settings.browser_view);
     ui.set_pinned(settings.pin_controls);
     ui.set_buttons_room(window::buttons_room());
     // the player's one way out to the speakers, as loud as it was left
@@ -1535,7 +1547,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     pointer = Some((x, y));
                     ui.pointer_move(x, y);
                 }
-                Event::PointerButton { button, down, x, y } => ui.pointer_button(button, down, x, y),
+                Event::PointerButton { button, down, x, y, mods } => {
+                    ui.set_held(mods);
+                    ui.pointer_button(button, down, x, y);
+                }
                 Event::PointerLeave => {
                     pointer = None;
                     ui.pointer_leave();
@@ -1793,6 +1808,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if settings.browser_folder.as_deref() != Some(ui.browser_folder()) {
             settings.browser_folder = Some(ui.browser_folder().to_path_buf());
         }
+        settings.browser_view = ui.browser_view();
         if settings.browser_recent != ui.browser_recent() {
             settings.browser_recent = ui.browser_recent().to_vec();
         }
@@ -1840,6 +1856,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     loudness(&mut speaker, settings);
                 }
                 Action::Browse(on) => tabs.tab().browsing = *on,
+                Action::PlayFiles(files) => tabs.play_files(&gpu, files, &wake),
                 Action::PlayFolder(folder) => {
                     if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, &wake, true, &mut asked_folder) {
                         toast = say(said);

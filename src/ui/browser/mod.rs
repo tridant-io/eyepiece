@@ -8,7 +8,7 @@ mod nav;
 
 use super::icons::{self, Icon};
 use super::{cut_middle, font, icon_button, text_top, Lit, AMBER, DIM, FG, HOVER, ICON_BUTTON, LINE, MONO, MONO_MEDIUM, SANS};
-use crate::browse::{self, Entry, Group, Kind, Place, Volume};
+use crate::browse::{self, Entry, Group, Kind, Place, View, Volume};
 use crate::event::{Key, Mods};
 use crate::media::meta::{Meta, Row, Tone};
 use crate::preview::make::{self, Pictures, Want};
@@ -81,6 +81,8 @@ pub enum Chosen {
     Reveal(PathBuf),
     /// play this folder
     PlayFolder(PathBuf),
+    /// play these files of one folder, one after another
+    PlayFiles(Vec<PathBuf>),
     /// back to the clip under the browser
     Back,
 }
@@ -91,6 +93,7 @@ pub struct Browser {
     start: Option<PathBuf>,
     recent: Vec<PathBuf>,
     pictures: Option<Pictures>,
+    view: View,
     state: Option<State>,
 }
 
@@ -98,7 +101,7 @@ impl Browser {
     /// starts in `folder`; with none, in the first of the system's places (downloads). without `pictures` the
     /// cards stay plain.
     pub fn new(folder: Option<PathBuf>, pictures: Option<Pictures>) -> Browser {
-        Browser { start: folder, recent: Vec::new(), pictures, state: None }
+        Browser { start: folder, recent: Vec::new(), pictures, view: View::Both, state: None }
     }
 
     /// the folders it last opened files from, the newest first: kept between runs.
@@ -129,15 +132,43 @@ impl Browser {
     }
 
     fn state(&mut self) -> &mut State {
-        let (start, recent, pictures) = (&mut self.start, &mut self.recent, &mut self.pictures);
-        self.state.get_or_insert_with(|| State::new(start.take(), std::mem::take(recent), pictures.take()))
+        let (start, recent, pictures, view) = (&mut self.start, &mut self.recent, &mut self.pictures, self.view);
+        self.state.get_or_insert_with(|| {
+            let mut state = State::new(start.take(), std::mem::take(recent), pictures.take());
+            state.nav.view = view;
+            state
+        })
     }
 
     pub fn key(&mut self, key: Key, mods: Mods) {
         let state = self.state();
         state.take_answers();
+        // enter opens the videos picked together; any other key lets them go
+        if key == Key::Enter && !mods.shift && state.picked.len() > 1 {
+            return state.click(Click::OpenPicked);
+        }
+        state.picked.clear();
         if let Some(chosen) = state.nav.key(key, mods, state.per_row) {
             state.choose(chosen);
+        }
+    }
+
+    /// shift, and control (the mac's command), as they were held with the last pointer press.
+    pub fn set_held(&mut self, shift: bool, more: bool) {
+        if let Some(state) = &mut self.state {
+            state.held = (shift, more);
+        }
+    }
+
+    /// what is shown of a folder: kept between runs.
+    pub fn view(&self) -> View {
+        self.state.as_ref().map_or(self.view, |state| state.nav.view)
+    }
+
+    pub fn set_view(&mut self, view: View) {
+        self.view = view;
+        if let Some(state) = &mut self.state {
+            state.nav.view = view;
         }
     }
 
@@ -223,6 +254,14 @@ struct State {
     address: Option<String>,
     address_fresh: bool,
     address_at: f64,
+    /// the list of views is open under its button
+    view_menu: bool,
+    /// the videos picked together with shift or control, when there are more than the one selected; and the one a
+    /// run picked with shift starts from
+    picked: Vec<PathBuf>,
+    anchor: Option<PathBuf>,
+    /// shift and control, as held with the last pointer press
+    held: (bool, bool),
     /// the pass it was last drawn in
     drawn: u64,
 }
@@ -250,6 +289,13 @@ enum Click {
     /// back (-1) or forward (1) along the folders shown; and the folders on screen read again
     Retrace(isize),
     Refresh,
+    /// the list of views opens or closes; and one of them is chosen
+    ViewMenu,
+    View(View),
+    /// a video pressed with control held (one more picked, or one less) or with shift (true: a run of them); and
+    /// the videos picked, opened together
+    Pick(PathBuf, bool),
+    OpenPicked,
 }
 
 /// where the parts go: the sidebar, the address across the top of the rest, and under it the columns that fit (the
@@ -266,10 +312,12 @@ struct Layout {
 
 impl Layout {
     /// `shown` columns on the path; `card`: one is selected, so the metadata column is wanted.
-    fn new(area: Rect, shown: usize, card: bool) -> Layout {
-        let meta = card && area.width() - SIDE - COLUMN - META >= MAIN_MIN;
+    fn new(area: Rect, shown: usize, card: bool, view: View) -> Layout {
+        // with the column alone showing, the cards keep no room
+        let least = if view == View::List { 0.0 } else { MAIN_MIN };
+        let meta = card && area.width() - SIDE - COLUMN - META >= least;
         let room = area.width() - SIDE - if meta { META } else { 0.0 };
-        let fit = (((room - MAIN_MIN) / COLUMN).floor().max(1.0) as usize).min(shown);
+        let fit = (((room - least) / COLUMN).floor().max(1.0) as usize).min(shown);
         let x = |offset: f32| area.left() + offset;
         let top = area.top() + PATH_LINE;
         let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, top), Pos2::new(to.max(from), area.bottom()));
@@ -356,6 +404,10 @@ impl State {
             address: None,
             address_fresh: false,
             address_at: 0.0,
+            view_menu: false,
+            picked: Vec::new(),
+            anchor: None,
+            held: (false, false),
             drawn: 0,
         }
     }
@@ -371,6 +423,12 @@ impl State {
                 }
             }
             Chosen::PlayFolder(folder) => self.remember(folder.clone()),
+            Chosen::PlayFiles(files) => {
+                self.asked.extend(files.iter().cloned());
+                if let Some(folder) = files.first().and_then(|file| file.parent()) {
+                    self.remember(folder.to_path_buf());
+                }
+            }
             Chosen::Reveal(_) | Chosen::Back => {}
         }
         self.chosen = Some(chosen);
@@ -452,7 +510,11 @@ impl State {
         // a press here is not a press on a picture under the browser
         ui.interact(area, ui.scope_id().with("browser"), Sense::click_and_drag());
 
-        let layout = Layout::new(area, self.nav.shown().len(), self.nav.card().is_some());
+        // videos picked together belong to the folder shown: gone from it, they are let go
+        if self.picked.first().is_some_and(|picked| picked.parent() != Some(self.nav.main().folder.as_path())) {
+            self.picked.clear();
+        }
+        let layout = Layout::new(area, self.nav.drawn(), self.nav.card().is_some(), self.nav.view);
         self.scroll(ui, &layout);
         let mut clicks = Vec::new();
         self.side(ui, layout.side, &mut clicks);
@@ -460,7 +522,11 @@ impl State {
         for (i, rect) in layout.columns.iter().enumerate() {
             self.column(ui, layout.first + i, *rect, &mut clicks);
         }
-        self.main_area(ui, layout.main, &mut clicks);
+        if self.nav.view == View::List {
+            self.list_pictures(ui.ctx());
+        } else {
+            self.main_area(ui, layout.main, &mut clicks);
+        }
         if let Some(rect) = layout.meta {
             self.metadata(ui, rect, &mut clicks);
         }
@@ -495,6 +561,10 @@ impl State {
     }
 
     fn click(&mut self, click: Click) {
+        // a plain press on anything that selects or goes somewhere lets go of the videos picked together
+        if matches!(click, Click::Place(_) | Click::Row(..) | Click::Enter | Click::Card(_) | Click::Go(_) | Click::Retrace(_)) {
+            self.picked.clear();
+        }
         match click {
             Click::Place(place) => self.nav.go(&place, &self.roots),
             Click::Row(at, entry, folder) => {
@@ -502,7 +572,16 @@ impl State {
                 self.nav.focus = nav::Focus::Columns;
             }
             Click::Enter => self.nav.enter(),
-            Click::Card(card) => self.nav.choose_card(card),
+            Click::Card(card) => {
+                self.anchor = Some(card.clone());
+                self.nav.choose_card(card);
+            }
+            Click::Pick(card, run) => self.pick(card, run),
+            // in the order the folder lists them, whatever order they were picked in
+            Click::OpenPicked => {
+                let files: Vec<PathBuf> = self.nav.cards().map(|e| e.path.clone()).filter(|path| self.picked.contains(path)).collect();
+                self.choose(Chosen::PlayFiles(files));
+            }
             Click::Open(file) => self.choose(Chosen::Open(file)),
             Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
             Click::PlayFolder => self.choose(Chosen::PlayFolder(self.nav.main().folder.clone())),
@@ -527,6 +606,8 @@ impl State {
                 }
             }
             Click::Retrace(by) => self.nav.retrace(by, &self.roots),
+            Click::ViewMenu => self.view_menu = !self.view_menu,
+            Click::View(view) => (self.nav.view, self.view_menu) = (view, false),
             // what was read of the files is read again as well: a render may have written over one
             Click::Refresh => {
                 self.reread();
@@ -534,6 +615,29 @@ impl State {
             }
         }
         self.nav.visit(false);
+    }
+
+    /// a video pressed with control held is one more picked, or one less; with shift, all from the one last pressed
+    /// to this one are, in the order the folder lists them. the one the metadata column shows is the last one picked.
+    fn pick(&mut self, card: PathBuf, run: bool) {
+        let cards: Vec<PathBuf> = self.nav.cards().map(|e| e.path.clone()).collect();
+        let Some(to) = cards.iter().position(|c| *c == card) else { return };
+        let selected = self.nav.main().selected.clone().filter(|s| cards.contains(s));
+        if run {
+            let from = self.anchor.clone().filter(|a| cards.contains(a)).or(selected).and_then(|a| cards.iter().position(|c| *c == a)).unwrap_or(0);
+            self.anchor = Some(cards[from].clone());
+            self.picked = cards[from.min(to)..=from.max(to)].to_vec();
+        } else {
+            if self.picked.is_empty() {
+                self.picked.extend(selected);
+            }
+            match self.picked.iter().position(|p| *p == card) {
+                Some(at) => drop(self.picked.remove(at)),
+                None => self.picked.push(card.clone()),
+            }
+            self.anchor = Some(card.clone());
+        }
+        self.nav.choose_card(self.picked.last().cloned().filter(|_| !self.picked.contains(&card)).unwrap_or(card));
     }
 
     /// what is listed is listed again: it stays on screen until the new listing comes.
@@ -559,7 +663,62 @@ impl State {
                 clicks.push((click.clone(), Some(click)));
             }
         }
-        let (left, room) = (left + 6.0, rect.right() - 14.0 - left - 6.0);
+        // at its right, where nothing comes and goes: what is shown of a folder, and open folder where the folder
+        // holds more than one video. (as "play folder" it stood at the main area's right, and jumped away when the
+        // metadata column came in: the owner saw it flash, 2026-11-24.)
+        let names = [(View::Both, "list + gallery"), (View::Gallery, "gallery"), (View::List, "list")];
+        let now = self.nav.view;
+        let label = painter.layout_no_wrap(names.iter().find(|(view, _)| *view == now).map_or("", |(_, name)| name).to_string(), font(MONO, 11.5), FG);
+        let size = Vec2::new(1.0 + 9.0 + label.size().x + 8.0 + 7.0 + 9.0 + 1.0, 27.5);
+        let view = Rect::from_min_size(Pos2::new(rect.right() - 10.0 - size.x, middle - size.y / 2.0), size);
+        let over_view = ui.rect_contains_pointer(view);
+        if button(ui, &painter, view, "brw-view", label, false) {
+            clicks.push((Click::ViewMenu, None));
+        }
+        let tip = Pos2::new(view.right() - 13.5, middle + 2.0);
+        painter.line_segment([tip + Vec2::new(-3.5, -3.5), tip], (1.2, DIM));
+        painter.line_segment([tip, tip + Vec2::new(3.5, -3.5)], (1.2, DIM));
+        if self.view_menu {
+            let size = Vec2::new(view.width().max(132.0), 4.0 + names.len() as f32 * 26.0 + 4.0);
+            let mut inside = false;
+            egui::Area::new(egui::Id::unique("brw-view-menu")).order(egui::Order::Foreground).fixed_pos(Pos2::new(view.right() - size.x, view.bottom() + 4.0)).show(ui.ctx(), |ui| {
+                let (list, _) = ui.allocate_exact_size(size, Sense::hover());
+                ui.painter().rect_filled(list, 0.0, PANEL);
+                ui.painter().rect_stroke(list, 0.0, (1.0, LINE), StrokeKind::Inside);
+                for (i, (to, name)) in names.iter().enumerate() {
+                    let row = Rect::from_min_size(Pos2::new(list.left() + 1.0, list.top() + 4.0 + i as f32 * 26.0), Vec2::new(list.width() - 2.0, 26.0));
+                    let response = ui.interact(row, ui.scope_id().with(("brw-view-row", i)), Sense::click());
+                    if response.hovered() {
+                        ui.painter().rect_filled(row, 0.0, HOVER);
+                    }
+                    let on = *to == now;
+                    text(ui.painter(), row.left() + 10.0, row.center().y, name, font(if on { MONO_MEDIUM } else { MONO }, 11.5), if on { FG } else { DIM }, row.width() - 20.0);
+                    if response.clicked() {
+                        clicks.push((Click::View(*to), None));
+                    }
+                }
+                inside = ui.rect_contains_pointer(list);
+            });
+            // a press anywhere else puts the list away
+            if ui.input(|i| i.pointer.any_pressed()) && !inside && !over_view {
+                self.view_menu = false;
+            }
+        }
+        let mut right = view.left() - 6.0;
+        if self.nav.cards().nth(1).is_some() {
+            let label = painter.layout_no_wrap("open folder".to_string(), font(MONO, 11.5), FG);
+            let keys = painter.layout_no_wrap("shift + enter".to_string(), font(MONO_MEDIUM, 9.5), DIM);
+            let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
+            let play = Rect::from_min_size(Pos2::new(right - size.x, middle - size.y / 2.0), size);
+            if button(ui, &painter, play, "brw-play", label, false) {
+                clicks.push((Click::PlayFolder, None));
+            }
+            let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
+            painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
+            painter.galley(Pos2::new(cap.center().x - keys.size().x / 2.0, top_of(&painter, &keys, cap.center().y)), keys, DIM);
+            right = play.left() - 6.0;
+        }
+        let (left, room) = (left + 6.0, right - 8.0 - left - 6.0);
         if self.address.is_some() {
             self.address_field(ui, Rect::from_min_size(Pos2::new(left - 8.0, middle - 13.75), Vec2::new(room + 16.0, 27.5)), clicks);
         } else {
@@ -651,6 +810,21 @@ impl State {
                 clicks.push((Click::Go(to), None));
             }
         }
+    }
+
+    /// with the column alone showing no card is drawn, and the selected file's poster is still wanted, for the
+    /// metadata column: asked for as a card's is, and under the same rule on a network volume.
+    fn list_pictures(&mut self, ctx: &egui::Context) {
+        self.take_pictures(ctx);
+        let asked = self.previews.contains(&self.nav.main().folder);
+        let card = self.nav.card().filter(|card| nav::makes_pictures(self.nav.volume, card, asked));
+        let wants: Vec<Want> = card.filter(|card| !self.cards.get(&card.path).is_some_and(|c| c.stamp == stamp(card) && c.poster)).map(|card| Want { path: card.path.clone(), size: stamp(card).0, modified: stamp(card).1, all: false, asked }).into_iter().collect();
+        let selected = card.map(|card| card.path.clone());
+        self.cards.retain(|path, _| Some(path) == selected.as_ref());
+        if !wants.is_empty() {
+            ctx.request_repaint_after(POLL);
+        }
+        self.want(wants);
     }
 
     /// asks for what is on screen and not read yet, and lets go of what is not on screen any more. returns how long
@@ -765,6 +939,9 @@ impl State {
             }
             Some(Ok(entries)) => entries,
         };
+        // with the cards alone showing a folder's files, the columns list folders only
+        let all = self.nav.view != View::Gallery;
+        let entries: Vec<&Entry> = entries.iter().filter(|e| all || e.kind == Kind::Folder).collect();
         let column = &self.nav.path[at];
         let selected = column.selected.as_ref().and_then(|s| entries.iter().position(|e| &e.path == s));
         let mut scroll = column.scroll;
@@ -777,7 +954,7 @@ impl State {
         let first = ((scroll - 8.0) / ROW).floor().max(0.0) as usize;
         for (i, entry) in entries.iter().enumerate().skip(first).take((rect.height() / ROW) as usize + 2) {
             let row = Rect::from_min_size(Pos2::new(inner.left(), inner.top() + 8.0 + i as f32 * ROW - scroll), Vec2::new(inner.width(), ROW));
-            let on = selected == Some(i);
+            let on = selected == Some(i) || self.picked.contains(&entry.path);
             if on {
                 painter.rect_filled(row, 0.0, ROW_ON);
             }
@@ -799,6 +976,12 @@ impl State {
             }
             text(&painter, row.left() + 31.0, middle, &entry.name, font(SANS, 12.5), color, room);
             if ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click()).clicked() {
+                // with shift or control held, a video in the folder shown is picked with the others
+                let (shift, more) = self.held;
+                if (shift || more) && is_card(entry) && at + 1 == self.nav.path.len() {
+                    clicks.push((Click::Pick(entry.path.clone(), shift), None));
+                    continue;
+                }
                 let twice = if folder { Some(Click::Enter) } else { is_card(entry).then(|| Click::Open(entry.path.clone())) };
                 clicks.push((Click::Row(at, entry.path.clone(), folder), twice));
             }
@@ -809,27 +992,17 @@ impl State {
     fn main_area(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         let folder = self.nav.main().folder.clone();
-        // the path line: the folder's name and what it holds, and at the right the button that plays it
+        // the path line: what the folder holds. its name is the address's last word, right over this line, and the
+        // button that opens it stands at the address's right
         let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), PATH_LINE));
         painter.rect_filled(Rect::from_min_max(Pos2::new(line.left(), line.bottom() - 1.0), line.max), 0.0, LINE);
         let middle = line.top() + (PATH_LINE - 1.0) / 2.0;
-        let label = painter.layout_no_wrap("play folder".to_string(), font(MONO, 11.5), FG);
-        let keys = painter.layout_no_wrap("shift + enter".to_string(), font(MONO_MEDIUM, 9.5), DIM);
-        let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
-        let play = Rect::from_min_size(Pos2::new(line.right() - 14.0 - size.x, middle - size.y / 2.0), size);
-        if button(ui, &painter, play, "brw-play", label, false) {
-            clicks.push((Click::PlayFolder, None));
-        }
-        let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
-        painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
-        painter.galley(Pos2::new(cap.center().x - keys.size().x / 2.0, top_of(&painter, &keys, cap.center().y)), keys, DIM);
-        // the folder's name is the address's last word, right over this line, and is not said again here
         let holds = match self.nav.listings.get(&folder) {
             None => "reading…".to_string(),
             Some(Err(_)) => String::new(),
             Some(Ok(entries)) => holds(entries),
         };
-        text(&painter, line.left() + 14.0, middle, &holds, font(MONO, 11.5), DIM, play.left() - 10.0 - line.left() - 14.0);
+        text(&painter, line.left() + 14.0, middle, &holds, font(MONO, 11.5), DIM, line.width() - 28.0);
 
         // on a network volume, a note that nothing is opened without asking, and at its right the button that asks
         // for the folder's previews, saying how many files they read (fig. 29)
@@ -924,9 +1097,11 @@ impl State {
             let pictures = self.cards.get(&card.path).filter(|c| c.stamp == stamp(card));
             // the pointer's place across the picture scrubs it
             let scrub = response.hover_pos().map(|p| ((p.x - area.left()) / width).clamp(0.0, 1.0));
-            draw_card(&painter, area, thumb, card, at == Some(i), pictures, scrub);
+            draw_card(&painter, area, thumb, card, at == Some(i) || self.picked.contains(&card.path), pictures, scrub);
             if response.clicked() {
-                clicks.push((Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))));
+                // with shift or control held the card is picked with the others; a plain press selects it alone
+                let (shift, more) = self.held;
+                clicks.push(if shift || more { (Click::Pick(card.path.clone(), shift), None) } else { (Click::Card(card.path.clone()), Some(Click::Open(card.path.clone()))) });
             }
             if !nav::makes_pictures(self.nav.volume, card, asked) {
                 continue;
@@ -1002,7 +1177,10 @@ impl State {
             (false, true) => Some(("reveal", Click::Reveal(card.path.clone()))),
             (false, false) => None,
         };
-        let acts = [("open", Click::Open(card.path.clone()))].into_iter().chain(third);
+        // with several videos picked the one action opens them all, one after another
+        let many = self.picked.len() > 1;
+        let first = if many { ("open selected", Click::OpenPicked) } else { ("open", Click::Open(card.path.clone())) };
+        let acts = [first].into_iter().chain(third.filter(|_| !many));
         for (i, (label, click)) in acts.enumerate() {
             let strong = i == 0;
             let galley = painter.layout_no_wrap(label.to_string(), font(MONO_MEDIUM, 11.0), if strong { ON_STRONG } else { FG });
@@ -1369,16 +1547,18 @@ mod tests {
     fn the_columns_give_way_to_the_main_area_and_the_metadata_column() {
         let area = |w: f32| Rect::from_min_size(Pos2::ZERO, Vec2::new(w, 668.0));
         // fig. 28's width with a card selected: two columns, the main area, the metadata column
-        let layout = Layout::new(area(1240.0), 5, true);
+        let layout = Layout::new(area(1240.0), 5, true, View::Both);
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_some()), (3, 2, true));
         assert_eq!((layout.main.left(), layout.main.width()), (SIDE + 2.0 * COLUMN, 1240.0 - SIDE - 2.0 * COLUMN - META));
         // with nothing selected there is no metadata column, and more columns fit
-        assert_eq!(Layout::new(area(1240.0), 5, false).columns.len(), 4);
+        assert_eq!(Layout::new(area(1240.0), 5, false, View::Both).columns.len(), 4);
+        // with the column alone showing, the cards keep no room: the columns have it
+        assert_eq!(Layout::new(area(1240.0), 9, false, View::List).columns.len(), 6);
         // narrow: one column, the deepest, and no metadata column
-        let layout = Layout::new(area(700.0), 5, true);
+        let layout = Layout::new(area(700.0), 5, true, View::Both);
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_none()), (4, 1, true));
         // never more columns than the path has
-        assert_eq!(Layout::new(area(2400.0), 1, false).columns.len(), 1);
+        assert_eq!(Layout::new(area(2400.0), 1, false, View::Both).columns.len(), 1);
     }
 
     /// a sign the fonts do not have is drawn as an empty box
@@ -1527,6 +1707,28 @@ mod tests {
         // and as a field the address holds that path, to put right
         state.click(Click::Address);
         assert_eq!(state.address, Some(gone.to_string_lossy().into_owned()));
+    }
+
+    /// shift picks a run of videos from the one last pressed, control one more or one less, and the videos picked
+    /// open together in the order the folder lists them. a plain press lets them go.
+    #[test]
+    fn shift_and_control_presses_pick_several_videos_to_open_together() {
+        let folder = std::env::temp_dir().join("eyepiece-no-such-wall");
+        let mut state = State::new(Some(folder.clone()), Vec::new(), None);
+        let clip = |name: &str| Entry { name: name.into(), path: folder.join(name), kind: Kind::Clip, size: Some(10), modified: None, away: false };
+        state.nav.listings.insert(folder.clone(), Ok(["a.mov", "b.mov", "c.mov", "d.mov"].map(clip).into()));
+        let at = |name: &str| folder.join(name);
+        state.click(Click::Card(at("b.mov")));
+        state.click(Click::Pick(at("d.mov"), true));
+        assert_eq!(state.picked, [at("b.mov"), at("c.mov"), at("d.mov")]);
+        assert_eq!(state.nav.card().map(|card| card.path.clone()), Some(at("d.mov")));
+        state.click(Click::Pick(at("c.mov"), false));
+        assert_eq!(state.picked, [at("b.mov"), at("d.mov")]);
+        state.click(Click::Pick(at("a.mov"), false));
+        state.click(Click::OpenPicked);
+        assert!(matches!(&state.chosen, Some(Chosen::PlayFiles(files)) if *files == [at("a.mov"), at("b.mov"), at("d.mov")]));
+        state.click(Click::Card(at("c.mov")));
+        assert!(state.picked.is_empty());
     }
 
     /// read again, a folder shows what was put in it since, and not before; what was read of its files goes, to be
