@@ -3545,7 +3545,11 @@ mod tests {
         real.browser.key(Key::Enter, Mods { shift: true, ctrl: false, alt: false });
         assert!(matches!(real.browser.state().chosen.take(), Some(Chosen::PlayFolder(folder)) if folder == top), "in the list view the folder shown plays as itself");
         assert_eq!(real.browser.state().nav.together.len(), 2, "and the folders stay picked");
+        real.press("c_own.mov", false, false);
+        assert!(real.browser.state().nav.together.is_empty(), "a plain press on a video's row lets them go in the list view too");
         real.browser.state().click(Click::View(View::Both));
+        real.press("reel_a", false, false);
+        real.press("reel_c", false, true);
         // two folders with nothing in them, in a folder that holds a video: no place for a screenshot
         real.press("reel_d", false, false);
         real.press("reel_e", false, true);

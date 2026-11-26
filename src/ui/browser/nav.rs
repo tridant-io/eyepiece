@@ -275,8 +275,8 @@ impl Nav {
     /// selects an entry of drawn column `at`: the columns after it go, and a folder is shown in the main area until it
     /// is entered.
     pub fn select(&mut self, at: usize, entry: PathBuf, folder: bool) {
-        // anything selected but a card of the folders picked together lets them go
-        if folder || !self.cards().any(|card| card.path == entry) {
+        // anything selected but a file of one of the folders picked together lets them go
+        if folder || !entry.parent().is_some_and(|of| self.together.iter().any(|picked| picked == of)) {
             self.together.clear();
         }
         // the folder already next on the path keeps what is selected in it
