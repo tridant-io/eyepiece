@@ -16,7 +16,8 @@ use the terms in `GLOSSARY.md` and read the ADRs in `docs/adr/` for the area you
 
 - copy is lowercase, american spelling: color, center.
 - mono (ibm plex mono) only for titles and numbers: headings, values, file names and paths, key caps. every sentence, note, message, tooltip, button and menu word is archivo; a sentence with numbers in it is archivo throughout (the owner's word, 2026-11-24).
-- the owner's keys are fixed: F/G step, shift+F/G first/last, O open, N new tab, [ ] tabs, 0/1/2 fit/1:1/2x, P fullscreen, esc. add aliases, never move these.
+- the owner's keys are fixed: F/G step, shift+F/G first/last, O open, N new tab, [ ] tabs, shift+[ ] trim in and out, 0/1/2 fit/1:1/2x, P fullscreen, esc. add aliases, never move these.
+- a trim keeps its out frame, as editors' marks do (in 55, out 129 is 75 frames), and loop one plays only the trim (the owner, 2026-11-26).
 - no accent color on the tab strip or the control bar, not even for a button that is there only for a moment (trim). the accent (orange) lives only in menus, popups and panels: sliders, switches, the focused field, and the action a popup asks you to confirm (the owner, 2026-11-26). amber marks a fault in a file and nothing else.
 - anything that changes what you see (speed, zoom, mirror, a single channel) leaves a chip on screen.
 
