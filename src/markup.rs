@@ -79,6 +79,53 @@ pub fn square(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
     (from.0 + side * dx.signum(), from.1 + side * dy.signum())
 }
 
+/// at the strongest a pen's line is smoothed over a bell this wide (its sigma), in the design's pixels on screen
+const SMOOTHEST: f32 = 12.0;
+
+/// a pen's points as drawn, smoothed by `strength`, 0 (off) to 1: each point the mean of the line round it, weighted
+/// as a bell by how far along the line it is on screen (`on_screen` puts a point there, in the design's pixels). the
+/// line between the points counts, not the points alone, so a quick stroke's few points and a slow one's many are
+/// smoothed alike. the line taken round a point reaches as far behind it as ahead and no farther than the nearer end,
+/// so the first and last points stay where the pointer went down and came up, and a short line keeps its length.
+pub fn smooth(points: &[Point], strength: f32, on_screen: impl Fn(Point) -> (f32, f32)) -> Vec<Point> {
+    let sigma = strength.clamp(0.0, 1.0) * SMOOTHEST;
+    let n = points.len();
+    if sigma <= 0.0 || n < 3 {
+        return points.to_vec();
+    }
+    let seen: Vec<(f32, f32)> = points.iter().map(|p| on_screen(*p)).collect();
+    let mut along = vec![0.0f32; n];
+    for i in 1..n {
+        along[i] = along[i - 1] + (seen[i].0 - seen[i - 1].0).hypot(seen[i].1 - seen[i - 1].1);
+    }
+    let total = along[n - 1];
+    // the place on the line drawn `s` along it, between the points either side
+    let at = |s: f32| {
+        let j = along.partition_point(|&a| a < s).clamp(1, n - 1);
+        let (a, b) = (points[j - 1], points[j]);
+        let t = if along[j] > along[j - 1] { (s - along[j - 1]) / (along[j] - along[j - 1]) } else { 0.0 };
+        match t {
+            _ if t <= 0.0 => a,
+            _ if t >= 1.0 => b,
+            _ => (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t),
+        }
+    };
+    // the bell taken in steps of a quarter of its sigma, out to three sigmas
+    let step = sigma / 4.0;
+    (0..n)
+        .map(|i| {
+            let steps = ((3.0 * sigma).min(along[i]).min(total - along[i]) / step) as i32;
+            let (mut x, mut y, mut sum) = (0.0, 0.0, 0.0);
+            for k in -steps..=steps {
+                let w = (-0.5 * (k as f32 / 4.0).powi(2)).exp();
+                let p = at(along[i] + k as f32 * step);
+                (x, y, sum) = (x + w * p.0, y + w * p.1, sum + w);
+            }
+            (x / sum, y / sum)
+        })
+        .collect()
+}
+
 /// the marks of one clip, by frame
 #[derive(Clone, Debug, Default)]
 pub struct Marks(BTreeMap<usize, Vec<Mark>>);
@@ -187,6 +234,35 @@ mod tests {
         assert_eq!(pen.shape, Shape::Pen(vec![(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)]));
         assert!(!pen.tiny(1.0));
         assert!(Mark { shape: Shape::Text((0.0, 0.0), "  ".into()), ink: RED }.tiny(1.0));
+    }
+
+    /// a pen's line is smoothed (the owner's ask, 2026-11-25). off, its points are as drawn. on, a hand's jitter goes
+    /// and its first and last points hold; the default is gentle, keeping most of a wave a person drew on purpose,
+    /// where the strongest takes most of it; and a line of three points keeps its ends.
+    #[test]
+    fn a_pens_line_is_smoothed_gently_and_keeps_its_ends() {
+        let as_is = |p: Point| p;
+        // a jitter of 1.5 each side every 2 across, and a wave 6 high and 40 long drawn a point every 3 across
+        let jitter: Vec<Point> = (0..40).map(|i| (i as f32 * 2.0, if i % 2 == 0 { -1.5 } else { 1.5 })).collect();
+        let wave: Vec<Point> = (0..41).map(|i| (i as f32 * 3.0, 6.0 * (i as f32 * 3.0 * std::f32::consts::TAU / 40.0).sin())).collect();
+        // how far the line strays across, away from its ends
+        let stray = |points: &[Point]| points[8..points.len() - 8].iter().map(|p| p.1.abs()).fold(0.0, f32::max);
+        assert_eq!(smooth(&jitter, 0.0, as_is), jitter, "off");
+        let gentle = crate::settings::Settings::default().pen_smoothing;
+        assert!(gentle > 0.0 && gentle < 0.5, "the default is gentle: {gentle}");
+        for line in [&jitter, &wave] {
+            for strength in [gentle, 1.0] {
+                let smoothed = smooth(line, strength, as_is);
+                assert_eq!((smoothed[0], smoothed[smoothed.len() - 1]), (line[0], line[line.len() - 1]), "the ends hold at {strength}");
+                assert!(stray(&smoothed) < stray(line), "at {strength} the line strays {} where it strayed {}", stray(&smoothed), stray(line));
+            }
+        }
+        assert!(stray(&smooth(&jitter, gentle, as_is)) < 0.3 * stray(&jitter), "the default takes a hand's jitter");
+        assert!(stray(&smooth(&wave, gentle, as_is)) > 0.7 * stray(&wave), "and keeps most of a wave drawn on purpose");
+        assert!(stray(&smooth(&wave, 1.0, as_is)) < 0.5 * stray(&wave), "the strongest takes most of it");
+        let short = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
+        let smoothed = smooth(&short, 1.0, as_is);
+        assert_eq!((smoothed[0], smoothed[2]), (short[0], short[2]), "a short line keeps its length");
     }
 
     /// every look: the four turns, each mirrored, flipped, both or neither

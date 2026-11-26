@@ -287,7 +287,7 @@ impl Ui {
                 panel.custom = false;
             }
             4 => (s.browser_start, s.cache_limit) = (d.browser_start, d.cache_limit),
-            5 => (s.screenshot_folder, s.screenshot_caption, s.screenshot_guides, s.screenshot_markup) = (d.screenshot_folder, d.screenshot_caption, d.screenshot_guides, d.screenshot_markup),
+            5 => (s.screenshot_folder, s.screenshot_caption, s.screenshot_guides, s.screenshot_markup, s.pen_smoothing) = (d.screenshot_folder, d.screenshot_caption, d.screenshot_guides, d.screenshot_markup, d.pen_smoothing),
             _ => {}
         }
     }
@@ -556,6 +556,11 @@ fn screenshots(ui: &mut egui::Ui, s: &mut Settings, shows: Option<PathBuf>, acti
     toggle(rows.row(ui, "caption", "a caption: name, frame, timecode", words("under the picture, so it covers no pixel"), &[Part::Switch(s.screenshot_caption)]), &mut s.screenshot_caption);
     toggle(rows.row(ui, "guides", "the guides, when they are showing", None, &[Part::Switch(s.screenshot_guides)]), &mut s.screenshot_guides);
     toggle(rows.row(ui, "markup", "the markup", None, &[Part::Switch(s.screenshot_markup)]), &mut s.screenshot_markup);
+    rows.group(ui, "markup");
+    let smoothing = [Part::Slider(s.pen_smoothing), Part::Words(format!("{}%", (s.pen_smoothing * 100.0).round()))];
+    if let Some((_, Got::Slid(to))) = rows.row(ui, "smoothing", "smooth pen strokes", words("as they are drawn. all the way left is off"), &smoothing) {
+        s.pen_smoothing = (to * 100.0).round() / 100.0;
+    }
     rows.group(ui, "always");
     rows.fact(ui, "never beside the media, never over an earlier one", "clip.f000742.png, then clip.f000742 (2).png");
     rows.fact(ui, "16 bits a channel when the file is deeper than 8", "a copy to the clipboard is the frame alone, 8 bits");

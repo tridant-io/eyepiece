@@ -952,7 +952,7 @@ impl Ui {
         // last zoom). in markup mode a drag draws instead, and a click and a double click do nothing of the kind
         let picture = ui.interact(full, ui.scope_id().with("picture"), Sense::click_and_drag());
         if self.markup.on {
-            self.markup.pointer(ui, &picture, model, self.scale, actions);
+            self.markup.pointer(ui, &picture, model, self.scale, screen.settings.pen_smoothing, actions);
         } else if model.overflows {
             if picture.dragged_by(egui::PointerButton::Primary) {
                 let by = picture.drag_delta() * self.scale;
@@ -1042,7 +1042,7 @@ impl Ui {
         let alpha = ui.ctx().animate_bool_with_time(ui.scope_id().with("chrome"), self.shown, FADE);
 
         Self::draw_guides(ui.painter(), model.guides, model.picture, model.shown_size, self.scale);
-        self.markup.marks(ui, model, self.scale);
+        self.markup.marks(ui, model, self.scale, screen.settings.pen_smoothing);
         // what states the view sits under the strip when it is up, as in the design: a fault across the top, then
         // loop analysis, speed and the look from the left, and the zoom at the right
         let mut top = full.top() + 10.0 + STRIP * alpha;
@@ -2247,7 +2247,7 @@ pub(super) mod tests {
     }
 
     /// `drive`, over what `screen` shows
-    fn drive_on(ui: &mut Ui, screen: &Screen, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
+    pub(super) fn drive_on(ui: &mut Ui, screen: &Screen, steps: &[(f32, f32, Option<(crate::event::Button, bool)>)]) -> Vec<Action> {
         let mut actions = Vec::new();
         for &(x, y, button) in steps {
             match button {

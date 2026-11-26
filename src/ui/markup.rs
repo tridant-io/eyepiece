@@ -6,7 +6,7 @@ use super::icons::{self, Icon};
 use super::widgets::{CHOSEN, ON_CHOSEN};
 use super::{font, keys, text_top, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID};
 use crate::event::Key;
-use crate::markup::{square, Mark, Marks, Placing, Point, Shape, Tool, INKS};
+use crate::markup::{smooth, square, Mark, Marks, Placing, Point, Shape, Tool, INKS};
 use crate::timecode::Timecode;
 use crate::view::Guides;
 use egui::text::LayoutJob;
@@ -93,10 +93,23 @@ impl Markup {
         }
     }
 
+    /// the mark being drawn as it is shown and kept: a pen's line smoothed by `smoothing` from the points as the pointer
+    /// gave them, never from points smoothed before, which would melt the line as it is drawn.
+    fn drawn(&self, model: &Model, scale: f32, smoothing: f32) -> Option<(usize, Mark)> {
+        let (frame, mark) = self.drawing.as_ref()?;
+        let Shape::Pen(points) = &mark.shape else { return Some((*frame, mark.clone())) };
+        let place = placing(model);
+        let on_screen = |p: Point| {
+            let (x, y) = place.to_window(p);
+            (x / scale, y / scale)
+        };
+        Some((*frame, Mark { shape: Shape::Pen(smooth(points, smoothing, on_screen)), ink: mark.ink }))
+    }
+
     /// the picture's pointer, in markup mode: a drag on the picture draws with the tool, and with the text tool a click
     /// opens a field there. a press on the picture keeps what was being typed. nothing else: the window does not move,
-    /// the picture does not pan and the controls are not toggled.
-    pub(super) fn pointer(&mut self, ui: &egui::Ui, picture: &egui::Response, model: &Model, scale: f32, actions: &mut Vec<Action>) {
+    /// the picture does not pan and the controls are not toggled. `smoothing` is how much a pen's line is smoothed.
+    pub(super) fn pointer(&mut self, ui: &egui::Ui, picture: &egui::Response, model: &Model, scale: f32, smoothing: f32, actions: &mut Vec<Action>) {
         let place = placing(model);
         let (x, y, w, h) = model.picture;
         let on_picture = |p: &Pos2| (x..x + w).contains(&(p.x * scale)) && (y..y + h).contains(&(p.y * scale));
@@ -123,9 +136,10 @@ impl Markup {
         if picture.drag_stopped() {
             // how many of the design's pixels one of the file's takes on screen
             let per = w / model.shown_size.0.max(1) as f32 / scale;
-            if let Some((frame, mark)) = self.drawing.take().filter(|(_, mark)| !mark.tiny(per)) {
+            if let Some((frame, mark)) = self.drawn(model, scale, smoothing).filter(|(_, mark)| !mark.tiny(per)) {
                 actions.push(Action::Mark(frame, mark));
             }
+            self.drawing = None;
         }
         if self.tool == Tool::Text && picture.clicked_by(egui::PointerButton::Primary) {
             if let Some(at) = picture.interact_pointer_pos().filter(on_picture) {
@@ -135,11 +149,11 @@ impl Markup {
     }
 
     /// the marks on the frame on screen, and the one being drawn on it, over the picture and clipped to it.
-    pub(super) fn marks(&self, ui: &egui::Ui, model: &Model, scale: f32) {
+    pub(super) fn marks(&self, ui: &egui::Ui, model: &Model, scale: f32, smoothing: f32) {
         let (x, y, w, h) = model.picture;
         let painter = ui.painter().with_clip_rect(Rect::from_min_size(Pos2::new(x / scale, y / scale), Vec2::new(w / scale, h / scale)));
-        let drawing = self.drawing.iter().filter(|(frame, _)| *frame == model.frame).map(|(_, mark)| mark);
-        draw_marks(&painter, model.marks.map_or(&[][..], |marks| marks.on(model.frame)).iter().chain(drawing), &placing(model), scale);
+        let drawing = self.drawn(model, scale, smoothing).filter(|(frame, _)| *frame == model.frame).map(|(_, mark)| mark);
+        draw_marks(&painter, model.marks.map_or(&[][..], |marks| marks.on(model.frame)).iter().chain(drawing.as_ref()), &placing(model), scale);
     }
 
     /// the field text is typed into, where the click was and kept inside `full`. enter keeps what was typed and escape
@@ -373,7 +387,7 @@ pub fn caption(name: &str, frame: usize, first: usize, clock: Option<Timecode>, 
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{drive, drive_with, model};
+    use super::super::tests::{drive, drive_on, drive_with, model};
     use super::super::{Extras, Ui};
     use super::*;
     use crate::event::Button::{self, Left};
@@ -482,6 +496,35 @@ mod tests {
         let shown = ui.markup.drawing.clone().map(|(_, mark)| mark);
         let kept = drive_with(&mut ui, clip(), &release);
         assert_eq!(kept, vec![Action::Mark(0, shown.expect("a box being drawn"))]);
+    }
+
+    /// a pen's line is kept smoothed by the settings' amount, its ends where the pointer went down and came up; with
+    /// smoothing off it is kept as drawn.
+    #[test]
+    fn a_pens_line_is_kept_smoothed_by_the_settings() {
+        // a jagged line, 4 across and 3 up or down a step
+        let steps: Vec<(f32, f32)> = (0..30).map(|i| (200.0 + i as f32 * 4.0, 180.0 + if i % 2 == 0 { -3.0 } else { 3.0 })).collect();
+        let (first, last) = (steps[0], steps[steps.len() - 1]);
+        let path: Vec<Step> = [(first.0, first.1, None), (first.0, first.1, Some((Left, true)))].into_iter().chain(steps.iter().map(|p| (p.0, p.1, None))).chain([(last.0, last.1, Some((Left, false))), (last.0, last.1, None)]).collect();
+        let drawn: Vec<Point> = steps.iter().map(|&p| file(p)).collect();
+        // how far the line strays from its middle, away from its ends
+        let stray = |points: &[Point]| points[5..points.len() - 5].iter().map(|p| (p.1 - file((0.0, 180.0)).1).abs()).fold(0.0, f32::max);
+        for strength in [0.0, crate::settings::Settings::default().pen_smoothing] {
+            let settings = crate::settings::Settings { pen_smoothing: strength, ..Default::default() };
+            let screen = super::super::Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &settings };
+            let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+            ui.toggle_markup();
+            ui.markup.tool = Tool::Pen;
+            let kept = drive_on(&mut ui, &screen, &path);
+            let [Action::Mark(0, Mark { shape: Shape::Pen(points), .. })] = &kept[..] else { panic!("{kept:?}") };
+            assert_eq!(points.len(), drawn.len(), "a point for each the pointer passed");
+            assert!(near(points[0], drawn[0]) && near(points[points.len() - 1], drawn[drawn.len() - 1]), "the ends hold at {strength}: {points:?}");
+            if strength == 0.0 {
+                assert!(points.iter().zip(&drawn).all(|(a, b)| near(*a, *b)), "off, as drawn: {points:?}");
+            } else {
+                assert!(stray(points) < 0.5 * stray(&drawn), "smoothed: strays {} where it was drawn straying {}", stray(points), stray(&drawn));
+            }
+        }
     }
 
     /// the pointer is a cross where a drag would draw: on the picture in markup mode, not on the row of tools or the

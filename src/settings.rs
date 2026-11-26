@@ -53,6 +53,8 @@ pub struct Settings {
     pub screenshot_caption: bool,
     pub screenshot_guides: bool,
     pub screenshot_markup: bool,
+    /// how much a pen's line is smoothed as it is drawn, 0 (off) to 1
+    pub pen_smoothing: f32,
     pub browser_folder: Option<PathBuf>,
     /// the folders the browser last opened files from, the newest first
     pub browser_recent: Vec<PathBuf>,
@@ -105,6 +107,8 @@ impl Default for Settings {
             screenshot_caption: false,
             screenshot_guides: false,
             screenshot_markup: true,
+            // gentle: a hand's jitter goes, a wave drawn on purpose stays (the owner's "not too much", 2026-11-25)
+            pen_smoothing: 0.3,
             browser_folder: None,
             browser_recent: Vec::new(),
             browser_view: crate::browse::View::Both,
@@ -178,7 +182,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 33] {
+    fn pairs(&self) -> [(&'static str, String); 34] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -201,6 +205,7 @@ impl Settings {
             ("screenshot_caption", word(&SWITCH, self.screenshot_caption)),
             ("screenshot_guides", word(&SWITCH, self.screenshot_guides)),
             ("screenshot_markup", word(&SWITCH, self.screenshot_markup)),
+            ("pen_smoothing", self.pen_smoothing.to_string()),
             ("browser_folder", path(&self.browser_folder)),
             ("browser_start", path(&self.browser_start)),
             ("browser_recent", recent.join(" | ")),
@@ -245,6 +250,7 @@ impl Settings {
             "screenshot_caption" => self.screenshot_caption = pick(&SWITCH, v)?,
             "screenshot_guides" => self.screenshot_guides = pick(&SWITCH, v)?,
             "screenshot_markup" => self.screenshot_markup = pick(&SWITCH, v)?,
+            "pen_smoothing" => self.pen_smoothing = number(v, 0.0, 1.0)?,
             "browser_folder" => self.browser_folder = folder(v),
             "browser_start" => self.browser_start = folder(v),
             // a bar cannot be in a windows path
@@ -388,6 +394,7 @@ mod tests {
             screenshot_caption: true,
             screenshot_guides: true,
             screenshot_markup: false,
+            pen_smoothing: 0.75,
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
             browser_view: crate::browse::View::List,

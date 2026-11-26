@@ -29,6 +29,7 @@ checked by putting the window's own pixels beside the design's mock at the same 
 - a card's "new tab" action is gone; the actions are open (or "open selected"), and reveal for a local file or read metadata for one that is look-only.
 - on macOS the window's buttons are the system's own, not drawn by the player (see [macOS](#macos)).
 - a file opens playing (`play_on_open = on`, 2026-11-24), where figs 02 to 26 have it open paused on its first frame.
+- markup does more than the plan's "kept small" list (the owner's asks, 2026-11-25): shift draws a square or a round circle, and a pen's line is smoothed, with a slider for it on settings' screenshots page, which the settings design does not have.
 
 ## the code
 
@@ -183,6 +184,7 @@ stills and sequences have only been opened as the small files made for the tests
 - in markup mode the pointer is a cross where a drag would draw: which pointer the window is told to show is tested; that windows shows it has not been looked at with a real pointer.
 - the toast after a save is up for 5 s where others are up for 2.6 s (the design's), and while the pointer is on it, then a second more; its "reveal in explorer" (or finder) is the browser's reveal. the click and the hold are tested in a pass of the controls, not tried by hand in the window yet.
 - shift keeps a box square and a circle round in the window's pixels, from where the box's first corner is on screen, so it is square as the picture is shown (turned, mirrored, drawn with square pixels) and not necessarily in the file's. it is read with each press and as it goes down and up, so it can be pressed or let go mid-drag: on windows from its own key messages, on macos from `flagsChanged`, which has not run. tested headless (four ways, a turned picture with pixels drawn wider than high) and in the end-to-end test, which presses it halfway through a drag; not tried with a real keyboard.
+- a pen's line is smoothed as it is drawn, and kept as shown: each point the mean of the line round it, the line between the points included, weighted as a bell by how far along it on screen. the bell's sigma is `pen_smoothing` (0 to 1, in the settings file and on settings' screenshots page) times 12 of the design's pixels, 3.6 by default: chosen, not measured against hands. it is taken from the points as the pointer gave them each pass, never from points smoothed before. near the ends the line taken round a point is cut short alike on both sides, so the ends stay where the pointer went down and came up. tested on drawn zig-zags and a wave (the default leaves under 30% of a jitter 1.5 each side, and over 70% of a wave 6 high and 40 long); not tried with a real pointer or pen. boxes, circles and text are not smoothed. the end-to-end test draws no pen stroke.
 - a saved frame has the caption, guides and marks as the design's figure 20 draws them on a frame 1200 wide, in proportion to the frame's width, and never smaller than the window shows them at 100%, where a narrow frame's caption runs onto more lines; the view has them as the window shows them.
 
 ### the window and tabs

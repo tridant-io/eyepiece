@@ -124,7 +124,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
 - the screenshot menu can add a caption, the guides and the markup.
 - screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one. the note that says where has **reveal in explorer** (finder on macOS), and stays up while the pointer is on it.
-- **markup:** **E** pauses and shows the tools: rectangle, circle, pen, text and four inks. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. in a text field, **enter** keeps and **esc** drops. **ctrl+Z** takes back a mark. marks stay on their frame until the tab closes.
+- **markup:** **E** pauses and shows the tools: rectangle, circle, pen, text and four inks. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops. **ctrl+Z** takes back a mark. marks stay on their frame until the tab closes.
 
 ![markup on a frame: rectangle, circle, text and the tools](docs/images/markup.png)
 
@@ -136,7 +136,7 @@ the clip's sound plays with it and keeps the clock. pitch holds from half to dou
 
 ### settings, help and about
 
-the gear, or **ctrl+,**, opens settings. a change takes effect at once. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
+the gear, or **ctrl+,**, opens settings. a change takes effect at once. the screenshots page also holds markup's pen smoothing. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
 
 ![the settings panel on its general page](docs/images/settings.png)
 
