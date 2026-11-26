@@ -1071,7 +1071,9 @@ $netCopies = [ordered]@{ (Join-Path $net 'hap_64.mov') = 'hap_64.mov'; (Join-Pat
 New-Item -ItemType Directory $share, $deep, $net | Out-Null
 foreach ($to in $netCopies.Keys) { Copy-Item -LiteralPath (Join-Path $media $netCopies[$to]) -Destination $to }
 $unc = '\\localhost\' + $net.Substring(0, 1) + '$' + $net.Substring(2)
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $unc", 'mute = on', 'play_on_open = off'
+# the main area kept 520 wide, as the settings have it from a drag of its edge: in the 360 it keeps by itself beside a
+# path this deep, the note's button stands under its words, not at its right (fig. 29)
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $unc", 'mute = on', 'play_on_open = off', 'browser_main_width = 520'
 $had = (Get-Kept).Count
 Start-Player
 Start-Sleep -Milliseconds 3000

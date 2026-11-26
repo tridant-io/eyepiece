@@ -247,9 +247,10 @@ impl Nav {
         self.entries(&column.folder).iter().find(|e| &e.path == path)
     }
 
-    /// the folders whose videos the main area shows: the one shown, or the ones picked together
+    /// the folders whose videos the main area shows: the one shown, or the ones picked together. with the column
+    /// alone showing there is no main area: the folders picked are lit in their column and nothing more.
     pub fn shown_in_main(&self) -> &[PathBuf] {
-        if self.together.is_empty() { std::slice::from_ref(&self.main().folder) } else { &self.together }
+        if self.together.is_empty() || self.view == View::List { std::slice::from_ref(&self.main().folder) } else { &self.together }
     }
 
     /// the main area's cards: of folders picked together, one folder's after another's
@@ -525,7 +526,7 @@ impl Nav {
     /// columns from `first` on, deepest first.
     pub fn needed(&self, first: usize) -> Vec<PathBuf> {
         let mut out = vec![self.main().folder.clone()];
-        for folder in self.together.iter().chain(self.shown()[first.min(self.active())..].iter().rev().map(|column| &column.folder)) {
+        for folder in self.shown_in_main().iter().chain(self.shown()[first.min(self.active())..].iter().rev().map(|column| &column.folder)) {
             if !out.contains(folder) {
                 out.push(folder.clone());
             }

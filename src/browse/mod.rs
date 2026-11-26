@@ -164,6 +164,11 @@ impl Widths {
     pub fn set_column(&mut self, depth: usize, width: f32) {
         self.columns[depth.min(COLUMNS - 1)] = width;
     }
+
+    /// how many of the first `upto` columns along the path have their width from where the one at `depth` has its own
+    pub fn sharing(depth: usize, upto: usize) -> usize {
+        (0..upto).filter(|other| other.min(&(COLUMNS - 1)) == &depth.min(COLUMNS - 1)).count()
+    }
 }
 
 const CLIPS: &[&str] = &["mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm"];

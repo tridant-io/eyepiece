@@ -351,8 +351,9 @@ struct State {
     tip: Option<(egui::Id, f64)>,
     /// the folder last listed in the main area holds videos to play one after another: open folder is a button
     plays: bool,
-    /// the videos picked together with shift or control, when there are more than the one selected; and the one a
-    /// run picked with shift starts from
+    /// the videos picked together with shift or control, when there are more than the one selected (the folders
+    /// picked together are the path's own, `Nav::together`); and the video or folder last pressed, which a run
+    /// picked with shift starts from
     picked: Vec<PathBuf>,
     anchor: Option<PathBuf>,
     /// shift and control, as held with the last pointer press
@@ -456,7 +457,8 @@ enum Bring {
 struct Laid {
     area: Rect,
     widths: Widths,
-    /// the scroll that shows the path's end
+    /// how wide the path's columns are together, and the scroll that shows the path's end
+    all: f32,
     end: f32,
     /// where the columns' scroll, what is seen of them and the metadata column's width were headed
     to: [f32; 3],
@@ -632,7 +634,7 @@ impl State {
     fn choose(&mut self, chosen: Chosen) {
         // with folders picked together in it, the folder shown plays what the main area shows of them
         let chosen = match chosen {
-            Chosen::PlayFolder(folder) if !self.nav.together.is_empty() && folder == self.nav.main().folder => {
+            Chosen::PlayFolder(folder) if self.nav.shown_in_main().len() > 1 && folder == self.nav.main().folder => {
                 let clips = self.picked_clips(&folder);
                 Chosen::PlayTree(folder, Ok(clips))
             }
@@ -666,12 +668,13 @@ impl State {
     /// listings alone. on a network volume the player asks before it plays: what it counted is kept while that ask
     /// stands, as a walk's is, and plays when asked for again, whatever is picked by then.
     fn picked_clips(&mut self, of: &Path) -> Clips {
-        if let Some((_, counted, _)) = self.walked.take().filter(|(kept, _, at)| kept == of && at.elapsed() < folder::ASKED_FOR) {
+        if let Some((_, counted, _)) = self.walked.take().filter(|(kept, clips, at)| kept == of && !clips.deep && at.elapsed() < folder::ASKED_FOR) {
             return counted;
         }
-        let mut folders = self.nav.together.clone();
-        // `deep`, as they are folders in the one that plays: an ask about that folder alone is not theirs
-        let mut clips = Clips { items: Vec::new(), left_out: 0, deep: true, cut: false };
+        let mut folders = self.nav.shown_in_main().to_vec();
+        // not `deep`: the player's ask then names play folder, which is what is there to press again, and a walk
+        // of the folder kept from before is told from these
+        let mut clips = Clips { items: Vec::new(), left_out: 0, deep: false, cut: false };
         let by_name = |a: &PathBuf, b: &PathBuf| browse::natural_cmp(&browse::name_of(a), &browse::name_of(b));
         folders.sort_by(by_name);
         for folder in &folders {
@@ -842,19 +845,23 @@ impl State {
         let columns: Vec<f32> = (0..shown).map(|depth| self.widths.column(depth)).collect();
         let before = |depth: usize| columns[..depth.min(shown)].iter().sum::<f32>();
         let (room, meta) = shares(area.width() - self.widths.side, &columns, self.nav.card().is_some(), self.nav.view, self.widths);
-        let end = (before(shown) - room).max(0.0);
+        let (all, last) = (before(shown), before(shown.saturating_sub(1)));
+        let end = (all - room).max(0.0);
         let laid = self.laid.take();
-        let at = match self.bring.take() {
+        self.columns_at = match self.bring.take() {
             Some(Bring::End) => self.nav.current_column().map_or(end, |current| end.min(before(current))),
-            Some(Bring::On) => self.columns_at.max(end),
-            Some(Bring::Stay) => self.columns_at,
+            // what was pressed stays where it is, though it be a column cut by the sidebar that is the path's last now
+            Some(Bring::On) => self.columns_at.max(end).min(all),
+            Some(Bring::Stay) => self.columns_at.min(all),
             None if laid.as_ref().is_some_and(|laid| laid.end == self.columns_at) => end,
-            None => self.columns_at,
-        };
-        // never past the last column's left, where the path's end shows less than that
-        self.columns_at = at.clamp(0.0, end.max(before(shown.saturating_sub(1))));
+            // and stands so while the columns are as they were
+            None if laid.as_ref().is_some_and(|laid| laid.all == all) => self.columns_at,
+            // else never past the last column's left, where the path's end shows less than that
+            None => self.columns_at.min(end.max(last)),
+        }
+        .max(0.0);
         // with the column alone showing the columns have all the room; else the main area begins where they end
-        let seen = if self.nav.view == View::List { room } else { room.min(before(shown) - self.columns_at) };
+        let seen = if self.nav.view == View::List { room } else { room.min(all - self.columns_at) };
         let to = [self.columns_at, seen, meta];
         let now = ui.input(|i| i.time);
         // how much of a slide begun at `since` is still to go: all of it at first, then less and less
@@ -869,7 +876,7 @@ impl State {
         if still > 0.0 {
             ui.ctx().request_repaint();
         }
-        self.laid = Some(Laid { area, widths: self.widths, end, to });
+        self.laid = Some(Laid { area, widths: self.widths, all, end, to });
         Layout::new(area, shown, self.widths, std::array::from_fn(|i| to[i] + self.slide.0[i] * still))
     }
 
@@ -914,9 +921,9 @@ impl State {
             Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
             Click::PlayFolder(to) => self.choose(Chosen::PlayFolder(to)),
             // with folders picked together in the folder shown, their own videos are all there is to play of it
-            Click::PlayTree(to) if !self.nav.together.is_empty() && to == self.nav.main().folder => {}
+            Click::PlayTree(to) if self.nav.shown_in_main().len() > 1 && to == self.nav.main().folder => {}
             // off the drawing thread, as a folder is listed: played when its answer comes in
-            Click::PlayTree(to) => match self.walked.take().filter(|(of, _, at)| *of == to && at.elapsed() < folder::ASKED_FOR) {
+            Click::PlayTree(to) => match self.walked.take().filter(|(of, clips, at)| *of == to && clips.deep && at.elapsed() < folder::ASKED_FOR) {
                 Some((_, clips, _)) => self.choose(Chosen::PlayTree(to, Ok(clips))),
                 None => {
                     self.walks.keep_only(|_| false);
@@ -1024,12 +1031,12 @@ impl State {
         for (depth, rect) in layout.columns.iter().enumerate() {
             // an edge out of view is nowhere to be pressed, and still its drag's own while that lasts
             let in_view = rect.right() > seen.left() && rect.right() <= seen.right() + 0.5;
-            let (on, to, back) = grab(1 + depth, if in_view { over_rule(rect.right(), *rect) } else { Rect::from_min_max(seen.max, seen.min) });
+            let (on, to, back) = grab(1 + depth, if in_view { over_rule(rect.right(), *rect) } else { Rect::NOTHING });
             (over, reset) = (over | on, reset | back);
             if let Some(x) = to {
                 // a column deeper than those that keep a width of their own shares its width with the ones before
                 // it: each of them moves this edge as it widens, and each on the path moves the path's end
-                let shared = |upto: usize| (0..upto).filter(|d| d.min(&(browse::COLUMNS - 1)) == &depth.min(browse::COLUMNS - 1)).count() as f32;
+                let shared = |upto: usize| Widths::sharing(depth, upto) as f32;
                 let by = ((x - rect.right()) / shared(depth + 1)).min(if ends { spare / shared(layout.columns.len()) } else { f32::INFINITY });
                 self.widths.set_column(depth, rect.width() + by);
             }
@@ -1037,6 +1044,8 @@ impl State {
                 self.widths.set_column(depth, browse::COLUMN);
             }
         }
+        // within what each part can be before the rest is worked out from them: an edge dragged past that stops there
+        self.widths = self.widths.kept();
         let wide = area.width() - self.widths.side;
         let two: f32 = (0..layout.columns.len()).rev().take(2).map(|depth| self.widths.column(depth)).sum();
         if let Some(rect) = layout.meta {
@@ -1060,7 +1069,7 @@ impl State {
         let mut own = false;
         if !list {
             let inside = layout.main.left() + 7.0;
-            let (on, to, back) = grab(usize::MAX - 1, if self.columns_at > 0.0 { over_rule(inside, layout.main) } else { Rect::from_min_max(seen.max, seen.min) });
+            let (on, to, back) = grab(usize::MAX - 1, if self.columns_at > 0.0 { over_rule(inside, layout.main) } else { Rect::NOTHING });
             (over, reset, own) = (over | on, reset | back, to.is_some());
             if let Some(x) = to {
                 let room = layout.main.right() - layout.side.right();
@@ -1096,6 +1105,9 @@ impl State {
         }
         self.nav.path.iter_mut().for_each(|column| column.reveal = true);
         self.revealed = None;
+        // the folders picked together stay in their column's order
+        let column: Vec<PathBuf> = self.nav.entries(&self.nav.main().folder).iter().map(|e| e.path.clone()).collect();
+        self.nav.together.sort_by_key(|folder| column.iter().position(|of| of == folder));
     }
 
     /// the address (the owner's ask, 2026-11-24): a line across the top, over the columns and the main area, with
@@ -1327,7 +1339,8 @@ impl State {
     /// metadata column: asked for as a card's is, and under the same rule on a network volume.
     fn list_pictures(&mut self, ctx: &egui::Context) {
         self.take_pictures(ctx);
-        let asked = self.previews.contains(&self.nav.main().folder);
+        // on a network volume, whether the previews of the card's own folder were asked for
+        let asked = self.nav.card().and_then(|card| card.path.parent()).is_some_and(|folder| self.previews.contains(folder));
         let card = self.nav.card().filter(|card| nav::makes_pictures(self.nav.volume, card, asked));
         let wants: Vec<Want> = card.filter(|card| !self.cards.get(&card.path).is_some_and(|c| c.stamp == stamp(card) && c.poster)).map(|card| Want { path: card.path.clone(), size: stamp(card).0, modified: stamp(card).1, all: false, asked }).into_iter().collect();
         let selected = card.map(|card| card.path.clone());
@@ -1857,7 +1870,7 @@ impl State {
                     rows.push(("play folder", "shift enter", Click::PlayFolder(folder.clone()), None));
                 }
                 // with folders picked together in it, the folder shown plays their own videos and nothing deeper
-                if !shown || self.nav.together.is_empty() {
+                if !shown || self.nav.shown_in_main().len() == 1 {
                     rows.push(("play with subfolders", "ctrl shift enter", Click::PlayTree(folder.clone()), None));
                 }
                 if shown {
@@ -3183,6 +3196,23 @@ mod tests {
                 out = deep.pass(Vec::new());
             }
         }
+        // a folder in the last column, whose own column then lies out of view: it stays there, where a plain press
+        // would bring it in. and with the cards alone, where a folder shown has no column: the column pressed, cut
+        // by the sidebar, is the last one then, and stays cut
+        for (window, view, on, by) in [(1240.0, View::Both, "s5", ["s4", "s5"]), (1330.0, View::Gallery, "s1", ["f2", "s1"])] {
+            let mut deep = Deep::new(6, window);
+            deep.browser.state().nav.view = view;
+            let out = deep.rest();
+            let before = by.map(|row| left_of(&out, row));
+            assert!(before.iter().all(|at| at.is_some()), "{by:?} are in view: {before:?}");
+            let (at, seen) = drawn(&out, on)[0];
+            let mut out = deep.press(Pos2::new(at.x + 5.0, seen.center().y), egui::PointerButton::Secondary);
+            assert!(matches!(&deep.browser.state().menu, Some((On::Folder(folder), _)) if folder.ends_with(on)), "the menu is on {on}");
+            for pass in 0..40 {
+                assert_eq!(by.map(|row| left_of(&out, row)), before, "a right click on {on} moved the columns, {pass} passes after it");
+                out = deep.pass(Vec::new());
+            }
+        }
     }
 
     /// the main area can be made narrower than a card (the owner's word, 2026-11-25: "very very small"): the line
@@ -3290,6 +3320,15 @@ mod tests {
         assert_eq!((left_of(&out, "s4"), left_of(&out, "s5")), (Some(before), Some(edge + 100.0 + 31.0)), "the column before stayed, and the edge stays where it was let go");
         let changed: Vec<f32> = deep.browser.state().widths.columns.iter().copied().filter(|&w| w != browse::COLUMN).collect();
         assert_eq!(changed, vec![browse::COLUMN + 100.0], "that column alone is wider");
+
+        // an edge dragged past what its part can be stops there, and the main area gives no more than it took: here
+        // the sidebar's, 210 to its widest
+        let mut deep = Deep::new(6, 1240.0);
+        deep.rest();
+        deep.drag(Pos2::new(150.0, 300.0), Pos2::new(600.0, 300.0), HOLDS);
+        deep.release(Pos2::new(600.0, 300.0));
+        let widths = deep.browser.state().widths;
+        assert_eq!((widths.side, widths.main), (360.0, Widths::default().main - 210.0), "the sidebar dragged past its widest");
 
         // a column deeper than the sixteen that keep a width of their own shares its width with the ones before it:
         // its edge stays under the pointer all the same. here the last of eighteen, by the main area
@@ -3492,6 +3531,21 @@ mod tests {
         assert!(!real.browser.state().walks.busy() && real.browser.state().chosen.is_none(), "control + shift + enter played or walked something");
         let rows: Vec<&str> = real.browser.state().menu_rows(&On::Shown(top.clone())).into_iter().map(|(words, ..)| words).collect();
         assert!(rows.contains(&"play folder") && !rows.contains(&"play with subfolders"), "the menu of the folder shown offers {rows:?}");
+        // sorted the other way, the cards follow the column, and play is in name order all the same
+        real.browser.set_sort(Sort { by: browse::By::Name, descending: true });
+        assert_eq!(real.shows().0, ["c1.mov", "a2.mov", "a1.mov"]);
+        real.browser.key(Key::Enter, Mods { shift: true, ctrl: false, alt: false });
+        assert!(matches!(real.browser.state().chosen.take(), Some(Chosen::PlayTree(_, Ok(clips))) if clips.items == played.1), "played in the browser's sort");
+        real.browser.set_sort(Sort::default());
+        // in the list view, which has no main area, they are lit and nothing more: the folder shown is still the one
+        // they are in, and plays as itself
+        real.browser.state().click(Click::View(View::List));
+        real.rest();
+        assert_eq!(real.browser.state().nav.shown_in_main(), [top.clone()]);
+        real.browser.key(Key::Enter, Mods { shift: true, ctrl: false, alt: false });
+        assert!(matches!(real.browser.state().chosen.take(), Some(Chosen::PlayFolder(folder)) if folder == top), "in the list view the folder shown plays as itself");
+        assert_eq!(real.browser.state().nav.together.len(), 2, "and the folders stay picked");
+        real.browser.state().click(Click::View(View::Both));
         // two folders with nothing in them, in a folder that holds a video: no place for a screenshot
         real.press("reel_d", false, false);
         real.press("reel_e", false, true);
@@ -3507,10 +3561,17 @@ mod tests {
         real.press("reel_b", false, false);
         assert!(real.browser.state().nav.together.is_empty());
         assert_eq!((real.shows().0, real.browser.state().nav.main().folder.clone()), (vec!["b1.mov".to_string()], reel("reel_b")));
-        real.press("reel_c", false, true);
-        assert_eq!(real.browser.state().nav.together.len(), 2);
-        real.browser.key(Key::Down, Mods::default());
-        assert!(real.browser.state().nav.together.is_empty(), "a step in the column lets the picked folders go");
+        for (key, what) in [(Key::Down, "a step in the column"), (Key::Left, "left, to the column before"), (Key::Backspace, "backspace, up a folder")] {
+            real.press("reel_b", false, false);
+            real.press("reel_c", false, true);
+            assert_eq!(real.browser.state().nav.together.len(), 2);
+            // enter with no card selected goes nowhere, and they stay picked
+            real.browser.key(Key::Enter, Mods::default());
+            assert!(real.browser.state().nav.together.len() == 2 && real.browser.state().chosen.is_none());
+            real.browser.key(key, Mods::default());
+            assert!(real.browser.state().nav.together.is_empty(), "{what} lets the picked folders go");
+            real.browser.go(&top);
+        }
     }
 
     /// adr 0004 with several folders picked on a share: each is listed and nothing more is asked of any file, no
@@ -3537,6 +3598,14 @@ mod tests {
         }
         assert_eq!(wants.try_iter().flatten().count(), 0, "a picture was wanted of a file on a share");
         assert!(!real.browser.state().metas.busy() && real.browser.state().read.is_empty(), "a file on a share was read for its metadata");
+        // previews asked of the folder they are in, before they were picked, are not theirs: not in the grid, and not
+        // in the list view, which wants the selected file's picture for the metadata column
+        real.browser.state().previews.insert(top.clone());
+        real.rest();
+        real.browser.state().click(Click::View(View::List));
+        real.rest();
+        assert_eq!(wants.try_iter().flatten().count(), 0, "a picture was wanted of a file in a folder whose previews were not asked for");
+        real.browser.state().click(Click::View(View::Both));
         let main = real.browser.state().nav.main().folder.clone();
         real.browser.state().click(Click::Previews(main));
         real.rest();
@@ -3548,13 +3617,18 @@ mod tests {
         let play = |real: &mut Real| {
             real.browser.key(Key::Enter, Mods { shift: true, ctrl: false, alt: false });
             match real.browser.state().chosen.take() {
-                Some(Chosen::PlayTree(_, Ok(clips))) => clips.items,
-                _ => Vec::new(),
+                Some(Chosen::PlayTree(_, Ok(clips))) => (clips.items, clips.deep),
+                _ => (Vec::new(), true),
             }
         };
         let counted = play(&mut real);
-        assert_eq!(counted.len(), 3);
+        // as a folder alone, so the player's ask names play folder, which is what is there to press again
+        assert_eq!((counted.0.len(), counted.1), (3, false));
         real.press("reel_b", false, true);
         assert_eq!(play(&mut real), counted, "asked for again, another list played than the one counted");
+        // a walk of the folder they are in, counted and kept, is not theirs to play
+        let walk = Clips { items: vec![top.join("c_own.mov")], left_out: 0, deep: true, cut: false };
+        real.browser.state().walked = Some((top.clone(), walk, Instant::now()));
+        assert_eq!(play(&mut real).0.len(), 4, "the picked folders played a walk's clips");
     }
 }
