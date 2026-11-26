@@ -6,7 +6,7 @@ use crate::browse::{self, Entry, Kind, Volume};
 use crate::play;
 use crate::settings::Loop;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// a walk of a folder's subfolders gathers this many clips at most, and lists this many folders at most: at the top
 /// of a drive it would otherwise list for minutes
@@ -102,6 +102,13 @@ pub fn ask(volume: Volume, clips: usize, deep: bool, asked: bool) -> Option<Stri
     let opens = if clips == 1 { "its 1 clip, and nothing else".to_string() } else { format!("its {clips} clips, each when it plays") };
     let again = if deep { "play with subfolders" } else { "play folder" };
     (volume == Volume::Network && !asked).then(|| format!("network folder · playing it opens {opens}. {again} again to go on"))
+}
+
+/// whether an ask has just been answered: `last` is the clips it counted, and until when asking for those again plays
+/// them. it is the clips that count, not the folder: folders picked together in the folder asked about, or its
+/// subfolders, are other clips to open, and are asked about anew.
+pub fn answered(last: Option<(Vec<PathBuf>, Instant)>, clips: &[PathBuf], now: Instant) -> bool {
+    last.is_some_and(|(of, until)| of == clips && now < until)
 }
 
 /// what play does at the ends of one clip of `items`, for the tab's loop mode: with `all`, a clip of several stops
@@ -232,6 +239,20 @@ mod tests {
         assert!(ask(Volume::Network, 1, false, false).expect("it asks").contains("1 clip,"));
         // with its subfolders, it names that to ask for again
         assert!(ask(Volume::Network, 2, true, false).expect("it asks").ends_with("play with subfolders again to go on"));
+    }
+
+    /// an ask is answered by asking again for the very clips it counted, in time: other folders picked in the folder
+    /// asked about, or the folder with its subfolders, are asked about anew (adr 0004).
+    #[test]
+    fn an_ask_is_answered_only_for_the_clips_it_counted() {
+        let now = Instant::now();
+        let alone = vec![PathBuf::from("share/a.mov"), PathBuf::from("share/b.mov")];
+        let picked = vec![PathBuf::from("share/x/c.mov"), PathBuf::from("share/y/d.mov")];
+        let last = || Some((alone.clone(), now + ASKED_FOR));
+        assert!(answered(last(), &alone, now));
+        assert!(!answered(last(), &picked, now), "folders picked in the folder asked about play unasked");
+        assert!(!answered(last(), &alone, now + ASKED_FOR), "an ask answered too late");
+        assert!(!answered(None, &alone, now));
     }
 
     #[test]

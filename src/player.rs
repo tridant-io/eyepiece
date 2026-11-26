@@ -1087,13 +1087,13 @@ impl Tabs {
     }
 
     /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player.
-    /// one that had to be asked about is kept in `asking`, with whether its subfolders were asked for too, for a few
-    /// seconds, and plays when it is asked for again in that time.
-    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asking: &mut Option<(std::path::PathBuf, bool, Instant)>) -> Option<String> {
-        let deep = clips.as_ref().is_ok_and(|clips| clips.deep);
-        let asked = asking.take().is_some_and(|(of, walked, until)| of == folder && walked == deep && Instant::now() < until);
+    /// the clips of one that had to be asked about are kept in `asking` for a few seconds, and play when they are
+    /// asked for again in that time.
+    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asking: &mut Option<(Vec<std::path::PathBuf>, Instant)>) -> Option<String> {
+        let items = clips.as_ref().map(|clips| clips.items.clone()).unwrap_or_default();
+        let asked = folder::answered(asking.take(), &items, Instant::now());
         let said = self.play_folder(gpu, folder, clips, wake, replace, asked)?;
-        *asking = (!asked).then(|| (folder.to_path_buf(), deep, Instant::now() + folder::ASKED_FOR));
+        *asking = (!asked).then(|| (items, Instant::now() + folder::ASKED_FOR));
         Some(said)
     }
 
@@ -1623,9 +1623,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut speaker = Speaker::new();
     loudness(&mut speaker, settings);
     let mut speaker_open = false;
-    // the network folder play was last asked about, with its subfolders or not, and until when asking for it again
-    // plays it
-    let mut asked_folder: Option<(std::path::PathBuf, bool, Instant)> = None;
+    // the clips play last asked about on a network folder, and until when asking for them again plays them
+    let mut asked_folder: Option<(Vec<std::path::PathBuf>, Instant)> = None;
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone(), playing_now.clone());
     // the clip the spare reader has in hand for the timebar, and the frame last asked of it
