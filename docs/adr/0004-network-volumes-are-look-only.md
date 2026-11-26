@@ -10,3 +10,4 @@ So on a network path the browser uses the folder listing and nothing else. It op
 - Code must not call anything that opens a file to learn about it. On Windows `std::fs::metadata` does; use the directory listing's data.
 - A test browses a share that logs opens and fails if any are logged. It never runs against the owner's NAS, only a scratch share.
 - The owner agreed to this on 2026-11-23 ("look only is fine").
+- Notes saved beside the clips are the one write on a network volume: see adr 0010.
