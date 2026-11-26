@@ -61,6 +61,11 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 
 click or drag to go to a frame. hover for a picture of the frame under the pointer. ticks mark frames with markup, and missing frames of a sequence are amber.
 
+- **trim:** **shift+[** sets the in point at the frame on screen and **shift+]** the out point. the out frame is kept: in 55, out 129 is 75 frames. a point alone trims to the clip's end or start. **shift+backspace** clears both.
+- two markers stand on the timebar and the track outside the trim is dimmed. a chip names the trim, and the hover picture gives a frame's place in it.
+- with a trim set, loop one plays only the trim, and loop analysis plays its out into its in. steps and the timebar still reach every frame. loop off plays the whole clip, as does loop all on its way through a played folder.
+- a trim belongs to its clip and is saved nowhere: it goes when the tab closes or another clip takes its place. a still has none.
+
 ---
 
 ### zoom, pan and the navigator
@@ -212,6 +217,8 @@ on a Mac, command does what control does.
 | | A | loop analysis |
 | | shift+- · shift+= | slower / faster |
 | | backspace | 1× speed |
+| **trim** | shift+[ · shift+] | set in / set out, at the frame on screen |
+| | shift+backspace | clear in and out |
 | **view** | T | frames / timecode |
 | | I | pin metadata |
 | | D · C | grid · center lines |

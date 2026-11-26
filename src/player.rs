@@ -121,12 +121,13 @@ impl View {
             1 => Some(1.0),
             _ => None,
         };
-        // a clip that loops takes its sound round with it, with no new start at the seam
+        // a clip that loops takes its sound round with it, round its trim when it has one, with no new start at the
+        // seam
         let round = t.loop_mode() == crate::play::Loop::One;
         let wanted = speed.filter(|_| heard && t.playing() && t.seam().is_none()).map(|speed| (t.run(), speed, round));
         if wanted != self.sounding {
             match wanted {
-                Some((_, speed, round)) => audio.play(speaker, t.seconds(), speed, round.then(|| t.length())),
+                Some((_, speed, round)) => audio.play(speaker, t.seconds(), speed, round.then(|| t.round_seconds())),
                 None => audio.pause(),
             }
             self.sounding = wanted;
@@ -394,7 +395,12 @@ impl View {
             }
             (Key::Minus, true) => self.transport.speed_step(-1),
             (Key::Equals, true) => self.transport.speed_step(1),
-            (Key::Backspace, _) => self.transport.speed_reset(),
+            // the trim: with shift, [ and ] set its in and out at the frame on screen (the owner's keys; plain,
+            // they are the tabs' and never come here) and backspace clears it. a still has none
+            (Key::BracketLeft, true) if last > 0 => self.transport.set_in(),
+            (Key::BracketRight, true) if last > 0 => self.transport.set_out(),
+            (Key::Backspace, true) => self.transport.set_trim(None, None),
+            (Key::Backspace, false) => self.transport.speed_reset(),
             (Key::H, _) => self.set_look(Look { mirror: !self.look.mirror, ..self.look }),
             (Key::V, _) => self.set_look(Look { flip: !self.look.flip, ..self.look }),
             (Key::Q, _) => self.set_look(Look { turns: (self.look.turns + 1) % 4, ..self.look }),
@@ -434,9 +440,11 @@ impl View {
             linear: matches!(&self.clip.lane, Lane::Stills(stills) if stills.samples == Samples::F32),
             looping,
             folder,
-            seam_change: self.seam_change,
+            // measured across the clip's own ends: a trim's seam, its out into its in, is not measured
+            seam_change: self.seam_change.filter(|_| self.transport.trim() == (None, None)),
             seam: self.transport.seam_place(),
             seam_seconds: settings.loop_analysis_seconds as f64,
+            trim: self.transport.trim(),
             speed: self.transport.speed(),
             shuttle: self.transport.shuttle_rate(),
             zoom_label: self.framing.label(window),
@@ -527,11 +535,17 @@ impl View {
         if self.waiting() {
             state += " · reading";
         }
-        // what is not as a clip opens: loop, speed, the look, the guides, the zoom
+        // what is not as a clip opens: loop, the trim, speed, the look, the guides, the zoom
         if self.transport.seam().is_some() {
             state += " · loop analysis";
         } else {
             state += tab.0;
+        }
+        // the trim's frames, counted as the frame is
+        let trim = self.transport.trim();
+        if trim != (None, None) {
+            let point = |at: Option<usize>, none: &str| at.map_or(none.to_string(), |frame| (frame + settings.first_frame).to_string());
+            state += &format!(" · trim {} to {}", point(trim.0, "the start"), point(trim.1, "the end"));
         }
         if self.transport.speed() != 1.0 {
             state += &format!(" · {}×", self.transport.speed());
@@ -792,8 +806,9 @@ impl Coming {
 /// what a tab hands on to the clip coming to it. a file opened in the tab starts as a clip does (a closed tab
 /// brought back, on its frame, zoom and pan). another clip of the folder starts from its first frame (the owner,
 /// 2026-11-25); a step by hand between clips of one size and length keeps the zoom and pan. a file that changed on
-/// disk keeps its frame, zoom and pan, as far as the new file has them. the speed, the look and loop analysis are the
-/// tab's and stay through a folder's cuts. two tabs, not a folder, are how versions flip on the same frame.
+/// disk keeps its frame, its trim, zoom and pan, as far as the new file has them. the speed, the look and loop
+/// analysis are the tab's and stay through a folder's cuts; a trim is its clip's and does not. two tabs, not a
+/// folder, are how versions flip on the same frame.
 fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: Option<&View>) {
     match (why, old) {
         (Why::Opened, _) => {
@@ -808,6 +823,8 @@ fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: O
             let same = (view.clip.upright() == old.clip.upright(), view.clip.timeline.frames() == old.clip.timeline.frames());
             if why == Why::Changed {
                 view.transport.go(old.transport.frame() as i64);
+                let (mark_in, mark_out) = old.transport.trim();
+                view.transport.set_trim(mark_in, mark_out);
             }
             if why != Why::Ran && same.0 && (why == Why::Changed || same.1) {
                 view.framing = old.framing.clone();
@@ -1849,9 +1866,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         ui.escape();
                     }
                 }
-                // tabs. the brackets go round them; control + W closes the one that is up and control + shift + T
-                // brings the last one closed back
-                Event::Key { key: key @ (Key::BracketLeft | Key::BracketRight), mods } if !mods.ctrl && !mods.alt => {
+                // tabs. the brackets go round them (with shift they are the trim's, and the clip's); control + W
+                // closes the one that is up and control + shift + T brings the last one closed back
+                Event::Key { key: key @ (Key::BracketLeft | Key::BracketRight), mods } if !mods.ctrl && !mods.alt && !mods.shift => {
                     let count = tabs.all.len();
                     tabs.select((tabs.up + if key == Key::BracketLeft { count - 1 } else { 1 }) % count);
                 }
@@ -1879,8 +1896,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         marks.undo(frame);
                     }
                 }
-                // and delete or backspace takes off the mark selected (backspace is 1× speed while none is)
-                Event::Key { key: Key::Delete | Key::Backspace, mods } if !mods.ctrl && !mods.alt && !browsing && ui.mark_selected() => {
+                // and delete or backspace takes off the mark selected (backspace is 1× speed while none is; with
+                // shift it clears the trim, whether one is or not)
+                Event::Key { key: key @ (Key::Delete | Key::Backspace), mods } if !mods.ctrl && !mods.alt && !(key == Key::Backspace && mods.shift) && !browsing && ui.mark_selected() => {
                     if let (Some((frame, index)), Some((marks, _))) = (ui.take_selected_mark(), tabs.marking()) {
                         marks.change(frame, index, None);
                     }
@@ -2564,6 +2582,41 @@ mod tests {
             seed(&mut next, why, None, Some(&old));
             assert_eq!(next.transport.frame(), frame, "{}", match why { Why::Stepped => "stepped", Why::Ran => "ran", _ => "changed" });
         }
+    }
+
+    /// shift with [ and ] set the trim's in and out at the frame on screen, and shift with backspace clears it; plain
+    /// backspace is still 1× speed. the title names the trim, its frames counted as the title counts its own. a still
+    /// has no trim. a trim is its clip's: another clip of a played folder comes up with none, and a file that changed
+    /// on disk keeps it, as far as the new file has those frames.
+    #[test]
+    fn shift_with_the_brackets_sets_a_trim_that_is_its_clips() {
+        let (window, shift) = ((64.0, 64.0), Mods { shift: true, ..Mods::default() });
+        let (_gpu, mut clip) = view("h264_320.mp4");
+        let title = |v: &View, first_frame| v.title(window, &Settings { first_frame, ..Settings::default() }, ("", ""));
+        clip.transport.go(8);
+        clip.key(Key::BracketLeft, shift, None, window);
+        assert!(title(&clip, 0).ends_with(" · trim 8 to the end"), "{}", title(&clip, 0));
+        clip.transport.go(11);
+        clip.key(Key::BracketRight, shift, None, window);
+        assert!(title(&clip, 0).ends_with(" · trim 8 to 11") && title(&clip, 1).ends_with(" · trim 9 to 12"), "{}", title(&clip, 0));
+        let model = clip.model(window, None, &Settings::default(), Facts::Reading, "", (settings::Loop::One, false));
+        assert_eq!((model.trim, clip.transport.trim()), ((Some(8), Some(11)), (Some(8), Some(11))));
+        clip.transport.set_speed(2.0);
+        clip.key(Key::Backspace, Mods::default(), None, window);
+        assert_eq!((clip.transport.speed(), clip.transport.trim()), (1.0, (Some(8), Some(11))));
+        // (the last is a file of three frames, which has neither point)
+        for (why, file, kept) in [(Why::Stepped, "h264_320.mp4", (None, None)), (Why::Ran, "h264_320.mp4", (None, None)), (Why::Changed, "h264_320.mp4", (Some(8), Some(11))), (Why::Changed, "hap_64.mov", (None, None))] {
+            let (_gpu, mut next) = view(file);
+            seed(&mut next, why, None, Some(&clip));
+            assert_eq!(next.transport.trim(), kept, "{file}");
+        }
+        clip.key(Key::Backspace, shift, None, window);
+        assert!(clip.transport.trim() == (None, None) && !title(&clip, 0).contains("trim"), "{}", title(&clip, 0));
+        clip.key(Key::BracketRight, shift, None, window);
+        assert!(title(&clip, 0).ends_with(" · trim the start to 11"), "{}", title(&clip, 0));
+        let (_gpu, mut still) = view("still_8bit.png");
+        still.key(Key::BracketLeft, shift, None, window);
+        assert_eq!(still.transport.trim(), (None, None));
     }
 
     /// a still that a played folder holds plays by its hold: play and pause go to the hold while the transport stands

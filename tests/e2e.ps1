@@ -468,6 +468,19 @@ Start-Player (Join-Path $media 'h264_320.mp4')
 Send-Key 0x47; Assert-Frame 'the clip is on frame 1' 1 24
 Send-Key 0x4E; Assert-Title 'N opens a new tab: the browser, and no clip' '^eyepiece$'
 Send-Key 0xDB; Assert-Frame '[ goes round to the clip, which is where it was' 1 24
+# trim (the owner's keys, 2026-11-26): with shift, [ and ] are no tab keys. they set the trim's in and out at the frame
+# on screen, and the clip stays up. loop one, which a clip opens with, then plays only the trim: from the first frame,
+# outside it, play starts on its in frame, and wherever it is stopped it is inside the trim. without a trim, 0.3 s of
+# this play ends near frame 9 of the 24 and 1.5 s near frame 21, neither from 16 to 19. shift + backspace clears it
+Send-Key 0x47 15; Send-Key 0xDB 1 1
+Assert-Title 'shift + [ sets the trim''s in point, and switches no tab' '^h264_320\.mp4 . 16 / 24 . .* fps . trim 16 to the end$'
+Send-Key 0x47 3; Send-Key 0xDD 1 1
+Assert-Title 'shift + ] sets its out point, on the frame it keeps' '^h264_320\.mp4 . 19 / 24 . .* fps . trim 16 to 19$'
+foreach ($ms in 100, 1300) {
+    Send-Key 0x24; Send-Key 0x20; Start-Sleep -Milliseconds $ms; Send-Key 0x20
+    Wait-Title "loop one plays only the trim: stopped $($ms + 200) ms on, play is inside it" { param($t) $t -match ' (\d+) / 24 .* trim 16 to 19$' -and [int]$Matches[1] -ge 16 -and [int]$Matches[1] -le 19 } 'a frame from 16 to 19'
+}
+Send-Key 0x08 1 1; Send-Key 0x24; Send-Key 0x47; Assert-Frame 'shift + backspace clears the trim' 1 24
 Send-Key 0x4F; Assert-Title 'O lays the browser over the clip' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape takes it away again' 1 24
 Send-Key 0xDD; Assert-Title '] goes round to the new tab' '^eyepiece$'

@@ -588,7 +588,7 @@ fn keys_page(ui: &mut egui::Ui) {
     let painter = ui.painter().clone();
     let top = ui.cursor().top();
     let mut bottom = top;
-    for (column, (from, keys_wide)) in [(&["play", "zoom", "tabs", "sound"][..], (0.0, 120.0)), (&["loop and speed", "view", "screenshot", "window"][..], (274.0 + 20.0, 100.0))] {
+    for (column, (from, keys_wide)) in [(&["play", "zoom", "tabs", "trim"][..], (0.0, 120.0)), (&["loop and speed", "view", "screenshot", "sound", "window"][..], (274.0 + 20.0, 100.0))] {
         let left = ui.cursor().left() + from;
         let mut y = top;
         for (name, lines) in sections.iter().filter(|(name, _)| column.contains(name)) {

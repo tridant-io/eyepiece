@@ -44,8 +44,20 @@ _Avoid_: minimap, overview, viewer, thumbnail
 the line across the top of the browser that names every folder from the drive or share down to the one shown. a press on a folder goes to it; a press on the rest of the line, or control + L, makes it a field a path is typed or pasted into.
 _Avoid_: address bar, path bar, breadcrumbs (the bar is the control bar and nothing else)
 
+**trim**:
+the part of a clip from its in point to its out point, both frames kept: in 55, out 129 is 75 frames. loop one plays only the trim. it belongs to its tab's clip, is set by keys alone and is saved nowhere: it goes when the tab closes or another clip takes its place.
+_Avoid_: selection, range, in-out, cut (a cut is where a played folder goes from one clip to the next)
+
+**in point**:
+the first frame of a trim, set at the frame on screen. with none set, the trim starts on the clip's first frame.
+_Avoid_: mark in, start point
+
+**out point**:
+the last frame of a trim, set at the frame on screen, and kept as an editor's mark is. with none set, the trim ends on the clip's last frame.
+_Avoid_: mark out, end point
+
 **chip**:
-a small label that stays on the picture while the view differs from the plain clip: zoom, speed, loop analysis, mirror, a single channel.
+a small label that stays on the picture while the view differs from the plain clip: zoom, speed, loop analysis, a trim, mirror, a single channel.
 _Avoid_: badge, toast, pill
 
 **toast**:
@@ -84,4 +96,5 @@ _Avoid_: dialog, modal (the update's modal is another thing), window, preference
 
 - **read-only** means the app never writes to media. **look-only** means the app does not even open files on a network folder. a local folder is read-only but not look-only.
 - **strip** alone is the row of tabs at the top of the window. the design's section 06 also calls the frames made ready for the timebar a strip: that is always the **timebar strip**.
+- a **mark** is markup drawn on a frame. the two **markers** on the timebar are the trim's in point and out point, and are not marks.
 - **panel** alone is settings or help. the code and the design also say "the metadata panel" for the file's facts over the bar: that one is always named in full.

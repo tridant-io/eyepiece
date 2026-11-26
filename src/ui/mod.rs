@@ -42,6 +42,7 @@ const AMBER: Color32 = Color32::from_rgb(0xff, 0xc4, 0x6b);
 const HOVER: Color32 = Color32::from_rgba_premultiplied(26, 26, 26, 26); // rgba(255,255,255,.1)
 const PRESSED: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51); // rgba(255,255,255,.2)
 const TRACK: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51); // rgba(255,255,255,.2)
+const TRACK_OUTSIDE: Color32 = Color32::from_rgba_premultiplied(18, 18, 18, 18); // rgba(255,255,255,.07)
 const FILL: Color32 = Color32::from_rgba_premultiplied(140, 140, 140, 140); // rgba(255,255,255,.55)
 const BANNER: Color32 = Color32::from_rgba_premultiplied(19, 19, 19, 242); // rgba(20,20,20,.95)
 const CHIP: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 184); // rgba(0,0,0,.72)
@@ -257,6 +258,8 @@ pub struct Model<'a> {
     pub seam: Option<(usize, usize)>,
     /// the seconds each side of the seam loop analysis uses
     pub seam_seconds: f64,
+    /// the trim's in frame and its out frame, each set or not
+    pub trim: (Option<usize>, Option<usize>),
     pub speed: f64,
     /// negative in reverse, 0 when not shuttling
     pub shuttle: i32,
@@ -452,9 +455,9 @@ pub struct Ui {
     /// where the mute button and its slider were drawn: the slider is out while the pointer is on either
     volume_rect: Rect,
     /// what a key just did, said at the lower left until then (the design's fig. 09); and what was up at the last
-    /// pass, by which a change is known: the tab, its name, the frame and the loop mode
+    /// pass, by which a change is known: the tab, its name, the frame, the loop mode and the trim
     flash: Option<(Vec<(String, Color32)>, f64)>,
-    flash_seen: Option<(usize, String, usize, Loop)>,
+    flash_seen: Option<(usize, String, usize, Loop, (Option<usize>, Option<usize>))>,
     /// how far the strip's tabs are scrolled, when there are more than fit; the tab that was up, how many there
     /// were and the room they had when it was last drawn; and where the tabs are, while they overflow
     tab_scroll: f32,
@@ -1065,20 +1068,20 @@ impl Ui {
         Self::draw_guides(ui.painter(), model.guides, model.picture, model.shown_size, self.scale);
         self.markup.marks(ui, model, self.scale, screen.settings.pen_smoothing);
         // what states the view sits under the strip when it is up, as in the design: a fault across the top, then
-        // loop analysis, speed and the look from the left, and the zoom at the right
+        // the trim, loop analysis, speed and the look from the left, and the zoom at the right
         let mut top = full.top() + 10.0 + STRIP * alpha;
         if let Some(why) = model.fault {
             top = banner(ui, Pos2::new(full.left() + 10.0, top), full.width() - 20.0, &format!("this frame cannot be shown: {why}")).bottom() + 8.0;
         }
         let mut left = full.left() + 10.0;
         let linear = model.linear.then(|| vec![("linear".to_string(), FG), (" · shown through srgb".to_string(), DIM)]);
-        for parts in [seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)]), linear].into_iter().flatten() {
+        for parts in [trim_chip(model, self.timecode), seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)]), linear].into_iter().flatten() {
             left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0, MONO_MEDIUM).right() + 8.0;
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
         // with the controls away, what a key did is said at the lower left for a moment (the design's fig. 09): the
-        // clip another tab or a page key brought up, the loop mode, the frame a step landed on
-        let seen = (screen.current, screen.tabs[screen.current].to_string(), model.frame, model.looping);
+        // clip another tab or a page key brought up, the loop mode, a point of the trim, the frame a step landed on
+        let seen = (screen.current, screen.tabs[screen.current].to_string(), model.frame, model.looping, model.trim);
         if let Some(was) = self.flash_seen.replace(seen.clone()).filter(|was| *was != seen && !self.shown) {
             let said = if (was.0, &was.1) != (seen.0, &seen.1) {
                 let mut parts = vec![(seen.1.clone(), FG), (format!(" · {} × {}", model.shown_size.0, model.shown_size.1), DIM)];
@@ -1094,6 +1097,10 @@ impl Ui {
                     Loop::All => "loop all",
                 };
                 Some((vec![(mode.to_string(), FG)], FLASH))
+            } else if was.4 != seen.4 {
+                // the point set, as a step says its frame. a trim cleared says nothing: its chip goes
+                let set = [("in", seen.4.0.filter(|_| seen.4.0 != was.4.0)), ("out", seen.4.1.filter(|_| seen.4.1 != was.4.1))];
+                set.into_iter().find_map(|(point, at)| Some((vec![(format!("{point} "), DIM), (stamp(at?, model.first, model.clock, self.timecode).1, FG)], FLASH)))
             } else if !model.playing {
                 let (label, at) = stamp(model.frame, model.first, model.clock, self.timecode);
                 Some((vec![(format!("{label} "), DIM), (at, FG)], FLASH))
@@ -1836,6 +1843,7 @@ impl Ui {
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
     /// in loop analysis it is the round: the clip's last seconds, the seam marked in the middle, its first seconds.
+    /// a trim has a marker on each of its points, and the track outside it is dimmed.
     /// `over` is the top of the bar, which the box naming the frame under the pointer stands above.
     fn timebar(&mut self, ui: &mut egui::Ui, area: Rect, over: f32, model: &Model, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
@@ -1851,8 +1859,16 @@ impl Ui {
         let height = TRACK_THIN + (TRACK_THICK - TRACK_THIN) * thick;
         let track = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - height), area.max);
         let head = area.left() + area.width() * model.held.map_or(at as f32 / last, |(held, of)| (held / of) as f32).min(1.0);
-        painter.rect_filled(track, 0.0, TRACK);
-        painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(head, track.bottom())), 0.0, FILL);
+        // the trim: outside it the track is one dark gray, played or not, and between its points it is as it ever
+        // is. loop analysis's round shows none: it is the trim's own out and in
+        let x_of = |frame: usize| area.left() + area.width() * (frame as f32 / last).min(1.0);
+        let trim = if model.seam.is_none() { model.trim } else { (None, None) };
+        let (kept_from, kept_to) = (trim.0.map_or(area.left(), x_of), trim.1.map_or(area.right(), x_of));
+        for (from, to, color) in [(area.left(), kept_from, TRACK_OUTSIDE), (kept_to, area.right(), TRACK_OUTSIDE), (kept_from, kept_to, TRACK), (kept_from, head.min(kept_to), FILL)] {
+            if to > from {
+                painter.rect_filled(Rect::from_min_max(Pos2::new(from, track.top()), Pos2::new(to, track.bottom())), 0.0, color);
+            }
+        }
         if let (Some((_, of)), true) = (model.held, model.playing) {
             // a held still's head is drawn again when it has moved a pixel, or its readout a tenth: no oftener
             let pixel = of / (area.width() * ui.ctx().pixels_per_point()) as f64;
@@ -1863,11 +1879,17 @@ impl Ui {
         } else if model.held.is_none() {
             // a sequence's missing frames: amber, the color of a fault in the file
             for gap in model.gaps {
-                let x = area.left() + area.width() * (*gap as f32 / last).min(1.0);
+                let x = x_of(*gap);
                 painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, track.top() - 4.0), Pos2::new(x + 1.0, track.bottom())), 0.0, AMBER);
             }
             if let Some(marks) = model.marks {
                 markup::ticks(&painter, area, track, last, marks);
+            }
+            // the trim's markers: a stem as wide as the head and one taller, with a foot turned into the trim
+            for (x, into) in [(trim.0, 1.0), (trim.1, -1.0)].into_iter().filter_map(|(at, into)| Some((x_of(at?), into))) {
+                let top = track.top() - 5.0;
+                painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, top), Pos2::new(x + 1.0, track.bottom())), 0.0, Color32::WHITE);
+                painter.rect_filled(Rect::from_two_pos(Pos2::new(x + into, top), Pos2::new(x + into * 5.0, top + 2.0)), 0.0, Color32::WHITE);
             }
         }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
@@ -1893,16 +1915,22 @@ impl Ui {
         // the frame under the pointer: its number, and over it the picture nearest it of those had, which is at once
         // one of the clip's timebar strip and then the frame itself, or the key frame nearest it, once the spare
         // reader has read that. the design's box (fig. 04): its line, then the picture 160 by 90 two in from it and the
-        // number in the 20 under the picture. a held still has one frame, and no box
+        // number in the 20 under the picture, with the frame's place in the trim when one is set. a held still has
+        // one frame, and no box
         self.time_hover = response.hover_pos().filter(|_| model.seam.is_none() && model.held.is_none()).map(|p| stop_at(p.x));
         if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
             let nearest = self.time_strip.iter().chain(&self.time_read).min_by_key(|(of, ..)| of.abs_diff(frame));
             if let Some((of, size, pixels)) = nearest.filter(|(of, ..)| self.time_picture.as_ref().is_none_or(|(shown, _)| shown != of)) {
                 self.time_picture = Some((*of, ui.ctx().load_texture("timebar picture", egui::ColorImage::from_rgb(*size, pixels), egui::TextureOptions::LINEAR)));
             }
-            let galley = painter.layout_no_wrap(stamp(frame, model.first, model.clock, self.timecode).1, font(MONO_MEDIUM, 10.5), FG);
+            let mut job = LayoutJob::default();
+            for (words, color) in hover_words(model, frame, self.timecode) {
+                job.append(&words, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 10.5), color, ..Default::default() });
+            }
+            let galley = painter.layout_job(job);
+            // (wider than the design's when its line is: a timecode outside the trim)
             let size = match &self.time_picture {
-                Some(_) => Vec2::new(164.0, 3.0 + 90.0 + 20.0 + 1.0),
+                Some(_) => Vec2::new((galley.size().x + 8.0).max(164.0), 3.0 + 90.0 + 20.0 + 1.0),
                 None => galley.size() + Vec2::new(16.0, 10.0),
             };
             let left = (p.x - size.x / 2.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0);
@@ -1911,10 +1939,14 @@ impl Ui {
             painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
             let mut number = rect;
             if let Some((_, picture)) = &self.time_picture {
-                let place = Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::new(160.0, 90.0));
+                let place = Rect::from_min_size(rect.min + Vec2::new(3.0 + (size.x - 164.0) / 2.0, 3.0), Vec2::new(160.0, 90.0));
                 painter.rect_filled(place, 0.0, Color32::BLACK);
                 let fitted = Rect::from_center_size(place.center(), picture.size_vec2() * (place.width() / picture.size_vec2().x).min(place.height() / picture.size_vec2().y));
                 painter.image(picture.id(), fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                // a frame outside the trim is dimmed, as the track is
+                if outside(model, frame) {
+                    painter.rect_filled(place, 0.0, Color32::from_black_alpha(153));
+                }
                 number = Rect::from_min_max(Pos2::new(rect.left(), place.bottom()), Pos2::new(rect.right(), place.bottom() + 20.0));
             }
             painter.galley(Pos2::new(number.center().x - galley.size().x / 2.0, text_top(&painter, font(MONO_MEDIUM, 10.5), number.center().y)), galley, FG);
@@ -2056,6 +2088,44 @@ fn seam_words(seconds: f64, change: Option<Seam>) -> Vec<(String, Color32)> {
         None => {}
     }
     parts
+}
+
+/// the trim, when one is set, as its first frame and how many it keeps, both its ends among them: a point alone
+/// trims to the clip's end or start.
+fn trimmed(model: &Model) -> Option<(usize, usize)> {
+    let (mark_in, mark_out) = model.trim;
+    let first = mark_in.unwrap_or(0);
+    (mark_in.is_some() || mark_out.is_some()).then(|| (first, mark_out.unwrap_or(model.frames.saturating_sub(1)) + 1 - first))
+}
+
+/// what the trim's chip says, while a trim is set: where it starts and ends, counted as the readout counts, how many
+/// frames it keeps and, for a clip of one rate, how long they last: "trim · 000055 to 000129 · 75 f · 0:00:03.000".
+fn trim_chip(model: &Model, timecode: bool) -> Option<Vec<(String, Color32)>> {
+    let (_, kept) = trimmed(model)?;
+    let point = |at: Option<usize>, none: &str| at.map_or(none.to_string(), |frame| stamp(frame, model.first, model.clock, timecode).1);
+    let mut length = format!(" · {kept} f");
+    if let Some((n, d)) = model.rate {
+        // to the nearest thousandth of a second
+        let ms = (kept as i64 * d * 2000 + n) / (2 * n);
+        length += &format!(" · {}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
+    }
+    Some(vec![(format!("trim · {} ", point(model.trim.0, "the start")), FG), ("to".to_string(), DIM), (format!(" {}", point(model.trim.1, "the end")), FG), (length, DIM)])
+}
+
+/// what the box over the timebar says of the frame under the pointer: its number, and with a trim set its place in
+/// the trim, or, all dim, that it is outside the trim.
+fn hover_words(model: &Model, frame: usize, timecode: bool) -> Vec<(String, Color32)> {
+    let number = stamp(frame, model.first, model.clock, timecode).1;
+    match trimmed(model) {
+        None => vec![(number, FG)],
+        Some(_) if outside(model, frame) => vec![(format!("{number} · outside the trim"), DIM)],
+        Some((first, kept)) => vec![(number, FG), (format!(" · {} of {kept}", frame - first + 1), DIM)],
+    }
+}
+
+/// whether a trim is set and a frame is outside it.
+fn outside(model: &Model, frame: usize) -> bool {
+    trimmed(model).is_some_and(|(first, kept)| !(first..first + kept).contains(&frame))
 }
 
 /// what the speed chip says, when the clip is not running at its own rate: "2× speed", "−4× reverse".
@@ -2353,6 +2423,7 @@ pub(super) mod tests {
             looping: Loop::One,
             seam: None,
             seam_seconds: 2.0,
+            trim: (None, None),
             speed: 1.0,
             shuttle: 0,
             zoom_label: "fit 563%".to_string(),
@@ -2768,6 +2839,10 @@ pub(super) mod tests {
         for (frames, wanted) in [(3, Action::Key(Key::F, keys::NONE)), (1, Action::Key(Key::C, keys::CTRL))] {
             assert_eq!(found_in_menu(|| Model { frames, ..model() }, "frame"), vec![wanted]);
         }
+        // nor has a still a trim: "set in" is a clip's command
+        for (frames, wanted) in [(3, vec![Action::Key(Key::BracketLeft, keys::SHIFT)]), (1, vec![])] {
+            assert_eq!(found_in_menu(|| Model { frames, ..model() }, "set in"), wanted);
+        }
     }
 
     /// what enter runs in the right-click menu over the clip `model` tells of, once `typed` is typed in its field
@@ -2818,6 +2893,107 @@ pub(super) mod tests {
         assert_eq!(found_in_menu(held, "loop"), vec![Action::Key(Key::R, keys::NONE)]);
         assert_eq!(found_in_menu(held, "next frame"), vec![]);
         assert_eq!(found_in_menu(held, "faster"), vec![]);
+        assert_eq!(found_in_menu(held, "clear in and out"), vec![]);
+    }
+
+    /// the trim's chip (the owner's sheet, 2026-11-26): where the trim starts and ends, counted as the readout counts,
+    /// how many frames it keeps with both its ends, and how long that is. a point alone trims to the clip's end or
+    /// start. a clip of no one rate has none to tell a length by, and says none
+    #[test]
+    fn the_trims_chip_says_where_it_starts_and_ends_and_what_it_keeps() {
+        let said = |trim, first, rate, timecode| {
+            let model = Model { frames: 150, rate, clock: Some(Timecode::counted(25)), first, trim, ..model() };
+            trim_chip(&model, timecode).map(|parts| parts.into_iter().map(|(words, _)| words).collect::<String>())
+        };
+        let (both, rate) = ((Some(55), Some(129)), Some((25, 1)));
+        assert_eq!(said((None, None), 0, rate, false), None);
+        assert_eq!(said(both, 0, rate, false).as_deref(), Some("trim · 000055 to 000129 · 75 f · 0:00:03.000"));
+        assert_eq!(said((Some(55), None), 0, rate, false).as_deref(), Some("trim · 000055 to the end · 95 f · 0:00:03.800"));
+        assert_eq!(said((None, Some(129)), 0, rate, false).as_deref(), Some("trim · the start to 000129 · 130 f · 0:00:05.200"));
+        // frames counted from 1, and the clip's clock
+        assert_eq!(said(both, 1, rate, false).as_deref(), Some("trim · 000056 to 000130 · 75 f · 0:00:03.000"));
+        assert_eq!(said(both, 0, rate, true).as_deref(), Some("trim · 00:00:02:05 to 00:00:05:04 · 75 f · 0:00:03.000"));
+        // 75 frames at 30000/1001 a second last 2.5025 s: to the nearest thousandth
+        assert_eq!(said(both, 0, Some((30000, 1001)), false).as_deref(), Some("trim · 000055 to 000129 · 75 f · 0:00:02.503"));
+        assert_eq!(said(both, 0, None, false).as_deref(), Some("trim · 000055 to 000129 · 75 f"));
+    }
+
+    /// the picture over the timebar (the owner's sheet): the frame's number as ever, and with a trim set its place in
+    /// the trim, or, all dim, that it is outside the trim
+    #[test]
+    fn the_timebars_picture_names_the_frames_place_in_the_trim() {
+        let said = |trim, frame| hover_words(&Model { frames: 150, trim, ..model() }, frame, false);
+        let (both, outside) = ((Some(55), Some(129)), |frame: usize| vec![(format!("{frame:06} · outside the trim"), DIM)]);
+        assert_eq!(said((None, None), 75), [("000075".to_string(), FG)]);
+        assert_eq!(said(both, 75), [("000075".to_string(), FG), (" · 21 of 75".to_string(), DIM)]);
+        assert_eq!((said(both, 55)[1].0.as_str(), said(both, 129)[1].0.as_str()), (" · 1 of 75", " · 75 of 75"));
+        assert_eq!((said(both, 54), said(both, 130)), (outside(54), outside(130)));
+        // a point alone trims to the clip's end or start
+        assert_eq!(said((Some(55), None), 149)[1].0, " · 95 of 95");
+        assert_eq!((said((None, Some(129)), 0)[1].0.as_str(), said((None, Some(129)), 140)), (" · 1 of 130", outside(140)));
+    }
+
+    /// a point of the trim set with the controls away says so at the lower left for a moment, as a step does (the
+    /// owner's sheet). the trim cleared says nothing: its chip goes
+    #[test]
+    fn a_trim_point_set_with_the_controls_away_says_its_frame() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let mut said = |trim| {
+            let screen = Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(Model { frame: 82, frames: 150, trim, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
+            ui.run(&screen).textures.clear();
+            ui.flash.take().map(|(parts, _)| parts.iter().map(|(words, _)| words.as_str()).collect::<String>())
+        };
+        assert_eq!(said((None, None)), None);
+        assert_eq!(said((Some(82), None)).as_deref(), Some("in 000082"));
+        assert_eq!(said((Some(82), Some(129))).as_deref(), Some("out 000129"));
+        // in set past the out point, which goes with it
+        assert_eq!(said((Some(140), None)).as_deref(), Some("in 000140"));
+        assert_eq!(said((None, None)), None);
+    }
+
+    /// the trim on the timebar, at the owner's sheet's own numbers (150 frames, in 55, out 129, the head on 82) in a
+    /// window 640 wide, where those frames are 236, 554 and 352 along: a marker on the in frame and one on the out
+    /// frame, each a stem as wide as the head and one taller, with a foot four long turned into the trim; the track
+    /// outside the trim one dark gray, and the played part lit only inside it. with no trim the timebar is as it was
+    #[test]
+    fn the_timebar_marks_the_trim_and_dims_what_is_cut_away() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let screen = |frame, trim| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(Model { frame, frames: 150, trim, ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
+        let (none, both) = ((None, None), (Some(55), Some(129)));
+        // (as drawn, an edge is softened half a pixel to each side: not here, so that a corner is where a thing ends)
+        ui.ctx.tessellation_options_mut(|options| options.feathering = false);
+        // the pointer on the picture brings the controls up: they are drawn in full once they have faded in
+        ui.pointer_move(320.0, 100.0);
+        ui.run(&screen(82, none)).textures.clear();
+        std::thread::sleep(Duration::from_millis(200));
+        // what is drawn in the timebar's rows: for a color, where along them each thing of it starts and ends, to the pixel
+        let mut drawn = |frame, trim| {
+            ui.pointer_move(320.0, 100.0);
+            let mut out = ui.run(&screen(frame, trim));
+            out.textures.clear();
+            let meshes = out.primitives.iter().filter_map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => Some(mesh),
+                _ => None,
+            });
+            let vertices: Vec<(Color32, i32)> = meshes.flat_map(|mesh| &mesh.vertices).filter(|v| v.pos.y >= 350.0).map(|v| (v.color, v.pos.x.round() as i32)).collect();
+            move |color: Color32| {
+                let mut along: Vec<i32> = vertices.iter().filter(|(of, _)| *of == color).map(|(_, x)| *x).collect();
+                along.sort();
+                along.dedup();
+                along
+            }
+        };
+        let plain = drawn(82, none);
+        assert_eq!((plain(TRACK), plain(FILL), plain(TRACK_OUTSIDE), plain(Color32::WHITE)), (vec![0, 640], vec![0, 352], vec![], vec![351, 353]));
+        let marked = drawn(82, both);
+        assert_eq!((marked(TRACK), marked(FILL), marked(TRACK_OUTSIDE)), (vec![236, 554], vec![236, 352], vec![0, 236, 554, 640]));
+        assert_eq!(marked(Color32::WHITE), [235, 237, 241, 351, 353, 549, 553, 555]);
+        // a point alone trims to the clip's end or start, and has the one marker
+        let (from, to) = (drawn(82, (Some(55), None)), drawn(82, (None, Some(129))));
+        assert_eq!((from(TRACK_OUTSIDE), from(Color32::WHITE)), (vec![0, 236], vec![235, 237, 241, 351, 353]));
+        assert_eq!((to(TRACK_OUTSIDE), to(Color32::WHITE)), (vec![554, 640], vec![351, 353, 549, 553, 555]));
+        // the head outside the trim: the track there stays dark, played or not
+        assert_eq!((drawn(140, both)(FILL), drawn(10, both)(FILL)), (vec![236, 554], vec![]));
     }
 
     /// a clip that comes up with the controls away names itself, its size and its rate (fig. 09); a still has no

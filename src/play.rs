@@ -102,6 +102,9 @@ pub struct Transport {
     /// a clip whose frames do not all last the same: when each starts, in seconds from the first, then when the last
     /// ends. play then shows each frame for its own time, and the cadence is not used
     starts: Option<Arc<[f64]>>,
+    /// the trim: its in frame and its out frame, both kept, each set or not. one alone trims to the clip's end or
+    /// start. loop one plays only the trim, and loop analysis plays its out into its in
+    trim: (Option<usize>, Option<usize>),
 }
 
 impl Transport {
@@ -123,6 +126,7 @@ impl Transport {
             refreshes: 0,
             run: 0,
             starts: None,
+            trim: (None, None),
         }
     }
 
@@ -133,11 +137,49 @@ impl Transport {
         self
     }
 
-    /// how long the clip is, in seconds.
-    pub fn length(&self) -> f64 {
+    /// the trim's in frame and its out frame, each set or not.
+    pub fn trim(&self) -> (Option<usize>, Option<usize>) {
+        self.trim
+    }
+
+    /// sets the trim, or with neither point clears it. a point the clip has no frame for is not kept. play goes on
+    /// in a new run, which takes a clip's sound round the new trim; play that is outside it then goes to its in
+    /// frame. loop analysis starts its round again, as it does for new seconds.
+    pub fn set_trim(&mut self, mark_in: Option<usize>, mark_out: Option<usize>) {
+        let has = |frame: &usize| *frame < self.frames;
+        self.trim = (mark_in.filter(has), mark_out.filter(has));
+        match self.seam {
+            Some(_) => self.set_seam(self.seam),
+            None => self.anchor(),
+        }
+    }
+
+    /// the in point, at the frame on screen. an out point before it is dropped: a trim is never backwards.
+    pub fn set_in(&mut self) {
+        self.set_trim(Some(self.frame), self.trim.1.filter(|&out| out >= self.frame));
+    }
+
+    /// the out point, at the frame on screen, which is kept. an in point after it is dropped.
+    pub fn set_out(&mut self) {
+        self.set_trim(self.trim.0.filter(|&start| start <= self.frame), Some(self.frame));
+    }
+
+    /// what play goes round, as its first frame and how many: the trim in loop one and in loop analysis, the whole
+    /// clip with no trim. with looping off the trim has no say.
+    fn round(&self) -> (usize, usize) {
+        if self.looping == Loop::Off && self.seam.is_none() {
+            return (0, self.frames);
+        }
+        let first = self.trim.0.unwrap_or(0);
+        (first, self.trim.1.unwrap_or(self.frames - 1) + 1 - first)
+    }
+
+    /// what a looping clip's sound goes round with it: where `round` starts and how long it is, in seconds.
+    pub fn round_seconds(&self) -> (f64, f64) {
+        let (first, frames) = self.round();
         match &self.starts {
-            Some(starts) => starts[self.frames],
-            None => self.frames as f64 / self.fps,
+            Some(starts) => (starts[first], starts[first + frames] - starts[first]),
+            None => (first as f64 / self.fps, frames as f64 / self.fps),
         }
     }
 
@@ -218,10 +260,11 @@ impl Transport {
     /// true when the picture was moved. standing still, in reverse, shuttling faster and in loop analysis, which
     /// are all silent, the sound has no say.
     pub fn follow(&mut self, at: f64) -> bool {
-        // a clip that loops takes its sound round with it: the two are compared round the seam, and a frame held
-        // or passed over there is the one across it
-        let (frames, round) = (self.frames as f64, self.looping == Loop::One);
-        let at = if round { at.rem_euclid(frames) } else { at.min(frames - 0.5) };
+        // a clip that loops takes its sound round with it, round the trim when there is one: the two are compared
+        // round the seam, and a frame held or passed over there is the one across it
+        let (first, count) = self.round();
+        let (start, frames, round) = (first as f64, count as f64, self.looping == Loop::One);
+        let at = if round { start + (at - start).rem_euclid(frames) } else { at.min(frames - 0.5) };
         let rate = if self.shuttle != 0 { 1.0 } else { self.speed };
         let leeway = (self.fps * rate / self.hz + 0.5).max(1.5);
         let apart = self.frame as f64 + 0.5 - at;
@@ -229,8 +272,8 @@ impl Transport {
         if !self.playing || !matches!(self.shuttle, 0 | 1) || self.seam.is_some() || off.abs() <= leeway {
             return false;
         }
-        let (frame, count) = (self.frame as i64, self.frames as i64);
-        let step = |by: i64| if round { (frame + by).rem_euclid(count) as usize } else { (frame + by).clamp(0, count - 1) as usize };
+        let (first, frame, count) = (first as i64, self.frame as i64, count as i64);
+        let step = |by: i64| if round { (first + (frame - first + by).rem_euclid(count)) as usize } else { (frame + by).clamp(0, count - 1) as usize };
         self.frame = match off {
             far if far.abs() > leeway + 1.0 => at.max(0.0) as usize,
             ahead if ahead > 0.0 => step(-1),
@@ -247,22 +290,28 @@ impl Transport {
     }
 
     /// prototype `play()`: stopping ends a shuttle and the pause on black. starting forward from the last frame
-    /// starts from the first, except in loop analysis.
+    /// of what play goes round starts from its first, except in loop analysis.
     fn play(&mut self, on: bool) {
         let starting = on && !self.playing;
         self.playing = on && self.frames > 1;
+        let (first, frames) = self.round();
         if !self.playing {
             self.shuttle = 0;
             self.black = 0;
-        } else if starting && self.seam.is_none() && self.shuttle >= 0 && self.frame == self.frames - 1 {
-            self.frame = 0;
+        } else if starting && self.seam.is_none() && self.shuttle >= 0 && self.frame == first + frames - 1 {
+            self.frame = first;
         }
         self.anchor();
     }
 
     /// counts again from where play is, at the rate in force: a speed paces play as a clip of `speed × fps` would
-    /// be, so it keeps a locked cadence locked (0.5× of 59.94 on 60 holds every frame two refreshes).
+    /// be, so it keeps a locked cadence locked (0.5× of 59.94 on 60 holds every frame two refreshes). play that is
+    /// outside the trim it goes round is put on its in frame first, or backward on its out frame.
     fn anchor(&mut self) {
+        let (first, frames) = self.round();
+        if self.playing && self.seam.is_none() && !(first..first + frames).contains(&self.frame) {
+            self.frame = if self.shuttle < 0 { first + frames - 1 } else { first };
+        }
         self.run = self.run.wrapping_add(1);
         self.from = if self.seam.is_some() { self.place } else { self.frame };
         self.refreshes = 0;
@@ -272,12 +321,14 @@ impl Transport {
 
     /// goes to a frame and stops there. out of range lands on the nearest end. in loop analysis a frame inside the
     /// round goes to its place there and any other frame to the round's start, so the first and last frames are the
-    /// seam's two sides (prototype `setF`, fig. 13).
+    /// seam's two sides (prototype `setF`, fig. 13). with a trim they are its in and out frames.
     pub fn go(&mut self, frame: i64) {
         let frame = frame.clamp(0, self.frames as i64 - 1) as usize;
+        let (first, frames) = self.round();
+        let end = first + frames;
         match self.seam_frames() {
-            Some(k) if frame >= self.frames - k => self.go_place(frame + k - self.frames),
-            Some(k) if frame < k => self.go_place(k + frame),
+            Some(k) if (end - k..end).contains(&frame) => self.go_place(frame + k - end),
+            Some(k) if (first..first + k).contains(&frame) => self.go_place(k + frame - first),
             Some(_) => self.go_place(0),
             None => {
                 self.frame = frame;
@@ -310,10 +361,10 @@ impl Transport {
     /// one more refresh has shown what was due: a frame of this clip, or the black. a silent clip is counted in
     /// frames shown, not in time: a refresh the display missed makes the clip late and is never made up by skipping
     /// frames. (a clip with sound will take its time from the audio instead.)
-    /// at the ends `Loop::One` goes round and `Loop::Off` stops on the end it reached (prototype `step()`). loop
-    /// analysis plays its round and, past the end going forward, pauses on black for the trip back, then starts the
-    /// round again from its first place, held for its full count. going backward it wraps with no black, as the
-    /// prototype does (it only pauses when `d > 0`).
+    /// at the ends `Loop::One` goes round, the trim when there is one, and `Loop::Off` stops on the end of the clip
+    /// it reached (prototype `step()`). loop analysis plays its round and, past the end going forward, pauses on
+    /// black for the trip back, then starts the round again from its first place, held for its full count. going
+    /// backward it wraps with no black, as the prototype does (it only pauses when `d > 0`).
     pub fn tick(&mut self) {
         if !self.playing {
             return;
@@ -336,7 +387,8 @@ impl Transport {
             Some(k) => self.put(to.rem_euclid(2 * k as i64) as usize, k),
             None if self.looping == Loop::One => {
                 // (round the end is no new run: a looping clip's sound goes round by itself)
-                self.frame = to.rem_euclid(self.frames as i64) as usize;
+                let (first, frames) = self.round();
+                self.frame = first + (to - first as i64).rem_euclid(frames as i64) as usize;
             }
             None if to < 0 || to > last => {
                 self.frame = to.clamp(0, last) as usize;
@@ -428,28 +480,32 @@ impl Transport {
         self.seam_frames().map(|k| (self.place, 2 * k))
     }
 
-    /// loop analysis: the frames each side of the seam (prototype `seamK`), at least one and at most half the clip.
+    /// loop analysis: the frames each side of the seam (prototype `seamK`), at least one and at most half the clip,
+    /// or half the trim.
     fn seam_frames(&self) -> Option<usize> {
-        self.seam.map(|s| ((s * self.fps).round() as usize).min(self.frames / 2).max(1))
+        self.seam.map(|s| ((s * self.fps).round() as usize).min(self.round().1 / 2).max(1))
     }
 
     /// loop analysis: goes to a place in the round of `2k`. the first `k` places are the clip's last `k` frames and
-    /// the next `k` its first `k` (prototype `seamF`).
+    /// the next `k` its first `k` (prototype `seamF`): with a trim, the `k` up to its out frame and the `k` from
+    /// its in frame.
     fn put(&mut self, place: usize, k: usize) {
+        let (first, frames) = self.round();
         self.place = place;
-        self.frame = if place < k { self.frames - k + place } else { place - k };
+        self.frame = if place < k { first + frames - k + place } else { first + place - k };
     }
 
     /// what `Cadence::frames_after` is to a clip of one rate, for one whose frames vary: how many frames have gone by
-    /// after `refreshes`, along the round play goes (the clip, or loop analysis's round), each shown from the refresh
-    /// nearest its start for its own time. still counted in refreshes, not read from a clock. None for a round that
-    /// takes no time.
+    /// after `refreshes`, along the round play goes (the clip, its trim, or loop analysis's round), each shown from
+    /// the refresh nearest its start for its own time. still counted in refreshes, not read from a clock. None for a
+    /// round that takes no time.
     fn timed(&self, starts: &[f64]) -> Option<u64> {
         let rate = if self.shuttle != 0 { self.shuttle.unsigned_abs() as f64 } else { self.speed };
         // the round as runs of the clip's frames, (first, how many): all of them, or the last k and then the first k
+        let (first, frames) = self.round();
         let runs = match self.seam_frames() {
-            Some(k) => [(self.frames - k, k), (0, k)],
-            None => [(0, self.frames), (0, 0)],
+            Some(k) => [(first + frames - k, k), (first, k)],
+            None => [(first, frames), (0, 0)],
         };
         let len = runs[0].1 + runs[1].1;
         // seconds from the round's start to the start of its place `p`
@@ -472,15 +528,17 @@ impl Transport {
         }
         // half a refresh more: a frame comes up on the refresh nearest its start
         let gone = (self.refreshes as f64 + 0.5) * rate / self.hz;
-        let (from, len) = (self.from as i64, len as i64);
+        // where play started from, as a place in the round: outside loop analysis `from` is a frame of the clip
+        let started = if self.seam.is_some() { self.from } else { self.from - first };
+        let (from, len) = (started as i64, len as i64);
         Some(if self.shuttle >= 0 {
-            let to = at(self.from) + gone;
+            let to = at(started) + gone;
             let laps = (to / round).floor();
             let place = count(&|t| t <= to - laps * round).saturating_sub(1) as i64;
             laps as i64 * len + place - from
         } else {
             // backward, each frame is shown from its end back to its start
-            let to = at(self.from + 1) - gone;
+            let to = at(started + 1) - gone;
             let laps = if to > 0.0 { 0.0 } else { (-to / round).floor() + 1.0 };
             let place = count(&|t| t < to + laps * round).saturating_sub(1) as i64;
             laps as i64 * len + from - place
@@ -898,9 +956,9 @@ mod tests {
         t.set_loop(Loop::Off);
         t.go(99);
         assert!(!t.follow(0.3) || t.frame() == 99);
-        assert_eq!(t.length(), 100.0 / 60.0);
+        assert_eq!(t.round_seconds(), (0.0, 100.0 / 60.0));
         // a clip whose frames do not all last the same is as long as the end of its last
-        assert_eq!(Transport::new(4, 4.0, 60.0).with_starts(Some(vec![0.0, 0.1, 0.5, 0.6, 1.0])).length(), 1.0);
+        assert_eq!(Transport::new(4, 4.0, 60.0).with_starts(Some(vec![0.0, 0.1, 0.5, 0.6, 1.0])).round_seconds(), (0.0, 1.0));
     }
 
     #[test]
@@ -1030,5 +1088,190 @@ mod tests {
         assert_eq!(t.ahead(), [99, 0, 1, 2, 3, 4, 95, 96, 97, 98]);
         // a single frame has nothing next
         assert_eq!(Transport::new(1, 60.0, 60.0).ahead(), [0]);
+        // a trim in loop one: standing in it, what play would show is the trim round; standing outside it, play
+        // would start on its in frame
+        let mut t = trimmed();
+        t.go(5);
+        assert_eq!(t.ahead(), [5, 6, 4, 3]);
+        t.go(8);
+        assert_eq!(t.ahead(), [8, 9, 7, 3, 4, 5, 6]);
+    }
+
+    /// ten frames with a trim of frames 3 to 6, standing on its out frame
+    fn trimmed() -> Transport {
+        let mut t = Transport::new(10, 60.0, 60.0);
+        t.go(3);
+        t.set_in();
+        t.go(6);
+        t.set_out();
+        t
+    }
+
+    #[test]
+    fn a_trim_keeps_both_its_frames_and_is_never_backwards() {
+        let mut t = trimmed();
+        assert_eq!(t.trim(), (Some(3), Some(6)));
+        // in set past the out point drops the out point, and out set before the in point drops that
+        t.go(8);
+        t.set_in();
+        assert_eq!(t.trim(), (Some(8), None));
+        t.go(2);
+        t.set_out();
+        assert_eq!(t.trim(), (None, Some(2)));
+        // one frame can be both
+        t.set_in();
+        assert_eq!(t.trim(), (Some(2), Some(2)));
+        t.set_trim(None, None);
+        assert_eq!(t.trim(), (None, None));
+        // a point the clip has no frame for is not kept
+        t.set_trim(Some(4), Some(10));
+        assert_eq!(t.trim(), (Some(4), None));
+        // setting a point stops nothing
+        t.go(5);
+        t.set_playing(true);
+        t.set_out();
+        assert!(t.playing());
+    }
+
+    #[test]
+    fn loop_one_plays_only_the_trim() {
+        let mut t = trimmed();
+        // on the out frame play starts from the in frame, as it starts from a clip's first frame on its last
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 9), frames(&[3, 4, 5, 6, 3, 4, 5, 6, 3]));
+        // from outside the trim play starts on its in frame, and backward on its out frame
+        t.go(8);
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 3), frames(&[3, 4, 5]));
+        t.go(0);
+        t.shuttle(-1);
+        assert_eq!(seen(&mut t, 6), frames(&[6, 5, 4, 3, 6, 5]));
+        // faster than the display, what runs past the out frame comes round from the in frame
+        t.go(3);
+        t.set_speed(2.0);
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 5), frames(&[3, 5, 3, 5, 3]));
+        // a trim of one frame stays on it
+        t.set_speed(1.0);
+        t.set_trim(Some(5), Some(5));
+        assert_eq!(seen(&mut t, 3), frames(&[5, 5, 5]));
+    }
+
+    #[test]
+    fn one_point_alone_trims_to_the_clips_end_or_start() {
+        let mut t = Transport::new(6, 60.0, 60.0);
+        t.go(4);
+        t.set_in();
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 5), frames(&[4, 5, 4, 5, 4]));
+        // the trim set anew while play is outside it takes play to its in frame
+        t.set_trim(None, Some(1));
+        assert_eq!(seen(&mut t, 4), frames(&[0, 1, 0, 1]));
+    }
+
+    #[test]
+    fn steps_and_seeks_go_anywhere_and_only_loop_one_plays_the_trim() {
+        let mut t = trimmed();
+        // a step or a seek stops play, as ever, and lands outside the trim as readily as in it
+        t.set_playing(true);
+        t.step(-2);
+        assert_eq!((t.frame(), t.playing()), (1, false));
+        t.go(9);
+        assert_eq!(t.frame(), 9);
+        // with looping off the trim has no say: play runs to the clip's end, stops, and starts again from its first
+        t.set_loop(Loop::Off);
+        t.go(5);
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 6), frames(&[5, 6, 7, 8, 9, 9]));
+        assert!(!t.playing());
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 2), frames(&[0, 1]));
+        // loop one chosen while play is outside the trim takes it to the in frame
+        t.go(8);
+        t.set_playing(true);
+        t.set_loop(Loop::One);
+        assert_eq!(seen(&mut t, 3), frames(&[3, 4, 5]));
+    }
+
+    #[test]
+    fn loop_analysis_plays_the_trims_out_into_its_in() {
+        // a trim of frames 4 to 9 of twenty has room for three each side of the seam
+        let mut t = Transport::new(20, 60.0, 60.0);
+        t.set_trim(Some(4), Some(9));
+        t.set_seam(Some(SEAM_SECONDS));
+        assert_eq!((t.frame(), t.seam_place()), (7, Some((0, 6))));
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 7), [frames(&[7, 8, 9, 4, 5, 6]), vec![Show::Black]].concat());
+        // the out frame and the in frame are the seam's two sides, and a step crosses it
+        t.go(9);
+        assert_eq!((t.frame(), t.seam_place()), (9, Some((2, 6))));
+        t.step(1);
+        assert_eq!((t.frame(), t.seam_place()), (4, Some((3, 6))));
+        // a frame outside the trim goes to the round's start
+        t.go(12);
+        assert_eq!((t.frame(), t.seam_place()), (7, Some((0, 6))));
+        // a point set starts the round again, round the new trim: frames 5 to 9 have room for two each side
+        t.go(5);
+        t.set_in();
+        assert_eq!((t.trim(), t.frame(), t.seam_place()), ((Some(5), Some(9)), 8, Some((0, 4))));
+        // with looping off it is still the trim's seam
+        t.set_loop(Loop::Off);
+        t.set_seam(Some(SEAM_SECONDS));
+        assert_eq!((t.frame(), t.seam_place()), (8, Some((0, 4))));
+        // a trim of one frame is both sides of its seam
+        t.set_trim(Some(5), Some(5));
+        assert_eq!((t.frame(), t.seam_place()), (5, Some((0, 2))));
+        t.step(1);
+        assert_eq!(t.frame(), 5);
+    }
+
+    #[test]
+    fn a_clips_sound_goes_round_the_trim_with_it() {
+        let mut t = Transport::new(100, 60.0, 60.0);
+        t.set_trim(Some(40), Some(59));
+        // what its sound goes round: from the start of the in frame to the end of the out frame
+        assert_eq!(t.round_seconds(), (40.0 / 60.0, 20.0 / 60.0));
+        t.go(40);
+        t.set_playing(true);
+        let run = t.run();
+        (0..19).for_each(|_| t.tick());
+        assert_eq!(t.frame(), 59);
+        // the picture on the out frame, the sound just round to the in frame; and the other way about
+        assert!(!t.follow(40.3));
+        t.tick();
+        assert_eq!((t.frame(), t.run()), (40, run), "round the trim is no new run: the sound goes round by itself");
+        assert!(!t.follow(59.6));
+        // a frame and a half apart across the out and the in is a frame held, not a jump out of the trim
+        assert!(t.follow(58.2));
+        assert_eq!(t.frame(), 59);
+        // far off, play goes on from where the sound is
+        assert!(t.follow(50.2));
+        assert_eq!(t.frame(), 50);
+        // a point set is a new run: the sound starts again, round the new trim
+        t.set_in();
+        assert_ne!(t.run(), run);
+        assert_eq!(t.round_seconds(), (50.0 / 60.0, 10.0 / 60.0));
+        // with looping off the sound runs to the clip's end
+        t.set_loop(Loop::Off);
+        assert_eq!(t.round_seconds(), (0.0, 100.0 / 60.0));
+    }
+
+    #[test]
+    fn a_trim_of_frames_that_vary_shows_each_for_its_own_time() {
+        // frame 2 lasts a 30th of a second and frame 3 a 15th: on 60 Hz two refreshes, then four
+        let mut t = varying();
+        t.set_trim(Some(2), Some(3));
+        assert!((t.round_seconds().0 - 2.0 / 30.0).abs() < 1e-12 && (t.round_seconds().1 - 0.1).abs() < 1e-12);
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 13), frames(&[2, 2, 3, 3, 3, 3, 2, 2, 3, 3, 3, 3, 2]));
+        t.go(3);
+        t.shuttle(-1);
+        assert_eq!(seen(&mut t, 12), frames(&[3, 3, 3, 3, 2, 2, 3, 3, 3, 3, 2, 2]));
+        // loop analysis: the trim's last frame into its first
+        t.set_trim(Some(1), Some(3));
+        t.set_seam(Some(0.5));
+        assert_eq!(t.seam_place(), Some((0, 2)));
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 7), [frames(&[3, 3, 3, 3, 1, 1]), vec![Show::Black]].concat());
     }
 }

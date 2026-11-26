@@ -111,6 +111,14 @@ const SECTIONS: &[(&str, &[Command])] = &[
         ],
     ),
     (
+        "trim",
+        &[
+            both("set in / set out", "set in", "shift [", Key::BracketLeft, SHIFT),
+            both("set in / set out", "set out", "shift ]", Key::BracketRight, SHIFT),
+            both("clear in and out", "clear in and out", "shift backspace", Key::Backspace, SHIFT),
+        ],
+    ),
+    (
         "view",
         &[
             both("frames / timecode", "frames / timecode", "T", Key::T, NONE),
@@ -246,7 +254,7 @@ pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, f
         let wanted = find.trim().to_lowercase();
         let found = |c: &Command| c.name.is_some() && c.send.is_some() && (wanted.is_empty() || c.key.to_lowercase().contains(&wanted) || c.name.is_some_and(|n| n.contains(&wanted)));
         let kept = |c: &Command| held && (c.send == Some((Key::Space, NONE)) || c.send == Some((Key::R, NONE)));
-        let timeless = |section: &str, c: &Command| still && (matches!(section, "play" | "loop and speed" | "sound") || c.send == Some((Key::T, NONE))) && !kept(c);
+        let timeless = |section: &str, c: &Command| still && (matches!(section, "play" | "loop and speed" | "trim" | "sound") || c.send == Some((Key::T, NONE))) && !kept(c);
         let shown: Vec<(&str, Vec<&Command>)> = SECTIONS.iter().map(|(section, commands)| (*section, commands.iter().filter(|c| found(c) && !timeless(section, c)).collect::<Vec<_>>())).filter(|(_, commands)| !commands.is_empty()).collect();
         if entered {
             chosen = shown.first().and_then(|(_, commands)| commands.first()).and_then(|c| c.send);
@@ -357,7 +365,9 @@ mod tests {
     #[test]
     fn the_menus_rows_send_the_key_they_show() {
         let rows: Vec<_> = commands().filter_map(|c| Some((c.name?, c.key, c.send?))).collect();
-        assert_eq!(rows.len(), 52);
+        assert_eq!(rows.len(), 55);
+        assert_eq!(named(Key::BracketLeft, SHIFT), Some(("set in".to_string(), "shift [".to_string())));
+        assert_eq!(named(Key::Backspace, SHIFT), Some(("clear in and out".to_string(), "shift backspace".to_string())));
         assert_eq!(named(Key::Z, CTRL_SHIFT), Some(("bring back a change taken back".to_string(), "ctrl shift Z".to_string())));
         for (name, key, send) in rows {
             assert_eq!(shown(send), key, "{name}");
@@ -372,12 +382,15 @@ mod tests {
     fn the_table_of_keys_is_the_designs_as_built() {
         let keys: Vec<String> = sections().into_iter().flat_map(|(_, lines)| lines.into_iter().map(|(keys, _)| keys)).collect();
         let wanted = [
-            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "ctrl left right", "R", "A", "shift - =", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
+            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "ctrl left right", "R", "A", "shift - =", "shift [ ]", "shift backspace", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
         ];
         assert_eq!(keys, wanted);
         assert_eq!(named(Key::Comma, CTRL), Some(("settings".to_string(), "ctrl ,".to_string())));
         assert_eq!(line(Key::Equals, SHIFT), Some(("slower / faster".to_string(), "shift - =".to_string())));
         assert_eq!(line(Key::M, NONE), Some(("mute · volume".to_string(), "M ↑ ↓".to_string())));
+        // the trim's section stands after loop and speed, the other commands about time
+        let names: Vec<&str> = sections().into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["play", "zoom", "tabs", "loop and speed", "trim", "view", "screenshot", "sound", "window"]);
     }
 
     /// the fonts carry every letter the table, the menu and the tooltips use, and every row fits the menu.

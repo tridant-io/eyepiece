@@ -84,7 +84,7 @@ struct Playing {
     line: Line,
     start: f64,
     speed: f64,
-    round: Option<f64>,
+    round: Option<(f64, f64)>,
     asked: Instant,
 }
 
@@ -95,9 +95,10 @@ struct Play {
     speed: f64,
     rate: u32,
     channels: u16,
-    /// for a clip that loops: how long the clip is, in seconds. its sound then goes round with it: cut at that
-    /// length, or made up to it with silence, and begun again, for as long as the play lasts
-    round: Option<f64>,
+    /// for a clip that loops: where what it goes round starts (the clip, or its trim) and how long that is, in
+    /// seconds. its sound then goes round with it: cut at that length, or made up to it with silence, and begun
+    /// again from that start, for as long as the play lasts
+    round: Option<(f64, f64)>,
 }
 
 impl Audio {
@@ -110,10 +111,10 @@ impl Audio {
     }
 
     /// starts, or restarts, playing from `seconds` into the clip at `speed` (1.0 is normal), out of `speaker`, where
-    /// it takes the place of whatever was sounding. `round` is the clip's length when the clip loops: the sound then
-    /// goes round with it, without a new start at the seam. pitch is kept from 0.5 to 2; outside that the sound is silent,
-    /// as the design says.
-    pub fn play(&mut self, speaker: &mut Speaker, seconds: f64, speed: f64, round: Option<f64>) {
+    /// it takes the place of whatever was sounding. `round` is where the clip, or its trim, starts and how long it is
+    /// when the clip loops: the sound then goes round with it, without a new start at the seam. pitch is kept from
+    /// 0.5 to 2; outside that the sound is silent, as the design says.
+    pub fn play(&mut self, speaker: &mut Speaker, seconds: f64, speed: f64, round: Option<(f64, f64)>) {
         let Some(line) = speaker.line().filter(|_| speed::WITH_SOUND.contains(&speed)) else { return self.pause() };
         let feed = Arc::new(Feed::new(line.rate, line.channels));
         self.send(Some(Play { feed: feed.clone(), seconds, speed, rate: line.rate, channels: line.channels, round }));
@@ -162,9 +163,9 @@ impl Drop for Audio {
 }
 
 /// where the sound is in the clip after `heard` frames, in seconds: within its round, for a play that goes round.
-fn place(start: f64, heard: u64, rate: u32, speed: f64, round: Option<f64>) -> f64 {
+fn place(start: f64, heard: u64, rate: u32, speed: f64, round: Option<(f64, f64)>) -> f64 {
     let at = clip_seconds(start, heard, rate, speed);
-    round.filter(|round| *round > 0.0).map_or(at, |round| at % round)
+    round.filter(|(_, round)| *round > 0.0).map_or(at, |(from, round)| from + (at - from).rem_euclid(round))
 }
 
 /// seconds into the clip after `heard` frames at the device's `rate`, played from `start` at `speed`.
@@ -194,11 +195,11 @@ fn work(mut decoder: Decoder, commands: Receiver<Option<Play>>) {
 }
 
 impl Play {
-    /// the frame of the play's sound at which it comes to the end of its clip, `round` seconds long, for the `n`th
-    /// time (the first is none). each is counted from the play's start: counted round by round, the part of a frame
-    /// each round's length is rounded by would add up, and the sound leave its clock.
-    fn seam(&self, round: f64, n: u64) -> u64 {
-        (((round - self.seconds).max(0.0) + n as f64 * round) / self.speed * self.rate as f64).round() as u64
+    /// the frame of the play's sound at which it comes to the end of what it goes round, from `start` for `round`
+    /// seconds, for the `n`th time (the first is none). each is counted from the play's start: counted round by
+    /// round, the part of a frame each round's length is rounded by would add up, and the sound leave its clock.
+    fn seam(&self, (start, round): (f64, f64), n: u64) -> u64 {
+        (((start + round - self.seconds).max(0.0) + n as f64 * round) / self.speed * self.rate as f64).round() as u64
     }
 }
 
@@ -251,9 +252,9 @@ impl Job {
                 self.sent += self.feed.ring.push(&self.chunk[self.sent..]);
                 return true;
             };
-            // a play that goes round: each round is exactly as long as the clip, so the sound's clock and the
-            // picture's stay together round after round. sound that ends before the round does is made up with
-            // silence, and sound past the round's end is left out
+            // a play that goes round: each round is exactly as long as the clip, or its trim, so the sound's clock
+            // and the picture's stay together round after round. sound that ends before the round does is made up
+            // with silence, and sound past the round's end is left out
             let channels = self.play.channels as usize;
             if !more && self.chunk.is_empty() {
                 self.chunk.resize((self.left.min(4_096) as usize) * channels, 0.0);
@@ -262,7 +263,7 @@ impl Job {
             self.chunk.truncate((made.min(self.left) as usize) * channels);
             self.left -= made.min(self.left);
             if self.left == 0 {
-                match guarded(|| Speed::start(decoder, 0.0, self.play.speed, self.play.rate, self.play.channels)) {
+                match guarded(|| Speed::start(decoder, round.0, self.play.speed, self.play.rate, self.play.channels)) {
                     Ok(speed) => {
                         self.rounds += 1;
                         (self.speed, self.left) = (speed, self.play.seam(round, self.rounds) - self.play.seam(round, self.rounds - 1));
@@ -441,7 +442,7 @@ mod tests {
         let (commands, theirs) = mpsc::channel();
         let worker = std::thread::spawn(move || work(decoder, theirs));
         let feed = Arc::new(Feed::new(48_000, 2));
-        commands.send(Some(Play { feed: feed.clone(), seconds: 0.0, speed: 1.0, rate: 48_000, channels: 2, round: Some(1.5) })).unwrap();
+        commands.send(Some(Play { feed: feed.clone(), seconds: 0.0, speed: 1.0, rate: 48_000, channels: 2, round: Some((0.0, 1.5)) })).unwrap();
         // two rounds and a half, left channel
         let (mut left, mut out, deadline) = (Vec::new(), [0.0f32; 960], Instant::now() + Duration::from_secs(10));
         while left.len() < 180_000 {
@@ -463,26 +464,63 @@ mod tests {
         worker.join().unwrap();
     }
 
+    /// a trim's sound goes round from the trim's start, not the clip's: a round from three quarters of a second into
+    /// a clip with one second of tone, half a second long, is a quarter of a second of tone and a quarter of
+    /// silence, over and over. begun again from the clip's start, its second round would be all tone.
+    #[test]
+    fn the_sound_of_a_trim_goes_round_from_the_trims_start() {
+        let (decoder, _) = Decoder::open(&media("tone48_stereo.mov")).unwrap().expect("a sound stream");
+        let (commands, theirs) = mpsc::channel();
+        let worker = std::thread::spawn(move || work(decoder, theirs));
+        let feed = Arc::new(Feed::new(48_000, 2));
+        commands.send(Some(Play { feed: feed.clone(), seconds: 0.75, speed: 1.0, rate: 48_000, channels: 2, round: Some((0.75, 0.5)) })).unwrap();
+        let (mut left, mut out, deadline) = (Vec::new(), [0.0f32; 960], Instant::now() + Duration::from_secs(10));
+        while left.len() < 48_000 {
+            assert!(!feed.ended.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < deadline, "the sound ended after {} frames", left.len());
+            let n = feed.ring.pop(&mut out);
+            left.extend(out[..n].iter().step_by(2));
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let loud = |frames: std::ops::Range<usize>| loudness(&left[frames]);
+        assert!(loud(2_400..9_600) > 0.2, "the first round's tone: {}", loud(2_400..9_600));
+        assert!(loud(14_400..21_600) < 0.001, "the silence to the round's end: {}", loud(14_400..21_600));
+        assert!(loud(26_400..33_600) > 0.2, "the second round's tone: {}", loud(26_400..33_600));
+        assert!(loud(38_400..45_600) < 0.001, "the second round's silence: {}", loud(38_400..45_600));
+        commands.send(None).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+    }
+
     /// a round of 48,000.48 frames: counted one at a time each would be 48,000, and a hundred of them 48 frames
     /// short of where the clock, which counts in seconds, comes round.
     #[test]
     fn the_seams_of_a_sound_that_goes_round_stay_with_its_clock() {
-        let round = 1.00001;
+        let round = (0.0, 1.00001);
         let play = Play { feed: Arc::new(Feed::new(48_000, 2)), seconds: 0.25, speed: 1.0, rate: 48_000, channels: 2, round: Some(round) };
         assert_eq!((play.seam(round, 0), play.seam(round, 1), play.seam(round, 100)), (36_000, 84_001, 4_836_048));
         // at the hundredth seam the clock is within a frame of the clip's start, or of its end
         let at = place(0.25, play.seam(round, 100), 48_000, 1.0, Some(round));
-        assert!(at.min(round - at) < 1.0 / 48_000.0, "{at}");
+        assert!(at.min(round.1 - at) < 1.0 / 48_000.0, "{at}");
         // at half speed a round takes twice the frames
         let slow = Play { speed: 0.5, seconds: 0.0, ..play };
         assert_eq!(slow.seam(round, 0), 96_001);
+        // a trim from a quarter of a second in to three quarters, played from half a second in: its end comes a
+        // quarter of a second on, and every half second after
+        let trim = (0.25, 0.5);
+        let play = Play { seconds: 0.5, speed: 1.0, round: Some(trim), ..slow };
+        assert_eq!((play.seam(trim, 0), play.seam(trim, 1)), (12_000, 36_000));
     }
 
     #[test]
     fn the_clock_goes_round_with_the_clip() {
         // three quarters of a second in, a second later, in a clip of a second and a half: a quarter in again
-        assert_eq!(place(0.75, 48_000, 48_000, 1.0, Some(1.5)), 0.25);
+        assert_eq!(place(0.75, 48_000, 48_000, 1.0, Some((0.0, 1.5))), 0.25);
         assert_eq!(place(0.75, 48_000, 48_000, 1.0, None), 1.75);
+        // and round a trim from a quarter of a second in to three quarters: from its end to its start
+        assert_eq!(place(0.5, 12_000, 48_000, 1.0, Some((0.25, 0.5))), 0.25);
+        assert_eq!(place(0.5, 24_000, 48_000, 1.0, Some((0.25, 0.5))), 0.5);
     }
 
     #[test]
