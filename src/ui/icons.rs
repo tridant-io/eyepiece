@@ -29,6 +29,7 @@ pub enum Icon {
     ListAndCards,
     Sort,
     // markup's tools, and undo
+    Select,
     Rectangle,
     Circle,
     Pen,
@@ -141,6 +142,10 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Close => {
             line(&[(4.5, 4.5), (11.5, 11.5)]);
             line(&[(11.5, 4.5), (4.5, 11.5)]);
+        }
+        // the pointer's arrow, leaning left, with its tail (not in the design, which has no select tool)
+        Icon::Select => {
+            painter.add(Shape::closed_line([(4.5, 2.5), (4.5, 12.5), (7.0, 10.2), (8.8, 13.8), (10.4, 13.0), (8.7, 9.5), (12.0, 9.3)].iter().map(|&(x, y)| p(x, y)).collect(), stroke));
         }
         Icon::Rectangle => {
             painter.rect_stroke(Rect::from_min_max(p(3.0, 4.5), p(13.0, 11.5)), 0.0, stroke, egui::StrokeKind::Middle);

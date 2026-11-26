@@ -124,7 +124,8 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
 - the screenshot menu can add a caption, the guides and the markup.
 - screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one. the note that says where has **reveal in explorer** (finder on macOS), and stays up while the pointer is on it.
-- **markup:** **E** pauses and shows the tools: rectangle, circle, pen, text and four inks. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops. **ctrl+Z** takes back a mark. marks stay on their frame until the tab closes.
+- **markup:** **E** pauses and shows the tools: select, rectangle, circle, pen, text and four inks. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops. marks stay on their frame until the tab closes.
+- **changing marks:** with select, a click selects a mark, a drag moves it and a drag of a corner of its frame scales it; **shift** keeps its proportion, and text always keeps its own. **delete** or **backspace** takes the selected mark off. a right click on a mark, with any tool, opens its menu: delete, its color, and edit text for text. **ctrl+Z** takes back the last change, one at a time; **esc** lets go of the selected mark.
 
 ![markup on a frame: rectangle, circle, text and the tools](docs/images/markup.png)
 
@@ -177,7 +178,8 @@ on a Mac, command does what control does.
 | | shift+S | screenshot of the view |
 | | ctrl+C | copy frame |
 | | E | markup mode |
-| | ctrl+Z | take back a mark |
+| | ctrl+Z | take back a change to the marks |
+| | delete · backspace | take off the selected mark (backspace is 1× speed when none is selected) |
 | **sound** | M | mute |
 | | ↑ · ↓ | volume up / down |
 | **window** | P | fullscreen |
@@ -187,7 +189,7 @@ on a Mac, command does what control does.
 | | ctrl+, | settings |
 | | esc | leave fullscreen, close |
 
-**esc** leaves fullscreen, then drops markup text being typed, then closes a menu, then ends markup mode. with help up, any key closes it and then does what it does. **esc** and **?** only close it.
+**esc** leaves fullscreen, then drops markup text being typed, then closes a menu, then lets go of a selected mark, then ends markup mode. with help up, any key closes it and then does what it does. **esc** and **?** only close it.
 
 in the browser, letters select names instead of running commands:
 

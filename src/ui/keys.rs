@@ -129,7 +129,7 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("screenshot", "screenshot of the view", "shift S", Key::S, SHIFT),
             menu_only("copy frame", "ctrl C", Key::C, CTRL),
             both("markup", "markup mode", "E", Key::E, NONE),
-            menu_only("take back a mark", "ctrl Z", Key::Z, CTRL),
+            menu_only("take back a change to the marks", "ctrl Z", Key::Z, CTRL),
         ],
     ),
     (

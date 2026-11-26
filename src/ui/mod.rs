@@ -343,6 +343,9 @@ pub enum Action {
     /// a mark drawn on this frame of the clip; every mark taken off the frame on screen
     Mark(usize, Mark),
     ClearMarks,
+    /// the mark at this place among this frame's marks, changed (moved, scaled, inked, its text typed again) or, with
+    /// none, taken off
+    Change(usize, usize, Option<Mark>),
     /// this text to the clipboard
     Copy(String),
     /// how loud, 0 to 1; and mute, or sound again
@@ -747,10 +750,10 @@ impl Ui {
         over
     }
 
-    /// escape: drops the markup text being typed, or else closes the open menu, or else ends markup mode. false when
-    /// there was nothing of ours to close.
+    /// escape: drops the markup text being typed, or else closes the open menu, or else lets go of the mark selected,
+    /// or else ends markup mode. false when there was nothing of ours to close.
     pub fn escape(&mut self) -> bool {
-        if self.markup.drop_text() || self.menu.take().is_some() | self.commands.take().is_some() {
+        if self.markup.drop_text() || self.markup.close_menu() | self.menu.take().is_some() | self.commands.take().is_some() || self.markup.let_go().is_some() {
             return true;
         }
         let was = self.markup.on;
@@ -768,6 +771,16 @@ impl Ui {
 
     pub fn markup(&self) -> bool {
         self.markup.on
+    }
+
+    /// a mark is selected in markup mode: delete and backspace take it off.
+    pub fn mark_selected(&self) -> bool {
+        self.markup.on && self.markup.selects()
+    }
+
+    /// lets go of the mark selected in markup mode, to take it off: its frame and its place among the frame's marks.
+    pub fn take_selected_mark(&mut self) -> Option<(usize, usize)> {
+        self.markup.on.then(|| self.markup.let_go()).flatten()
     }
 
     /// help comes up on its keys page (`?`), in place of any menu.
@@ -951,8 +964,10 @@ impl Ui {
         // fills the display with it, or puts the window back (the owner's word, in place of the design's fit and
         // last zoom). in markup mode a drag draws instead, and a click and a double click do nothing of the kind
         let picture = ui.interact(full, ui.scope_id().with("picture"), Sense::click_and_drag());
+        // a right click on a mark opens the mark's menu, not the player's
+        let mut on_mark = false;
         if self.markup.on {
-            self.markup.pointer(ui, &picture, model, self.scale, screen.settings.pen_smoothing, actions);
+            on_mark = self.markup.pointer(ui, &picture, model, self.scale, screen.settings.pen_smoothing, actions);
         } else if model.overflows {
             if picture.dragged_by(egui::PointerButton::Primary) {
                 let by = picture.drag_delta() * self.scale;
@@ -975,10 +990,11 @@ impl Ui {
         }
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
-        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.card.is_some() && self.card_rect.contains(p)) || (self.markup.on && self.markup.row.is_some_and(|row| row.contains(p))));
+        let over_markup = |p: Pos2| self.markup.on && (self.markup.row.is_some_and(|row| row.contains(p)) || (self.markup.menu.is_some() && self.markup.menu_rect.is_some_and(|menu| menu.contains(p))));
+        let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.card.is_some() && self.card_rect.contains(p)) || over_markup(p));
         let held = ui.input(|i| i.pointer.any_down());
         // in markup mode the pointer is a cross where a drag would draw: on the picture, clear of everything over it
-        self.cross = self.markup.on && self.inside && !over && self.panel.is_none() && pointer.is_some_and(|p| !(self.commands.is_some() && self.commands_rect.contains(p)));
+        self.cross = self.markup.on && self.markup.draws() && self.inside && !over && self.panel.is_none() && pointer.is_some_and(|p| !(self.commands.is_some() && self.commands_rect.contains(p)));
 
         // a press anywhere but on the open menu or its button closes the menu
         if self.menu.is_some() && pressed && !pointer.is_some_and(|p| self.menu_rect.contains(p) || self.menu_button.contains(p)) {
@@ -988,7 +1004,7 @@ impl Ui {
         if self.commands.is_some() && pressed && !pointer.is_some_and(|p| self.commands_rect.contains(p)) {
             self.commands = None;
         }
-        let opened = picture.secondary_clicked();
+        let opened = picture.secondary_clicked() && !on_mark;
         if opened {
             self.commands = pointer;
         }
@@ -1097,6 +1113,7 @@ impl Ui {
         if self.markup.on {
             self.markup.tools(ui, full.center().x, full.top() + 10.0 + STRIP, actions);
             self.markup.field(ui, full, actions);
+            self.markup.mark_menu(ui, full, model, self.scale, actions);
         }
         // the metadata panel, pinned: at the right under the chips, whether the controls are up or not
         if self.facts_pinned {

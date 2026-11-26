@@ -3,14 +3,14 @@
 //! with the guides and a caption, into a saved picture (fig. 20).
 
 use super::icons::{self, Icon};
-use super::widgets::{CHOSEN, ON_CHOSEN};
-use super::{font, keys, text_top, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID};
+use super::widgets::{self, CHOSEN, ON_CHOSEN};
+use super::{font, keys, text_top, Action, Model, Shot, Ui, DIM, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID};
 use crate::event::Key;
-use crate::markup::{smooth, square, Mark, Marks, Placing, Point, Shape, Tool, INKS};
+use crate::markup::{scale_by, smooth, square, Mark, Marks, Placing, Point, Shape, Tool, INKS};
 use crate::timecode::Timecode;
 use crate::view::Guides;
 use egui::text::LayoutJob;
-use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
 // a mark as the prototype's `drawMarks` draws it, in the design's pixels whatever the zoom: its line, and its text on a
 // dark box reaching 5 round the letters, 23 high
@@ -39,6 +39,17 @@ const CAPTION_BACK: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 const CAPTION_INK: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
 /// room under a saved picture's own for its caption, however many lines it takes: only what is drawn is kept
 const CAPTION_ROOM: f32 = 1000.0;
+/// how near a press must come to a mark's line, or to a corner of a selected mark's bounds, to take it
+const REACH: f32 = 6.0;
+// a selected mark's bounds stand 4 out from it, a 1 line round them with a handle 7 across at each corner, in the
+// light the chosen tool is lit with (no accent: that is for sliders, switches and fields)
+const GRIP_OUT: f32 = 4.0;
+const HANDLE: f32 = 7.0;
+/// text is scaled from half the design's size to eight times it
+const TEXT_SIZES: (f32, f32) = (0.5, 8.0);
+// a mark's menu, as wide as the bar's menus, its rows 24 high as the right-click menu's
+const MENU_WIDTH: f32 = 268.0;
+const MENU_ROW: f32 = 24.0;
 
 /// markup mode, and what it is in the middle of. the tool and the ink stay chosen when the mode ends.
 #[derive(Default)]
@@ -53,6 +64,23 @@ pub(super) struct Markup {
     pub(super) row: Option<Rect>,
     /// shift is held: a box or a circle being drawn is kept as wide as it is high on screen
     pub(super) shift: bool,
+    /// the mark selected: its frame, its place among the frame's marks, and the mark as it was. it is let go when the
+    /// frame's marks change under it (undo, another frame, another tab)
+    selected: Option<(usize, usize, Mark)>,
+    /// what a press of the select tool took hold of, until the button comes up
+    held: Option<Held>,
+    /// the selected mark's menu, which a right click on it opened, where it was asked for; and where it was drawn last
+    pub(super) menu: Option<Pos2>,
+    pub(super) menu_rect: Option<Rect>,
+}
+
+/// a hold on the mark selected: a corner of its bounds to scale it by (or none, to move it), where the press was and
+/// its bounds then, in the design's pixels, and the mark as the drag has it so far
+struct Held {
+    corner: Option<usize>,
+    from: Pos2,
+    bounds: Rect,
+    now: Option<Mark>,
 }
 
 /// text being typed: the frame and the place in the file it goes on, where its field stands, and what is typed so far
@@ -63,6 +91,111 @@ struct Writing {
     text: String,
     /// the field opened in this pass: the keyboard goes to it
     fresh: bool,
+    /// the text mark it is the text of, put back in the field by its menu; its size and ink
+    replaces: Option<usize>,
+    size: f32,
+    ink: [u8; 3],
+}
+
+/// where a mark is drawn, in the design's pixels: the line it is drawn with (a box's sides, a circle's round, a pen's
+/// line), or a text's box
+enum Seen {
+    Line(Vec<Pos2>),
+    Box(Rect),
+}
+
+impl Seen {
+    fn of(painter: &egui::Painter, mark: &Mark, place: &Placing, scale: f32) -> Seen {
+        let to = |p: &Point| {
+            let (x, y) = place.to_window(*p);
+            Pos2::new(x / scale, y / scale)
+        };
+        match &mark.shape {
+            Shape::Rectangle(a, b) => {
+                let r = Rect::from_two_pos(to(a), to(b));
+                Seen::Line(vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()])
+            }
+            Shape::Circle(a, b) => {
+                let r = Rect::from_two_pos(to(a), to(b));
+                Seen::Line((0..=64).map(|i| i as f32 * std::f32::consts::TAU / 64.0).map(|t| r.center() + Vec2::new(t.cos(), t.sin()) * r.size() / 2.0).collect())
+            }
+            Shape::Pen(points) => Seen::Line(points.iter().map(to).collect()),
+            Shape::Text(at, text, size) => Seen::Box(text_box(painter, to(at), text, *size, FG).0),
+        }
+    }
+
+    fn bounds(&self) -> Rect {
+        match self {
+            Seen::Line(points) => Rect::from_points(points),
+            Seen::Box(rect) => *rect,
+        }
+    }
+
+    /// a press at `at` is on it: within reach of its line, or in its box
+    fn under(&self, at: Pos2) -> bool {
+        let off = |a: Pos2, b: Pos2| {
+            let ab = b - a;
+            let t = if ab.length_sq() > 0.0 { ((at - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0) } else { 0.0 };
+            at.distance(a + ab * t)
+        };
+        match self {
+            Seen::Line(points) => points.windows(2).any(|w| off(w[0], w[1]) <= REACH),
+            Seen::Box(rect) => rect.contains(at),
+        }
+    }
+}
+
+/// the mark of `seen` a press at `at` takes: the last drawn whose line it is on or whose text box holds it; else the
+/// smallest whose bounds hold it, so a mark drawn inside another can be had from inside it
+fn pick(seen: &[Seen], at: Pos2) -> Option<usize> {
+    seen.iter().rposition(|s| s.under(at)).or_else(|| {
+        let holding = seen.iter().enumerate().filter(|(_, s)| s.bounds().expand(REACH).contains(at));
+        holding.min_by(|a, b| a.1.bounds().area().total_cmp(&b.1.bounds().area())).map(|(i, _)| i)
+    })
+}
+
+/// the box a selected mark's handles stand on: its bounds, a little out from it
+fn grip_box(seen: &Seen) -> Rect {
+    seen.bounds().expand(GRIP_OUT)
+}
+
+/// a box's corners, clockwise from its upper left: each is across from the one two on
+fn corners(r: Rect) -> [Pos2; 4] {
+    [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()]
+}
+
+/// a text's box and its letters laid out, as drawn with its first letter's top left at `at`: 5 round the letters and
+/// 23 high at the design's size, all of it grown by `size`
+fn text_box(painter: &egui::Painter, at: Pos2, text: &str, size: f32, color: Color32) -> (Rect, std::sync::Arc<egui::Galley>) {
+    let galley = painter.layout_no_wrap(text.to_string(), font(TEXT_FONT, TEXT_SIZE * size), color);
+    let back = Rect::from_min_size(at - Vec2::splat(TEXT_PAD * size), Vec2::new(galley.size().x + 2.0 * TEXT_PAD * size, TEXT_BOX * size));
+    (back, galley)
+}
+
+/// an ink's disc, 12 across and ringed faintly; the chosen one is ringed in white, 2 clear of it
+fn swatch(painter: &egui::Painter, middle: Pos2, rgb: [u8; 3], chosen: bool) {
+    painter.circle_filled(middle, 6.0, ink(rgb));
+    if chosen {
+        painter.circle_stroke(middle, 7.0, (2.0, SOLID));
+        painter.circle_stroke(middle, 8.5, (1.0, Color32::WHITE));
+    } else {
+        painter.circle_stroke(middle, 6.5, (1.0, Color32::from_white_alpha(89)));
+    }
+}
+
+/// a row of a mark's menu, as the right-click menu draws one: its words, and its key at the right. true when clicked
+fn menu_row(ui: &mut egui::Ui, name: &str, key: Option<&str>) -> bool {
+    let row = widgets::row(ui, MENU_ROW);
+    let response = ui.interact(row, ui.scope_id().with(("mark-menu", name)), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(row, 3.0, HOVER);
+    }
+    let galley = ui.painter().layout_no_wrap(name.to_string(), font(SANS, 12.0), FG);
+    ui.painter().galley(Pos2::new(row.left() + 6.0, text_top(ui.painter(), font(SANS, 12.0), row.center().y)), galley, FG);
+    if let Some(key) = key {
+        widgets::key_cap(ui, Pos2::new(row.right() - 6.0, row.center().y), key, false, DIM);
+    }
+    response.clicked()
 }
 
 /// where the clip on screen is in the window, for putting marks on it
@@ -75,9 +208,10 @@ fn ink(rgb: [u8; 3]) -> Color32 {
 }
 
 impl Markup {
-    /// markup mode on or off. off, a mark half drawn and text half typed are dropped.
+    /// markup mode on or off. off, a mark half drawn, text half typed and the selection are dropped.
     pub(super) fn toggle(&mut self) {
         (self.on, self.drawing, self.writing) = (!self.on, None, None);
+        (self.selected, self.held, self.menu) = (None, None, None);
     }
 
     /// escape while text is typed: the text goes, and markup mode stays. false when none was being typed.
@@ -85,11 +219,34 @@ impl Markup {
         self.writing.take().is_some()
     }
 
-    /// what was typed becomes a mark, unless it is only spaces.
+    /// closes the selected mark's menu. false when it was not open.
+    pub(super) fn close_menu(&mut self) -> bool {
+        self.menu.take().is_some()
+    }
+
+    /// lets go of the mark selected: its frame and its place among the frame's marks, when one was.
+    pub(super) fn let_go(&mut self) -> Option<(usize, usize)> {
+        (self.held, self.menu) = (None, None);
+        self.selected.take().map(|(frame, index, _)| (frame, index))
+    }
+
+    pub(super) fn selects(&self) -> bool {
+        self.selected.is_some()
+    }
+
+    /// a drag on the picture draws: every tool but select
+    pub(super) fn draws(&self) -> bool {
+        self.tool != Tool::Select
+    }
+
+    /// what was typed becomes a mark, unless it is only spaces. text put back in the field by its menu is kept in its
+    /// place, or taken off when nothing is left of it.
     fn keep(&self, writing: Writing, actions: &mut Vec<Action>) {
-        let mark = Mark { shape: Shape::Text(writing.at, writing.text.trim().to_string()), ink: INKS[self.ink] };
-        if !mark.tiny(1.0) {
-            actions.push(Action::Mark(writing.frame, mark));
+        let mark = Mark { shape: Shape::Text(writing.at, writing.text.trim().to_string(), writing.size), ink: writing.ink };
+        let kept = (!mark.tiny(1.0)).then_some(mark);
+        match writing.replaces {
+            Some(index) => actions.push(Action::Change(writing.frame, index, kept)),
+            None => actions.extend(kept.map(|mark| Action::Mark(writing.frame, mark))),
         }
     }
 
@@ -107,19 +264,37 @@ impl Markup {
     }
 
     /// the picture's pointer, in markup mode: a drag on the picture draws with the tool, and with the text tool a click
-    /// opens a field there. a press on the picture keeps what was being typed. nothing else: the window does not move,
-    /// the picture does not pan and the controls are not toggled. `smoothing` is how much a pen's line is smoothed.
-    pub(super) fn pointer(&mut self, ui: &egui::Ui, picture: &egui::Response, model: &Model, scale: f32, smoothing: f32, actions: &mut Vec<Action>) {
+    /// opens a field there; the select tool takes hold of a mark. a right click on a mark, with any tool, selects it and
+    /// opens its menu: true then, and the player's menu stays shut. a press on the picture keeps what was being typed.
+    /// nothing else: the window does not move, the picture does not pan and the controls are not toggled. `smoothing`
+    /// is how much a pen's line is smoothed.
+    pub(super) fn pointer(&mut self, ui: &egui::Ui, picture: &egui::Response, model: &Model, scale: f32, smoothing: f32, actions: &mut Vec<Action>) -> bool {
         let place = placing(model);
         let (x, y, w, h) = model.picture;
         let on_picture = |p: &Pos2| (x..x + w).contains(&(p.x * scale)) && (y..y + h).contains(&(p.y * scale));
         let file = |p: Pos2| place.to_file((p.x * scale, p.y * scale));
+        let on = model.marks.map_or(&[][..], |marks| marks.on(model.frame));
+        // a selection lasts while its mark is as it was, on the frame on screen
+        self.selected = self.selected.take().filter(|(frame, index, mark)| *frame == model.frame && on.get(*index) == Some(mark));
+        if self.selected.is_none() {
+            (self.held, self.menu) = (None, None);
+        }
+        let seen: Vec<Seen> = on.iter().map(|mark| Seen::of(ui.painter(), mark, &place, scale)).collect();
         if ui.input(|i| i.pointer.primary_pressed()) && picture.hovered() {
             if let Some(writing) = self.writing.take() {
                 self.keep(writing, actions);
             }
         }
-        if picture.drag_started_by(egui::PointerButton::Primary) && self.tool != Tool::Text {
+        let mut asked = false;
+        if picture.secondary_clicked() {
+            if let Some((at, index)) = picture.interact_pointer_pos().and_then(|at| Some((at, pick(&seen, at)?))) {
+                (self.selected, self.held, self.menu, asked) = (Some((model.frame, index, on[index].clone())), None, Some(at), true);
+            }
+        }
+        if self.tool == Tool::Select {
+            self.select(ui, picture, &place, scale, (model.frame, on), &seen, actions);
+        }
+        if picture.drag_started_by(egui::PointerButton::Primary) && self.draws() && self.tool != Tool::Text {
             let origin = ui.input(|i| i.pointer.press_origin());
             if let Some(origin) = origin.filter(on_picture) {
                 self.drawing = Some((model.frame, Mark::start(self.tool, file(origin), INKS[self.ink])));
@@ -143,24 +318,143 @@ impl Markup {
         }
         if self.tool == Tool::Text && picture.clicked_by(egui::PointerButton::Primary) {
             if let Some(at) = picture.interact_pointer_pos().filter(on_picture) {
-                self.writing = Some(Writing { frame: model.frame, at: file(at), field: at, text: String::new(), fresh: true });
+                self.writing = Some(Writing { frame: model.frame, at: file(at), field: at, text: String::new(), fresh: true, replaces: None, size: 1.0, ink: INKS[self.ink] });
+            }
+        }
+        asked
+    }
+
+    /// the select tool on the marks `on` the frame on screen, `seen` where they are drawn: a press on a corner of the
+    /// selected mark's bounds takes hold of it to scale the mark about the opposite corner, a press on a mark selects
+    /// it and takes hold of it to move it, and a press on no mark lets go. the drag changes the mark as it goes, and
+    /// the release keeps the change, with the mark still selected.
+    fn select(&mut self, ui: &egui::Ui, picture: &egui::Response, place: &Placing, scale: f32, (frame, on): (usize, &[Mark]), seen: &[Seen], actions: &mut Vec<Action>) {
+        if let Some(at) = ui.input(|i| i.pointer.press_origin()).filter(|_| ui.input(|i| i.pointer.primary_pressed()) && picture.hovered()) {
+            let corner = self.selected.as_ref().and_then(|(_, index, _)| corners(grip_box(&seen[*index])).iter().position(|c| c.distance(at) <= REACH));
+            self.held = match (corner, pick(seen, at)) {
+                (Some(_), _) => self.selected.as_ref().map(|(_, index, _)| Held { corner, from: at, bounds: grip_box(&seen[*index]), now: None }),
+                (None, Some(index)) => {
+                    self.selected = Some((frame, index, on[index].clone()));
+                    Some(Held { corner: None, from: at, bounds: grip_box(&seen[index]), now: None })
+                }
+                (None, None) => {
+                    self.selected = None;
+                    None
+                }
+            };
+        }
+        let (Some(held), Some((_, _, was))) = (&mut self.held, &self.selected) else { return };
+        if picture.dragged_by(egui::PointerButton::Primary) {
+            if let Some(now) = picture.interact_pointer_pos() {
+                held.now = Some(edited(place, scale, held, was, now, self.shift));
+            }
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            if let (Some(Held { now: Some(now), .. }), Some((frame, index, was))) = (self.held.take(), &mut self.selected) {
+                if now != *was {
+                    actions.push(Action::Change(*frame, *index, Some(now.clone())));
+                    *was = now;
+                }
             }
         }
     }
 
-    /// the marks on the frame on screen, and the one being drawn on it, over the picture and clipped to it.
+    /// the marks on the frame on screen, and the one being drawn on it, over the picture and clipped to it: the one
+    /// selected as a drag has it so far, with its bounds and their handles; and not the text in the field.
     pub(super) fn marks(&self, ui: &egui::Ui, model: &Model, scale: f32, smoothing: f32) {
         let (x, y, w, h) = model.picture;
         let painter = ui.painter().with_clip_rect(Rect::from_min_size(Pos2::new(x / scale, y / scale), Vec2::new(w / scale, h / scale)));
+        let place = placing(model);
+        let selected = self.selected.as_ref().filter(|(frame, ..)| *frame == model.frame).map(|(_, index, mark)| (*index, self.held.as_ref().and_then(|held| held.now.as_ref()).unwrap_or(mark)));
+        let editing = self.writing.as_ref().filter(|writing| writing.frame == model.frame).and_then(|writing| writing.replaces);
+        let on = model.marks.map_or(&[][..], |marks| marks.on(model.frame));
+        let shown = on.iter().enumerate().filter(|(index, _)| editing != Some(*index)).map(|(index, mark)| selected.filter(|(at, _)| *at == index).map_or(mark, |(_, now)| now));
         let drawing = self.drawn(model, scale, smoothing).filter(|(frame, _)| *frame == model.frame).map(|(_, mark)| mark);
-        draw_marks(&painter, model.marks.map_or(&[][..], |marks| marks.on(model.frame)).iter().chain(drawing.as_ref()), &placing(model), scale);
+        draw_marks(&painter, shown.chain(drawing.as_ref()), &place, scale);
+        if let Some((_, mark)) = selected {
+            let grips = grip_box(&Seen::of(&painter, mark, &place, scale));
+            ui.painter().rect_stroke(grips, 0.0, (1.0, SOLID), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(grips, 0.0, (1.0, CHOSEN), egui::StrokeKind::Middle);
+            for corner in corners(grips) {
+                let handle = Rect::from_center_size(corner, Vec2::splat(HANDLE));
+                ui.painter().rect_filled(handle, 0.0, CHOSEN);
+                ui.painter().rect_stroke(handle, 0.0, (1.0, SOLID), egui::StrokeKind::Outside);
+            }
+        }
+    }
+
+    /// the selected mark's menu, at the right click that opened it and kept inside `full`: delete, edit text for a
+    /// text, then the inks. a press anywhere else closes it, as a choice does. what it does is a change to the mark,
+    /// which undo takes back.
+    pub(super) fn mark_menu(&mut self, ui: &egui::Ui, full: Rect, model: &Model, scale: f32, actions: &mut Vec<Action>) {
+        let (Some(at), Some((frame, index, mark))) = (self.menu, self.selected.clone()) else {
+            self.menu = None;
+            return;
+        };
+        if ui.input(|i| i.pointer.any_pressed()) && !ui.ctx().pointer_latest_pos().is_some_and(|p| self.menu_rect.is_some_and(|r| r.contains(p))) {
+            self.menu = None;
+            return;
+        }
+        enum Chosen {
+            Delete,
+            EditText,
+            Ink([u8; 3]),
+        }
+        let mut chosen = None;
+        let last = self.menu_rect.unwrap_or(Rect::NOTHING);
+        let corner = Pos2::new(at.x.min(full.right() - 8.0 - last.width()).max(full.left() + 8.0), at.y.min(full.bottom() - 8.0 - last.height()).max(full.top() + 8.0));
+        self.menu_rect = Some(widgets::menu(ui, "mark-menu", corner, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            // what can be done to the mark, a row each
+            let rows: &[(&str, Option<&str>, fn() -> Chosen)] = match mark.shape {
+                Shape::Text(..) => &[("delete", Some("del"), || Chosen::Delete), ("edit text", None, || Chosen::EditText)],
+                _ => &[("delete", Some("del"), || Chosen::Delete)],
+            };
+            for (name, key, what) in rows {
+                if menu_row(ui, name, *key) {
+                    chosen = Some(what());
+                }
+            }
+            ui.add_space(10.0);
+            widgets::heading(ui, "color", &[]);
+            ui.add_space(4.0);
+            let line = widgets::row(ui, MENU_ROW);
+            for (n, rgb) in INKS.iter().enumerate() {
+                let cell = Rect::from_min_size(Pos2::new(line.left() + n as f32 * (SWATCH + TOOLS_GAP), line.top()), Vec2::new(SWATCH, MENU_ROW));
+                swatch(ui.painter(), cell.center(), *rgb, *rgb == mark.ink);
+                if ui.interact(cell, ui.scope_id().with(("mark-ink", n)), Sense::click()).clicked() {
+                    chosen = Some(Chosen::Ink(*rgb));
+                }
+            }
+        }));
+        match chosen {
+            Some(Chosen::Delete) => {
+                actions.push(Action::Change(frame, index, None));
+                self.selected = None;
+            }
+            Some(Chosen::Ink(rgb)) => {
+                let inked = Mark { ink: rgb, ..mark };
+                actions.push(Action::Change(frame, index, Some(inked.clone())));
+                self.selected = Some((frame, index, inked));
+            }
+            Some(Chosen::EditText) => {
+                if let Shape::Text(at, text, size) = mark.shape {
+                    let (x, y) = placing(model).to_window(at);
+                    let field = Pos2::new(x / scale, y / scale);
+                    self.writing = Some(Writing { frame, at, field, text, fresh: true, replaces: Some(index), size, ink: mark.ink });
+                    self.selected = None;
+                }
+            }
+            None => return,
+        }
+        self.menu = None;
     }
 
     /// the field text is typed into, where the click was and kept inside `full`. enter keeps what was typed and escape
     /// drops it; the field losing the keyboard otherwise keeps it too.
     pub(super) fn field(&mut self, ui: &egui::Ui, full: Rect, actions: &mut Vec<Action>) {
-        let color = ink(INKS[self.ink]);
         let Some(writing) = &mut self.writing else { return };
+        let color = ink(writing.ink);
         let at = Pos2::new(writing.field.x.clamp(full.left() + 6.0, full.right() - FIELD_WIDTH), writing.field.y.clamp(full.top() + 6.0, full.bottom() - 40.0));
         let mut done = None;
         egui::Area::new(egui::Id::unique("markup-text")).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
@@ -186,8 +480,8 @@ impl Markup {
         }
     }
 
-    /// the row of tools at the top middle of the picture while markup mode is on (`.pl-mk`): the four tools, the four
-    /// inks, undo and clear, then save image and done. `top` is its top edge.
+    /// the row of tools at the top middle of the picture while markup mode is on (`.pl-mk`): select and the four tools,
+    /// the four inks, undo and clear, then save image and done. `top` is its top edge.
     pub(super) fn tools(&mut self, ui: &mut egui::Ui, middle: f32, top: f32, actions: &mut Vec<Action>) {
         enum Item {
             Pick(Tool, Icon),
@@ -199,6 +493,7 @@ impl Markup {
         }
         use Item::*;
         let items = [
+            Pick(Tool::Select, Icon::Select),
             Pick(Tool::Rectangle, Icon::Rectangle),
             Pick(Tool::Circle, Icon::Circle),
             Pick(Tool::Pen, Icon::Pen),
@@ -249,16 +544,7 @@ impl Markup {
                 Pick(_, icon) => icons::draw(&painter, rect, *icon, if chosen { ON_CHOSEN } else { FG }),
                 Undo => icons::draw(&painter, rect, Icon::Undo, FG),
                 Clear => icons::draw(&painter, rect, Icon::Close, FG),
-                // a disc 12 across in its ink, ringed faintly; the chosen one is ringed in white, 2 clear of it
-                Ink(n) => {
-                    painter.circle_filled(rect.center(), 6.0, ink(INKS[*n]));
-                    if *n == self.ink {
-                        painter.circle_stroke(rect.center(), 7.0, (2.0, SOLID));
-                        painter.circle_stroke(rect.center(), 8.5, (1.0, Color32::WHITE));
-                    } else {
-                        painter.circle_stroke(rect.center(), 6.5, (1.0, Color32::from_white_alpha(89)));
-                    }
-                }
+                Ink(n) => swatch(&painter, rect.center(), INKS[*n], *n == self.ink),
                 Words(text) => {
                     painter.galley(Pos2::new(rect.left() + 8.0, text_top(&painter, font(SANS, 12.0), rect.center().y)), words(text), FG);
                 }
@@ -278,6 +564,29 @@ impl Markup {
             }
         }
     }
+}
+
+/// the mark `was` as a hold on it has it with the pointer at `now`: moved as far as the pointer went, or scaled about
+/// the corner of its bounds across from the one held, each way on its own or with `keep` (shift) in proportion. text
+/// is always scaled in proportion, its letters with it, and is never turned over.
+fn edited(place: &Placing, scale: f32, held: &Held, was: &Mark, now: Pos2, keep: bool) -> Mark {
+    let at = |p: Pos2| (p.x * scale, p.y * scale);
+    let Some(corner) = held.corner else {
+        let by = (now - held.from) * scale;
+        return place.on_screen(was, |p| (p.0 + by.x, p.1 + by.y));
+    };
+    let ends = corners(held.bounds);
+    let (about, from) = (at(ends[(corner + 2) % 4]), at(ends[corner]));
+    let mut by = scale_by(about, from, at(now), keep);
+    if let Shape::Text(_, _, size) = was.shape {
+        let grown = (size * by.0.abs().max(by.1.abs())).clamp(TEXT_SIZES.0, TEXT_SIZES.1);
+        by = (grown / size, grown / size);
+    }
+    let mut mark = place.on_screen(was, |p| (about.0 + (p.0 - about.0) * by.0, about.1 + (p.1 - about.1) * by.1));
+    if let Shape::Text(_, _, size) = &mut mark.shape {
+        *size *= by.0;
+    }
+    mark
 }
 
 /// a tick over the timebar at each frame that carries marks: 1 wide and 5 high, 8 over the track. `last` is the
@@ -314,12 +623,11 @@ fn draw_marks<'a>(painter: &egui::Painter, marks: impl Iterator<Item = &'a Mark>
             Shape::Pen(points) => {
                 painter.add(egui::Shape::line(points.iter().map(to).collect(), stroke));
             }
-            Shape::Text(at, text) => {
+            Shape::Text(at, text, size) => {
                 let at = to(at);
-                let galley = painter.layout_no_wrap(text.clone(), font(TEXT_FONT, TEXT_SIZE), color);
-                let back = Rect::from_min_size(at - Vec2::splat(TEXT_PAD), Vec2::new(galley.size().x + 2.0 * TEXT_PAD, TEXT_BOX));
+                let (back, galley) = text_box(painter, at, text, *size, color);
                 painter.rect_filled(back, 0.0, TEXT_BACK);
-                painter.galley(Pos2::new(at.x, text_top(painter, font(TEXT_FONT, TEXT_SIZE), back.center().y)), galley, color);
+                painter.galley(Pos2::new(at.x, text_top(painter, font(TEXT_FONT, TEXT_SIZE * size), back.center().y)), galley, color);
             }
         }
     }
@@ -413,6 +721,169 @@ mod tests {
 
     fn near(a: Point, b: Point) -> bool {
         (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
+    }
+
+    fn boxed(a: (f32, f32), b: (f32, f32)) -> Mark {
+        Mark { shape: Shape::Rectangle(file(a), file(b)), ink: INKS[0] }
+    }
+
+    fn right_click(at: (f32, f32)) -> Vec<Step> {
+        vec![(at.0, at.1, None), (at.0, at.1, Some((Button::Right, true))), (at.0, at.1, Some((Button::Right, false))), (at.0, at.1, None)]
+    }
+
+    /// `f` with a painter that has the player's fonts, as a pass of the controls has it
+    fn with_painter(f: impl FnOnce(&egui::Painter)) {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut f = Some(f);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| f.take().into_iter().for_each(|f| f(ui.painter())));
+        out.textures_delta.clear();
+    }
+
+    /// which mark a press takes: the last drawn whose line passes within 6 of the design's pixels of it, or whose text
+    /// box holds it; else the smallest whose bounds hold it, so a circle drawn inside a box is had from inside it;
+    /// else none.
+    #[test]
+    fn a_press_takes_the_mark_under_it() {
+        let marks = [
+            boxed((200.0, 100.0), (400.0, 300.0)),
+            Mark { shape: Shape::Circle(file((260.0, 160.0)), file((340.0, 240.0))), ink: INKS[0] },
+            Mark { shape: Shape::Text(file((440.0, 40.0)), "note".into(), 1.0), ink: INKS[0] },
+            Mark { shape: Shape::Pen(vec![file((180.0, 106.0)), file((300.0, 104.0)), file((420.0, 106.0))]), ink: INKS[0] },
+        ];
+        with_painter(|painter| {
+            let seen: Vec<Seen> = marks.iter().map(|mark| Seen::of(painter, mark, &placing(&model()), 1.0)).collect();
+            for (at, taken) in [((203.0, 200.0), Some(0)), ((300.0, 158.0), Some(1)), ((300.0, 200.0), Some(1)), ((220.0, 280.0), Some(0)), ((445.0, 45.0), Some(2)), ((300.0, 102.0), Some(3)), ((600.0, 330.0), None)] {
+                assert_eq!(pick(&seen, Pos2::new(at.0, at.1)), taken, "a press at {at:?}");
+            }
+        });
+    }
+
+    /// the select tool: a press on a mark selects it and a drag from there moves it, as far as the pointer went on
+    /// screen; a corner of its bounds dragged scales it about the opposite corner, each way on its own, or with shift
+    /// both by the larger. only the mark taken changes, and it stays selected as changed.
+    #[test]
+    fn the_select_tool_moves_and_scales_the_mark_taken_and_no_other() {
+        let mut marks = Marks::default();
+        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
+        marks.add(0, boxed((300.0, 200.0), (400.0, 250.0)));
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        ui.markup.tool = Tool::Select;
+        // the second box's left side, dragged 40 across and 20 down, up to the release: the player changes the mark
+        // before the next pass
+        let moved = drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &drag((300.0, 225.0), (340.0, 245.0))[..5]);
+        let [Action::Change(0, 1, Some(mark))] = &moved[..] else { panic!("{moved:?}") };
+        assert!(matches!(mark.shape, Shape::Rectangle(a, b) if near(a, file((340.0, 220.0))) && near(b, file((440.0, 270.0)))), "{mark:?}");
+        marks.change(0, 1, Some(mark.clone()));
+        drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &[(340.0, 245.0, None)]);
+        assert_eq!(ui.markup.selected.as_ref().map(|(f, i, m)| (*f, *i, m.clone())), Some((0, 1, mark.clone())), "still selected, as changed");
+        // its bounds stand 4 out from it: the lower right corner, at 444,274, dragged to 494,284, scales it about the
+        // upper left one, at 336,216
+        for shift in [false, true] {
+            let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+            ui.toggle_markup();
+            ui.markup.tool = Tool::Select;
+            ui.keys_held(Mods { shift, ..Mods::default() });
+            drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &click((340.0, 230.0)));
+            let scaled = drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &drag((444.0, 274.0), (494.0, 284.0)));
+            let (sx, sy): (f32, f32) = ((494.0 - 336.0) / (444.0 - 336.0), (284.0 - 216.0) / (274.0 - 216.0));
+            let (sx, sy) = if shift { (sx.max(sy), sx.max(sy)) } else { (sx, sy) };
+            let to = |x: f32, y: f32| file((336.0 + (x - 336.0) * sx, 216.0 + (y - 216.0) * sy));
+            let [Action::Change(0, 1, Some(Mark { shape: Shape::Rectangle(a, b), .. }))] = &scaled[..] else { panic!("shift {shift}: {scaled:?}") };
+            assert!(near(*a, to(340.0, 220.0)) && near(*b, to(440.0, 270.0)), "shift {shift}: {a:?} {b:?}, wanted {:?} {:?}", to(340.0, 220.0), to(440.0, 270.0));
+        }
+    }
+
+    /// a text's corner dragged grows its letters, in proportion whatever shift says, about the opposite corner
+    #[test]
+    fn a_texts_corner_grows_its_letters() {
+        let mut marks = Marks::default();
+        let text = Mark { shape: Shape::Text(file((200.0, 100.0)), "note".into(), 1.0), ink: INKS[0] };
+        marks.add(0, text.clone());
+        let mut grips = Rect::NOTHING;
+        with_painter(|painter| grips = grip_box(&Seen::of(painter, &text, &placing(&model()), 1.0)));
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        ui.markup.tool = Tool::Select;
+        drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &click((210.0, 105.0)));
+        // twice as wide, no taller: the larger, twice, both ways
+        let corner = grips.right_bottom();
+        let grown = drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &drag((corner.x, corner.y), (corner.x + grips.width(), corner.y)));
+        let [Action::Change(0, 0, Some(Mark { shape: Shape::Text(at, words, size), .. }))] = &grown[..] else { panic!("{grown:?}") };
+        let held = grips.left_top();
+        assert!(words == "note" && (*size - 2.0).abs() < 1e-4, "{grown:?}");
+        assert!(near(*at, file((held.x + (200.0 - held.x) * 2.0, held.y + (100.0 - held.y) * 2.0))), "{at:?}");
+    }
+
+    /// delete takes off the mark selected (the player asks for it, with the key); escape lets go of the selection
+    /// first, then ends markup mode; a press where there is no mark lets go too.
+    #[test]
+    fn delete_takes_the_mark_selected_and_escape_lets_go_of_it_first() {
+        let mut marks = Marks::default();
+        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
+        marks.add(0, boxed((300.0, 200.0), (400.0, 250.0)));
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        ui.markup.tool = Tool::Select;
+        let pass = |ui: &mut Ui, steps: &[Step]| drive_with(ui, Model { marks: Some(&marks), ..model() }, steps);
+        assert!(pass(&mut ui, &click((300.0, 225.0))).is_empty() && ui.mark_selected());
+        assert_eq!(ui.take_selected_mark(), Some((0, 1)), "delete");
+        assert!(!ui.mark_selected());
+        pass(&mut ui, &click((200.0, 130.0)));
+        assert!(ui.mark_selected());
+        pass(&mut ui, &click((560.0, 200.0)));
+        assert!(!ui.mark_selected(), "a press on no mark lets go");
+        pass(&mut ui, &click((200.0, 130.0)));
+        assert!(ui.escape() && !ui.mark_selected() && ui.markup(), "escape lets go first");
+        assert!(ui.escape() && !ui.markup(), "then ends markup mode");
+        assert_eq!(ui.take_selected_mark(), None);
+    }
+
+    /// a right click on a mark, whatever the tool, selects it and opens its menu in place of the player's: delete
+    /// takes it off, an ink colors it, and for text "edit text" puts it back in the field, where enter keeps it in its
+    /// place. a right click off every mark opens the player's menu.
+    #[test]
+    fn a_right_click_on_a_mark_opens_its_menu_and_each_item_does_what_it_says() {
+        let mut marks = Marks::default();
+        let text = Mark { shape: Shape::Text(file((300.0, 200.0)), "note".into(), 1.0), ink: INKS[0] };
+        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
+        marks.add(0, text.clone());
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        let pass = |ui: &mut Ui, steps: &[Step]| drive_with(ui, Model { marks: Some(&marks), ..model() }, steps);
+        // the menu's rows start 13 in (its line and padding), 24 high; then 10 clear, the inks' heading 16 high, 4
+        // clear, and the inks, a swatch each
+        let row = |ui: &Ui, n: f32| {
+            let menu = ui.markup.menu_rect.expect("the menu is drawn");
+            (menu.left() + 40.0, menu.top() + 13.0 + 24.0 * n + 12.0)
+        };
+        let swatch = |ui: &Ui, rows: f32, n: f32| {
+            let menu = ui.markup.menu_rect.expect("the menu is drawn");
+            (menu.left() + 13.0 + n * (SWATCH + TOOLS_GAP) + SWATCH / 2.0, menu.top() + 13.0 + 24.0 * rows + 30.0 + 12.0)
+        };
+        assert!(pass(&mut ui, &right_click((200.0, 130.0))).is_empty());
+        assert!(ui.markup.menu.is_some() && ui.commands.is_none() && ui.mark_selected(), "the box's menu, not the player's");
+        let at = row(&ui, 0.0);
+        assert_eq!(pass(&mut ui, &click(at)), vec![Action::Change(0, 0, None)], "delete");
+        assert!(ui.markup.menu.is_none());
+        pass(&mut ui, &right_click((200.0, 130.0)));
+        let at = swatch(&ui, 1.0, 1.0);
+        let colored = pass(&mut ui, &click(at));
+        assert_eq!(colored, vec![Action::Change(0, 0, Some(Mark { ink: INKS[1], ..boxed((200.0, 100.0), (260.0, 160.0)) }))], "an ink");
+        // text has "edit text" under delete
+        pass(&mut ui, &right_click((310.0, 205.0)));
+        let at = row(&ui, 1.0);
+        assert!(pass(&mut ui, &click(at)).is_empty());
+        assert!(ui.typing(), "the field has the keyboard");
+        assert_eq!(ui.markup.writing.as_ref().map(|w| w.text.as_str()), Some("note"));
+        ui.char('!');
+        ui.key(Key::Enter, Mods::default());
+        let kept = pass(&mut ui, &[(310.0, 205.0, None)]);
+        assert_eq!(kept, vec![Action::Change(0, 1, Some(Mark { shape: Shape::Text(file((300.0, 200.0)), "note!".into(), 1.0), ink: INKS[0] }))]);
+        // off every mark, the player's own
+        pass(&mut ui, &right_click((560.0, 200.0)));
+        assert!(ui.markup.menu.is_none() && ui.commands.is_some());
     }
 
     /// a drag on the picture draws with the tool, on the frame on screen, in the file's pixels; it does not move the
@@ -582,7 +1053,7 @@ mod tests {
         "hi ".chars().for_each(|c| ui.char(c));
         ui.key(Key::Enter, Mods::default());
         let kept = drive(&mut ui, &[(first.0, first.1, None)]);
-        assert!(matches!(&kept[..], [Action::Mark(0, Mark { shape: Shape::Text(at, words), .. })] if near(*at, file(first)) && words == "hi"), "{kept:?}");
+        assert!(matches!(&kept[..], [Action::Mark(0, Mark { shape: Shape::Text(at, words, _), .. })] if near(*at, file(first)) && words == "hi"), "{kept:?}");
         assert!(ui.markup.writing.is_none() && ui.markup.on && !ui.typing());
         // typed, then a click elsewhere on the picture: kept, and a new field there
         drive(&mut ui, &click(first));
@@ -590,7 +1061,7 @@ mod tests {
         drive(&mut ui, &[(first.0, first.1, None)]);
         let kept = drive(&mut ui, &click(second));
         assert_eq!(kept.len(), 1, "{kept:?}");
-        assert!(matches!(&kept[0], Action::Mark(0, Mark { shape: Shape::Text(at, words), .. }) if near(*at, file(first)) && words == "ok"), "{kept:?}");
+        assert!(matches!(&kept[0], Action::Mark(0, Mark { shape: Shape::Text(at, words, _), .. }) if near(*at, file(first)) && words == "ok"), "{kept:?}");
         assert!(ui.markup.writing.as_ref().is_some_and(|w| near(w.at, file(second))));
         // escape, as the window sends it while the field has the keyboard
         "gone".chars().for_each(|c| ui.char(c));
@@ -618,19 +1089,21 @@ mod tests {
         drive(&mut ui, &[(320.0, 20.0, None)]);
         assert_eq!(ui.markup.row, Some(away));
         // a click `along` from the row's left edge (or, negative, from its right), on the middle of its items
-        let mut press = |along: f32| {
+        let press = |ui: &mut Ui, along: f32| {
             let row = ui.markup.row.expect("the row of tools is up");
             let x = if along < 0.0 { row.right() + along } else { row.left() + along };
-            drive(&mut ui, &click((x, row.top() + 4.0 + ITEM_HIGH / 2.0)))
+            drive(ui, &click((x, row.top() + 4.0 + ITEM_HIGH / 2.0)))
         };
-        // inside the line and the padding (4): the tools 32 apart, a rule 11, the inks 24 apart, a rule, undo, clear,
-        // a rule, then the words
-        assert_eq!(press(4.0 + 3.0 * 32.0 + 15.0), vec![]);
-        assert_eq!(press(4.0 + 4.0 * 32.0 + 11.0 + 24.0 + 11.0), vec![]);
-        assert_eq!(press(4.0 + 246.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL)]);
-        assert_eq!(press(4.0 + 246.0 + 32.0 + 15.0), vec![Action::ClearMarks]);
-        assert_eq!(press(4.0 + 246.0 + 64.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
-        assert_eq!(press(-14.0), vec![Action::Key(Key::E, keys::NONE)]);
+        // inside the line and the padding (4): the tools 32 apart, select first, a rule 11, the inks 24 apart, a
+        // rule, undo, clear, a rule, then the words
+        assert_eq!(press(&mut ui, 4.0 + 15.0), vec![]);
+        assert_eq!(ui.markup.tool, Tool::Select);
+        assert_eq!(press(&mut ui, 4.0 + 4.0 * 32.0 + 15.0), vec![]);
+        assert_eq!(press(&mut ui, 4.0 + 5.0 * 32.0 + 11.0 + 24.0 + 11.0), vec![]);
+        assert_eq!(press(&mut ui, 4.0 + 278.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL)]);
+        assert_eq!(press(&mut ui, 4.0 + 278.0 + 32.0 + 15.0), vec![Action::ClearMarks]);
+        assert_eq!(press(&mut ui, 4.0 + 278.0 + 64.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
+        assert_eq!(press(&mut ui, -14.0), vec![Action::Key(Key::E, keys::NONE)]);
         assert_eq!((ui.markup.tool, ui.markup.ink), (Tool::Text, 1));
     }
 

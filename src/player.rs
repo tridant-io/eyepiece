@@ -453,7 +453,7 @@ impl View {
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::BrowsePlayed | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
-            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
+            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
         }
     }
 
@@ -1809,10 +1809,16 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         shoot(v, marks, &gpu, Shot::Copy, settings, scale, &wake);
                     }
                 }
-                // in markup mode control + Z takes back the last mark drawn on the frame on screen
+                // in markup mode control + Z takes back the last change to the marks on the frame on screen
                 Event::Key { key: Key::Z, mods } if mods.ctrl && !browsing && ui.markup() => {
                     if let Some((marks, frame)) = tabs.marking() {
                         marks.undo(frame);
+                    }
+                }
+                // and delete or backspace takes off the mark selected (backspace is 1× speed while none is)
+                Event::Key { key: Key::Delete | Key::Backspace, mods } if !mods.ctrl && !mods.alt && !browsing && ui.mark_selected() => {
+                    if let (Some((frame, index)), Some((marks, _))) = (ui.take_selected_mark(), tabs.marking()) {
+                        marks.change(frame, index, None);
                     }
                 }
                 // escape leaves fullscreen first; then it is the browser's, which goes back to the clip, or closes a menu
@@ -2102,6 +2108,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::ClearMarks => {
                     if let Some((marks, frame)) = tabs.marking() {
                         marks.clear(frame);
+                    }
+                }
+                Action::Change(frame, index, to) => {
+                    if let Some((marks, _)) = tabs.marking() {
+                        marks.change(*frame, *index, to.clone());
                     }
                 }
                 Action::Copy(text) => {

@@ -55,6 +55,16 @@ public static class EyepiecePicture {
       return all.ToArray();
     }
   }
+  // going left from x along row y, the right end of the first run of at least `run` near-white pixels, or -1
+  public static int RunLeft(IntPtr h, int x, int y, int run) {
+    Rect c; GetClientRect(h, out c);
+    using (var bmp = new Bitmap(c.R, c.B)) {
+      using (var g = Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 3); g.ReleaseHdc(dc); }
+      int n = 0;
+      for (int i = Math.Min(x, c.R - 1); i >= 0; i--) { var p = bmp.GetPixel(i, y); if (Math.Min(p.R, Math.Min(p.G, p.B)) > 215) { if (++n >= run) return i + run - 1; } else n = 0; }
+      return -1;
+    }
+  }
   // the first row from the top with a pixel of bright text between x0 and x1, or -1
   public static int FirstBright(IntPtr h, int x0, int y0, int x1, int y1) {
     Rect c; GetClientRect(h, out c);
@@ -616,6 +626,33 @@ Drag-On 200 120 300 170 -Shift
 $drawn = Get-Pixels @band
 Confirm-That 'with shift held it is square: its far side is as far down as across' ((Get-Changed $untouched $drawn) -gt 20) "$(Get-Changed $untouched $drawn) pixels changed 100 down"
 Send-Key 0x5A 1 4; Assert-Title 'and control + Z takes that back' ' fps . markup$'
+# the select tool: the row of tools stands in the middle under the strip, its items 28 high from 46 down, the tool
+# chosen lit near white; select is the tool before the rectangle, which is chosen at first. a press on a mark selects
+# it and a drag moves it, a corner of its bounds (4 out from it) dragged scales it, and delete takes it off. each is
+# seen in a band of the window's own picture, against how the band was with no mark
+function Get-ChosenTool {
+    # 4 under the items' top: over every icon
+    $scale = [EyepieceE2e]::GetDpiForWindow($script:h) / 96.0; $at = (Get-Place ((Get-Width) / 2) 50).ToInt64()
+    [EyepiecePicture]::RunLeft($script:h, [int]($at -band 0xffff), [int]($at -shr 16), [int](20 * $scale)) / $scale
+}
+$bands = @{ top = 220, 114, 280, 126; moved = 220, 204, 280, 216; grown = 330, 180, 346, 200 }
+$bare = @{}; foreach ($b in $bands.Keys) { $band = $bands[$b]; $bare[$b] = Get-Pixels @band }
+$changed = { param($b) $band = $bands[$b]; Get-Changed $bare[$b] (Get-Pixels @band) }
+Drag-On 200 120 300 170; Assert-Title 'a box to select' ' fps . 1 mark . markup$'
+$rectangle = Get-ChosenTool
+Click-At ($rectangle - 47) 60
+Confirm-That 'a click on the tool before the rectangle chooses select' ([math]::Abs((Get-ChosenTool) - ($rectangle - 32)) -lt 3) "the rectangle tool's right end is at $rectangle, the lit tool's now at $(Get-ChosenTool)"
+Drag-On 250 120 250 160
+Confirm-That 'a drag from the box''s top side moves it 40 down' ((& $changed 'top') -eq 0 -and (& $changed 'moved') -gt 20) "$(& $changed 'top') pixels changed where its top was, $(& $changed 'moved') where its bottom went"
+Confirm-That 'its far side is not yet past 330' ((& $changed 'grown') -eq 0) "$(& $changed 'grown') pixels changed there"
+Drag-On 304 214 344 234
+Confirm-That 'its lower right corner dragged 40 across scales it past 330' ((& $changed 'grown') -gt 20) "$(& $changed 'grown') pixels changed there"
+Assert-Title 'moved and scaled, it is still the one mark' ' fps . 1 mark . markup$'
+Send-Key 0x2E; Assert-Title 'delete takes the mark selected off' ' fps . markup$'
+Send-Key 0x5A 1 4; Assert-Title 'control + Z puts it back' ' fps . 1 mark . markup$'
+Send-Key 0x5A 3 4; Assert-Title 'and takes back the scale, the move and the box, one at a time' ' fps . markup$'
+Click-At ($rectangle - 15) 60
+Confirm-That 'the rectangle tool is chosen again' ([math]::Abs((Get-ChosenTool) - $rectangle) -lt 3) "the lit tool's right end is at $(Get-ChosenTool)"
 Drag-On 200 120 300 200; Assert-Title 'a mark again' ' fps . 1 mark . markup$'
 Send-Key 0x47; Assert-Title 'a mark sits on its frame: the next one has none' '^h264_320\.mp4 . 1 / 24 .* fps . markup$'
 Send-Key 0x46; Assert-Title 'and back on its frame, there it is' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'

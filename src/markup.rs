@@ -10,6 +10,8 @@ pub const INKS: [[u8; 3]; 4] = [[0xff, 0x3b, 0x30], [0xff, 0xd6, 0x0a], [0x32, 0
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Tool {
+    /// takes hold of a mark drawn already, to move it or scale it
+    Select,
     #[default]
     Rectangle,
     Circle,
@@ -27,8 +29,8 @@ pub enum Shape {
     /// the corners of the box it fills
     Circle(Point, Point),
     Pen(Vec<Point>),
-    /// where the text's first letter starts, at its top
-    Text(Point, String),
+    /// where the text's first letter starts, at its top; the text; and its size, 1 for the design's
+    Text(Point, String, f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,9 +46,22 @@ impl Mark {
             Tool::Rectangle => Shape::Rectangle(at, at),
             Tool::Circle => Shape::Circle(at, at),
             Tool::Pen => Shape::Pen(vec![at]),
-            Tool::Text => Shape::Text(at, String::new()),
+            // the select tool draws nothing, and starts no mark
+            Tool::Text | Tool::Select => Shape::Text(at, String::new(), 1.0),
         };
         Mark { shape, ink }
+    }
+
+    /// the mark with each of its points put through `f`: how it is moved and scaled. a text's corner goes through it
+    /// and its size stays.
+    pub fn through(&self, f: impl Fn(Point) -> Point) -> Mark {
+        let shape = match &self.shape {
+            Shape::Rectangle(a, b) => Shape::Rectangle(f(*a), f(*b)),
+            Shape::Circle(a, b) => Shape::Circle(f(*a), f(*b)),
+            Shape::Pen(points) => Shape::Pen(points.iter().map(|p| f(*p)).collect()),
+            Shape::Text(at, text, size) => Shape::Text(f(*at), text.clone(), *size),
+        };
+        Mark { shape, ink: self.ink }
     }
 
     /// the pointer, still down, has come to `at`: a shape's far corner follows it, a pen's line runs on to it.
@@ -66,17 +81,31 @@ impl Mark {
         match &self.shape {
             Shape::Pen(points) => points.len() < 3,
             Shape::Rectangle(a, b) | Shape::Circle(a, b) => ((b.0 - a.0).abs() + (b.1 - a.1).abs()) * scale < 6.0,
-            Shape::Text(_, text) => text.trim().is_empty(),
+            Shape::Text(_, text, _) => text.trim().is_empty(),
         }
     }
+}
+
+/// the larger of the two, both ways, each keeping its own sign
+fn even((a, b): (f32, f32)) -> (f32, f32) {
+    let most = a.abs().max(b.abs());
+    (most * a.signum(), most * b.signum())
 }
 
 /// the far corner of a square from `from` toward `to`: the larger of the two extents, both ways, each the way the
 /// drag went. shift keeps a box square and a circle round with it, in the window's pixels, so it is square as seen.
 pub fn square(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
-    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-    let side = dx.abs().max(dy.abs());
-    (from.0 + side * dx.signum(), from.1 + side * dy.signum())
+    let (dx, dy) = even((to.0 - from.0, to.1 - from.1));
+    (from.0 + dx, from.1 + dy)
+}
+
+/// the scale about `about` that takes `from` to `to`, each way on its own: a corner of a mark's bounds dragged. with
+/// `keep` (shift) the two are kept in proportion as `square` keeps a box: the larger, each the way it went. a way the
+/// bounds have no extent along stays as it is.
+pub fn scale_by(about: (f32, f32), from: (f32, f32), to: (f32, f32), keep: bool) -> (f32, f32) {
+    let way = |about: f32, from: f32, to: f32| if (from - about).abs() > f32::EPSILON { (to - about) / (from - about) } else { 1.0 };
+    let by = (way(about.0, from.0, to.0), way(about.1, from.1, to.1));
+    if keep { even(by) } else { by }
 }
 
 /// at the strongest a pen's line is smoothed over a bell this wide (its sigma), in the design's pixels on screen
@@ -128,36 +157,65 @@ pub fn smooth(points: &[Point], strength: f32, on_screen: impl Fn(Point) -> (f32
 
 /// the marks of one clip, by frame
 #[derive(Clone, Debug, Default)]
-pub struct Marks(BTreeMap<usize, Vec<Mark>>);
+pub struct Marks(BTreeMap<usize, Frame>);
+
+/// one frame's marks, and what they were before each change to them, the last change last
+#[derive(Clone, Debug, Default)]
+struct Frame {
+    marks: Vec<Mark>,
+    before: Vec<Vec<Mark>>,
+}
 
 impl Marks {
     /// the marks on a frame, the first drawn first
     pub fn on(&self, frame: usize) -> &[Mark] {
-        self.0.get(&frame).map_or(&[], |marks| marks)
+        self.0.get(&frame).map_or(&[], |f| &f.marks)
+    }
+
+    /// a change to a frame's marks, which undo can take back
+    fn change_to(&mut self, frame: usize, marks: Vec<Mark>) {
+        let f = self.0.entry(frame).or_default();
+        if marks != f.marks {
+            f.before.push(std::mem::replace(&mut f.marks, marks));
+        }
     }
 
     pub fn add(&mut self, frame: usize, mark: Mark) {
-        self.0.entry(frame).or_default().push(mark);
+        let mut marks = self.on(frame).to_vec();
+        marks.push(mark);
+        self.change_to(frame, marks);
     }
 
-    /// takes back the last mark drawn on a frame. false when it had none.
-    pub fn undo(&mut self, frame: usize) -> bool {
-        let Some(marks) = self.0.get_mut(&frame) else { return false };
-        marks.pop();
-        if marks.is_empty() {
-            self.0.remove(&frame);
+    /// the mark at `index` on a frame made `to` (moved, scaled, another ink, its text typed again), or taken off
+    pub fn change(&mut self, frame: usize, index: usize, to: Option<Mark>) {
+        let mut marks = self.on(frame).to_vec();
+        if index >= marks.len() {
+            return;
         }
+        match to {
+            Some(mark) => marks[index] = mark,
+            None => _ = marks.remove(index),
+        }
+        self.change_to(frame, marks);
+    }
+
+    /// takes back the last change to a frame's marks: a mark drawn, changed or taken off, or the frame cleared. false
+    /// when there was none.
+    pub fn undo(&mut self, frame: usize) -> bool {
+        let Some(f) = self.0.get_mut(&frame) else { return false };
+        let Some(was) = f.before.pop() else { return false };
+        f.marks = was;
         true
     }
 
     /// takes every mark off a frame.
     pub fn clear(&mut self, frame: usize) {
-        self.0.remove(&frame);
+        self.change_to(frame, Vec::new());
     }
 
     /// the frames that carry marks, in order: the timebar puts a tick at each.
     pub fn frames(&self) -> impl Iterator<Item = usize> + '_ {
-        self.0.keys().copied()
+        self.0.iter().filter(|(_, f)| !f.marks.is_empty()).map(|(frame, _)| *frame)
     }
 }
 
@@ -189,6 +247,13 @@ impl Placing {
         let s = (m[0] * d.0 + m[2] * d.1, m[1] * d.0 + m[3] * d.1);
         (x + s.0 * w / shown.0 as f32, y + s.1 * h / shown.1 as f32)
     }
+
+    /// `mark` changed on screen: each of its points taken to the window, through `f` there, and back to the file. a
+    /// move or a scale made with the pointer is so in the window's pixels, however the picture is turned and whatever
+    /// shape its pixels are drawn.
+    pub fn on_screen(&self, mark: &Mark, f: impl Fn((f32, f32)) -> (f32, f32)) -> Mark {
+        mark.through(|p| self.to_file(f(self.to_window(p))))
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +283,66 @@ mod tests {
         assert_eq!(marks.frames().count(), 0);
     }
 
+    /// every change to a frame's marks is a step undo takes back, the last first: a mark drawn, changed, taken off,
+    /// or the frame cleared. a change that changes nothing, or names no mark, is no step; another frame is left alone.
+    #[test]
+    fn undo_takes_back_each_change_to_a_frame_the_last_first() {
+        let mut marks = Marks::default();
+        let a = Mark::start(Tool::Rectangle, (1.0, 1.0), RED);
+        let b = Mark { shape: Shape::Text((5.0, 5.0), "b".into(), 1.0), ink: RED };
+        let white = Mark { ink: INKS[3], ..b.clone() };
+        marks.add(0, a.clone());
+        marks.add(0, b.clone());
+        marks.add(4, a.clone());
+        marks.change(0, 1, Some(white.clone()));
+        marks.change(0, 1, Some(white.clone()));
+        marks.change(0, 0, None);
+        marks.change(0, 7, None);
+        marks.clear(0);
+        assert!(marks.on(0).is_empty());
+        assert_eq!(marks.frames().collect::<Vec<_>>(), [4], "a cleared frame carries no tick");
+        for was in [vec![white.clone()], vec![a.clone(), white.clone()], vec![a.clone(), b.clone()], vec![a.clone()], vec![]] {
+            assert!(marks.undo(0));
+            assert_eq!(marks.on(0), was);
+        }
+        assert!(!marks.undo(0), "nothing more to take back");
+        assert_eq!(marks.on(4), [a]);
+    }
+
+    /// a move and a scale made on screen are so in the window's pixels, whatever the turn and the pixels' shape as
+    /// drawn: with the file turned a quarter and its pixels drawn twice as wide as high, a box moved 30 across and 12
+    /// down moves so on screen and by the turned, unevenly scaled amounts in the file, and one made twice as wide on
+    /// screen is twice as tall in the file. text keeps its size through both. a corner dragged scales each way on its
+    /// own, or with shift both by the larger, each the way it went.
+    #[test]
+    fn a_mark_moved_or_scaled_on_screen_is_so_on_screen_and_turned_in_the_file() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let place = Placing { picture: (100.0, 20.0, 320.0, 320.0), look: Look { turns: 1, ..Look::default() }, size: (64, 32) };
+        let corners = |mark: &Mark| match mark.shape {
+            Shape::Rectangle(a, b) => (a, b),
+            _ => panic!("{mark:?}"),
+        };
+        let boxed = Mark { shape: Shape::Rectangle((10.0, 5.0), (20.0, 15.0)), ink: RED };
+        let (a, b) = corners(&boxed);
+        let moved = place.on_screen(&boxed, |p| (p.0 + 30.0, p.1 + 12.0));
+        let (ma, mb) = corners(&moved);
+        for (was, now) in [(a, ma), (b, mb)] {
+            let (w, n) = (place.to_window(was), place.to_window(now));
+            assert!(close(n.0 - w.0, 30.0) && close(n.1 - w.1, 12.0), "on screen: {w:?} to {n:?}");
+            // a pixel as shown is 10 across and 5 down: 3 and 2.4 of them, across the file's height and along its width
+            assert!(close((now.0 - was.0).abs(), 2.4) && close((now.1 - was.1).abs(), 3.0), "in the file: {was:?} to {now:?}");
+        }
+        let about = place.to_window(a);
+        let (wa, wb) = corners(&place.on_screen(&boxed, |p| (about.0 + (p.0 - about.0) * 2.0, p.1)));
+        assert!(close((wb.0 - wa.0).abs(), (b.0 - a.0).abs()) && close((wb.1 - wa.1).abs(), 2.0 * (b.1 - a.1).abs()), "{wa:?} {wb:?}");
+        let text = Mark { shape: Shape::Text((3.0, 4.0), "x".into(), 1.5), ink: RED };
+        assert!(matches!(place.on_screen(&text, |p| (p.0 * 2.0, p.1 + 30.0)).shape, Shape::Text(_, _, size) if size == 1.5));
+        assert_eq!(scale_by((0.0, 0.0), (10.0, 20.0), (30.0, 10.0), false), (3.0, 0.5));
+        assert_eq!(scale_by((0.0, 0.0), (10.0, 20.0), (30.0, 10.0), true), (3.0, 3.0));
+        assert_eq!(scale_by((0.0, 0.0), (10.0, 20.0), (-30.0, 10.0), true), (-3.0, 3.0));
+        assert_eq!(scale_by((5.0, 5.0), (15.0, 5.0), (25.0, 9.0), false), (2.0, 1.0), "no extent down: as it was");
+    }
+
     #[test]
     fn a_shape_follows_the_pointer_and_a_click_is_no_mark() {
         let mut rect = Mark::start(Tool::Rectangle, (10.0, 10.0), RED);
@@ -233,7 +358,7 @@ mod tests {
         pen.reach((2.0, 1.0));
         assert_eq!(pen.shape, Shape::Pen(vec![(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)]));
         assert!(!pen.tiny(1.0));
-        assert!(Mark { shape: Shape::Text((0.0, 0.0), "  ".into()), ink: RED }.tiny(1.0));
+        assert!(Mark { shape: Shape::Text((0.0, 0.0), "  ".into(), 1.0), ink: RED }.tiny(1.0));
     }
 
     /// a pen's line is smoothed (the owner's ask, 2026-11-25). off, its points are as drawn. on, a hand's jitter goes
