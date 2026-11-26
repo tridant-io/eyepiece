@@ -2760,9 +2760,10 @@ pub(super) mod tests {
         assert_eq!(page(&ui), Some((panel::Which::Settings, 2)), "a press on playback");
         std::thread::sleep(Duration::from_millis(350));
         drive(&mut ui, &click(220.0, 87.5 + 14.0));
-        // general's first row, 102 down: a label and a note, 48.65 high, its switch at the page's right, 20 in
+        // general's first row, 102 down: a label and a note, 48.65 high, its switch at the page's right, 20 in, and on
+        // windows 11 more for the scrollbar general has there: pressed where it stands either way
         std::thread::sleep(Duration::from_millis(350));
-        let asked = drive(&mut ui, &click(924.0 - 20.0 - 13.0, 102.0 + 24.3));
+        let asked = drive(&mut ui, &click(924.0 - 20.0 - 18.5, 102.0 + 24.3));
         assert_eq!(asked, vec![Action::Settings(Box::new(Settings { play_on_open: false, ..Settings::default() }))]);
         // a press on the strip is a press outside: it closes the panel, and the next on ? opens help
         std::thread::sleep(Duration::from_millis(350));
