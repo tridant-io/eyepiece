@@ -10,7 +10,8 @@ host=$1
 profile=$2
 identity=${3:-Developer ID Application}
 cd "$(dirname "$0")/.."
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+# up to the closing quote: a checkout with windows line ends has a \r after it
+version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 out=dist/eyepiece-$version-macos.dmg
 mkdir -p dist/mac/ffmpeg
 mac() { ssh -o BatchMode=yes "$host" zsh -lc "'$1'"; }

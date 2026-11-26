@@ -17,7 +17,8 @@ run() {
   shift
   "$@" > "$work/$name.out" 2>&1 || { tail -8 "$work/$name.out"; fail "$name"; }
 }
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+# up to the closing quote: a checkout with windows line ends has a \r after it
+version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 
 case $1 in
 build)
