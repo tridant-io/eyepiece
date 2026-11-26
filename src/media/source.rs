@@ -179,6 +179,12 @@ impl<T: Send + Sync + 'static> Source<T> {
         }
     }
 
+    /// the ready frame nearest `to` that is nearer it than `shown`, if any: what a scrub can show while `to` is on
+    /// its way.
+    pub fn nearer_ready(&self, to: usize, shown: Option<usize>) -> Option<usize> {
+        nearer(self.shared.state.lock().unwrap().ready.iter().map(|r| r.0), to, shown)
+    }
+
     /// the frame if it is ready, waiting up to `patience` for it to arrive.
     pub fn get(&self, frame: usize, patience: Duration) -> Frame<T> {
         let settled = |s: &State<T>| s.ready.iter().any(|r| r.0 == frame) || s.failed.iter().any(|f| f.0 == frame);
@@ -204,6 +210,12 @@ impl<T> Drop for Source<T> {
             let _ = worker.join();
         }
     }
+}
+
+/// of `ready`, the frame nearest `to`, if it is nearer than `shown`: never one further from where the pointer asks.
+fn nearer(ready: impl Iterator<Item = usize>, to: usize, shown: Option<usize>) -> Option<usize> {
+    let best = ready.min_by_key(|r| r.abs_diff(to))?;
+    shown.is_none_or(|s| best.abs_diff(to) < s.abs_diff(to)).then_some(best)
 }
 
 fn work<L: Loader>(shared: &Shared<L::Item>, mut loader: L) {
@@ -260,6 +272,20 @@ fn work<L: Loader>(shared: &Shared<L::Item>, mut loader: L) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a fast scrub asks for a new frame every refresh, sooner than one can be read: what shows meanwhile is the ready
+    /// frame nearest the one asked for, and only when it is nearer than the one on screen
+    #[test]
+    fn a_scrub_shows_the_ready_frame_nearest_the_one_asked_for() {
+        let ready = || [10, 14, 30, 47].into_iter();
+        assert_eq!(nearer(ready(), 50, Some(10)), Some(47));
+        assert_eq!(nearer(ready(), 20, Some(10)), Some(14));
+        // nothing nearer than what is on screen: it stays
+        assert_eq!(nearer(ready(), 12, Some(11)), None);
+        assert_eq!(nearer(ready(), 30, Some(30)), None);
+        assert_eq!(nearer(ready(), 5, None), Some(10));
+        assert_eq!(nearer(std::iter::empty(), 5, Some(1)), None);
+    }
 
     /// the machine says how much memory it has: a quarter of it is what decoded frames may take.
     #[test]

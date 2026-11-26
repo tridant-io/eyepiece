@@ -172,6 +172,24 @@ impl View {
         // the frame, into the painter. Ok(false) while it is still on its way
         let loaded = self.paint.put(gpu, &self.clip, frame, patience);
         match loaded {
+            // standing still, the frame asked for moves faster than frames are read only in a scrub: the ready frame
+            // nearest it shows meanwhile, so the picture follows the pointer. the asked-for frame takes its place
+            // when it comes, and the title says "reading" until then
+            Ok(false) if !self.transport.playing() => {
+                let near = match &self.clip.lane {
+                    Lane::Hap(hap) => hap.source.nearer_ready(frame, self.shown),
+                    Lane::Video(video) => video.source.nearer_ready(frame, self.shown),
+                    Lane::Stills(stills) => stills.source.nearer_ready(frame, self.shown),
+                    Lane::Waiting(_) => None,
+                };
+                match near.map(|near| (near, self.paint.put(gpu, &self.clip, near, Duration::ZERO))) {
+                    Some((near, Ok(true))) => {
+                        self.shown = Some(near);
+                        true
+                    }
+                    _ => false,
+                }
+            }
             Ok(false) => false,
             result => {
                 self.fault = result.err();
