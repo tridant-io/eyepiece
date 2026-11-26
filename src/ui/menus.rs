@@ -163,6 +163,10 @@ fn looping(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
     if let Some(i) = widgets::segments(ui, "loop-modes", &modes.iter().map(|m| m.0).collect::<Vec<_>>(), on) {
         actions.push(Action::Loop(modes[i].1));
     }
+    // a held still has no end and start to play into each other
+    if !super::framed(model) {
+        return;
+    }
     let row = widgets::row(ui, ROW);
     let (field, typed) = widgets::field(ui, "seam-seconds", row.right_center(), &format!("{:.1}", model.seam_seconds), "s", false);
     if let Some(seconds) = typed.and_then(|t| t.parse::<f64>().ok()) {

@@ -16,13 +16,15 @@ pub const MOST_FOLDERS: usize = 10_000;
 pub const ASKED_FOR: Duration = Duration::from_secs(8);
 
 /// what a folder plays: its clips in order, how many were left out because their data is not on the disk, whether
-/// they come from its subfolders too (`deep`), and whether that walk stopped at its bound
+/// they come from its subfolders too (`deep`), whether that walk stopped at its bound, and whether its lone stills
+/// are among them, each to be held for a time (`stills`, the setting)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clips {
     pub items: Vec<PathBuf>,
     pub left_out: usize,
     pub deep: bool,
     pub cut: bool,
+    pub stills: bool,
 }
 
 impl Clips {
@@ -35,21 +37,21 @@ impl Clips {
     }
 }
 
-/// the clips of a folder alone, from its listing.
-pub fn listed(folder: &Path) -> Result<Clips, String> {
-    gather(folder, false, usize::MAX, 1)
+/// the clips of a folder alone, from its listing, with its lone stills when `stills`.
+pub fn listed(folder: &Path, stills: bool) -> Result<Clips, String> {
+    gather(folder, false, stills, usize::MAX, 1)
 }
 
 /// the clips of a folder and all its subfolders: its own in name order, then each subfolder's the same way, in name
 /// order, depth first. from folder listings alone (adr 0004), and never into a link, which can lead back up the tree.
 /// a subfolder that cannot be listed is passed over.
-pub fn walk(folder: &Path) -> Result<Clips, String> {
-    gather(folder, true, MOST_CLIPS, MOST_FOLDERS)
+pub fn walk(folder: &Path, stills: bool) -> Result<Clips, String> {
+    gather(folder, true, stills, MOST_CLIPS, MOST_FOLDERS)
 }
 
 /// `walk`, or the folder alone, stopping at `most` clips or `folders` folders listed.
-fn gather(folder: &Path, deep: bool, most: usize, folders: usize) -> Result<Clips, String> {
-    let mut clips = Clips { items: Vec::new(), left_out: 0, deep, cut: false };
+fn gather(folder: &Path, deep: bool, stills: bool, most: usize, folders: usize) -> Result<Clips, String> {
+    let mut clips = Clips { items: Vec::new(), left_out: 0, deep, cut: false, stills };
     let mut next = vec![folder.to_path_buf()];
     let mut listed = 0;
     while let Some(at) = next.pop() {
@@ -63,7 +65,7 @@ fn gather(folder: &Path, deep: bool, most: usize, folders: usize) -> Result<Clip
             Err(why) if listed == 1 => return Err(why.to_string().to_lowercase()),
             Err(_) => continue,
         };
-        let (items, away) = items(&entries);
+        let (items, away) = items(&entries, stills);
         clips.items.extend(items);
         clips.left_out += away;
         if deep {
@@ -86,12 +88,70 @@ pub fn name_in(folder: &Path, file: &Path) -> String {
 }
 
 /// the files of a folder that play, in the order its listing has them: its videos and sequences, a sequence by its
-/// first file, and not its lone stills. with them, how many were left out because their data is not on the disk:
-/// playing those would download them.
-pub fn items(entries: &[Entry]) -> (Vec<PathBuf>, usize) {
-    // a lone still has one frame and never plays to its end: play would stop on it
-    let cards = || entries.iter().filter(|e| matches!(e.kind, Kind::Sequence { .. }) || (e.kind == Kind::Clip && !browse::is_still(&e.name)));
+/// first file, and with `stills` its lone stills. with them, how many were left out because their data is not on the
+/// disk: playing those would download them.
+pub fn items(entries: &[Entry], stills: bool) -> (Vec<PathBuf>, usize) {
+    // a lone still has one frame, so play has no end to run to on it: only a `Hold` gives it one
+    let cards = || entries.iter().filter(|e| matches!(e.kind, Kind::Sequence { .. }) || (e.kind == Kind::Clip && (stills || !browse::is_still(&e.name))));
     (cards().filter(|e| !e.away).map(|e| e.path.clone()).collect(), cards().filter(|e| e.away).count())
+}
+
+/// a still of a played folder, held on screen while play runs for `length` (the setting), then handed on as a clip
+/// that played to its end is. it goes by the clock, not by refreshes: nothing is drawn for it while it holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hold {
+    pub length: Duration,
+    /// how far it had held when play last started or it was put somewhere, and since when play has run
+    before: Duration,
+    since: Option<Instant>,
+}
+
+impl Hold {
+    pub fn new(length: Duration) -> Hold {
+        Hold { length, before: Duration::ZERO, since: None }
+    }
+
+    pub fn playing(&self) -> bool {
+        self.since.is_some()
+    }
+
+    /// how far it has held at `now`: never past its length.
+    pub fn at(&self, now: Instant) -> Duration {
+        (self.before + self.since.map_or(Duration::ZERO, |since| now.saturating_duration_since(since))).min(self.length)
+    }
+
+    /// play or stand still. play started at its end starts from its beginning, as a clip's does from its last frame.
+    pub fn set_playing(&mut self, on: bool, now: Instant) {
+        if on != self.playing() {
+            let at = self.at(now);
+            self.before = if on && at >= self.length { Duration::ZERO } else { at };
+            self.since = on.then_some(now);
+        }
+    }
+
+    /// to a place in it, standing still there, as a click on a clip's timebar goes to a frame.
+    pub fn go(&mut self, to: Duration) {
+        (self.before, self.since) = (to.min(self.length), None);
+    }
+
+    /// when it ends, while play runs: the one time the loop must wake for it.
+    pub fn ends(&self) -> Option<Instant> {
+        self.since.map(|since| since + self.length.saturating_sub(self.before))
+    }
+
+    /// at its end by `now`, it goes round with `round` (the clip's loop is one) and plays on; otherwise it stands
+    /// still at its end and returns true, once, for the folder's next clip to take over.
+    pub fn end(&mut self, round: bool, now: Instant) -> bool {
+        if !self.ends().is_some_and(|end| now >= end) {
+            return false;
+        }
+        if round {
+            (self.before, self.since) = (Duration::ZERO, Some(now));
+            return false;
+        }
+        (self.before, self.since) = (self.length, None);
+        true
+    }
 }
 
 /// what is asked before a folder is played: on a network volume, once, that it means opening its clips, with how
@@ -142,8 +202,8 @@ mod tests {
         Entry { name: name.to_string(), path: Path::new("shots").join(name), kind, size: Some(1), modified: None, created: None, added: None, away, link: false }
     }
 
-    /// a folder's own clips first, then each subfolder's, in name order, depth first; a file that is no clip and a
-    /// lone still are not played. each is named by its path from the folder played.
+    /// a folder's own clips first, then each subfolder's, in name order, depth first; a file that is no clip is not
+    /// played, nor a lone still unless stills are asked for. each is named by its path from the folder played.
     #[test]
     fn a_folder_with_its_subfolders_plays_its_own_clips_then_each_subfolders_depth_first() {
         let mut s = Scratch::new("walk");
@@ -151,14 +211,18 @@ mod tests {
             s.folder(folder);
         }
         s.files(&["z_own.mov", "notes.txt", "b_dir/10.mov", "b_dir/2.mov", "b_dir/inner/c.mov", "a_dir/d.mov", "a_dir/plate.png"]);
-        let walked = walk(&s.dir).unwrap();
+        let walked = walk(&s.dir, false).unwrap();
         let names: Vec<String> = walked.items.iter().map(|file| name_in(&s.dir, file)).collect();
         assert_eq!(names, ["z_own.mov", "a_dir/d.mov", "b_dir/2.mov", "b_dir/10.mov", "b_dir/inner/c.mov"]);
-        assert!(walked.deep && !walked.cut && walked.said().is_none());
+        assert!(walked.deep && !walked.cut && !walked.stills && walked.said().is_none());
+        // with stills, the lone still is played in its place
+        let walked = walk(&s.dir, true).unwrap();
+        assert_eq!(walked.items[1..3], [s.dir.join("a_dir").join("d.mov"), s.dir.join("a_dir").join("plate.png")]);
+        assert!(walked.stills);
         // the folder alone: its own clip, and nothing of its subfolders
-        assert_eq!(listed(&s.dir).unwrap(), Clips { items: vec![s.dir.join("z_own.mov")], left_out: 0, deep: false, cut: false });
+        assert_eq!(listed(&s.dir, false).unwrap(), Clips { items: vec![s.dir.join("z_own.mov")], left_out: 0, deep: false, cut: false, stills: false });
         // a folder that cannot be listed says why
-        assert!(walk(&s.dir.join("no such")).is_err());
+        assert!(walk(&s.dir.join("no such"), false).is_err());
         // picked files are named by their own names, from the folder they are in
         assert_eq!(name_in(&s.dir.join("b_dir"), &s.dir.join("b_dir").join("2.mov")), "2.mov");
     }
@@ -171,14 +235,14 @@ mod tests {
             s.folder(folder);
         }
         s.files(&["own.mov", "a/1.mov", "a/2.mov", "b/3.mov"]);
-        let cut = gather(&s.dir, true, 2, MOST_FOLDERS).unwrap();
+        let cut = gather(&s.dir, true, false, 2, MOST_FOLDERS).unwrap();
         assert_eq!((cut.items, cut.cut), (vec![s.dir.join("own.mov"), s.dir.join("a").join("1.mov")], true));
         // two folders listed of three: b is not reached
-        let cut = gather(&s.dir, true, MOST_CLIPS, 2).unwrap();
+        let cut = gather(&s.dir, true, false, MOST_CLIPS, 2).unwrap();
         assert_eq!((cut.items.len(), cut.cut), (3, true));
-        let whole = gather(&s.dir, true, 4, 3).unwrap();
+        let whole = gather(&s.dir, true, false, 4, 3).unwrap();
         assert_eq!((whole.items.len(), whole.cut), (4, false));
-        let said = |items: usize, left_out: usize| Clips { items: vec![PathBuf::new(); items], left_out, deep: true, cut: true }.said().unwrap();
+        let said = |items: usize, left_out: usize| Clips { items: vec![PathBuf::new(); items], left_out, deep: true, cut: true, stills: false }.said().unwrap();
         assert_eq!(said(MOST_CLIPS, 0), "stopped at 2000 videos: the rest are left out");
         assert_eq!(said(12, 3), "stopped after 10000 folders: the rest are left out · 3 files are not on this disk left out");
     }
@@ -202,7 +266,7 @@ mod tests {
         s.made.push((link.clone(), cfg!(windows)));
         assert!(browse::list(&s.dir).unwrap().iter().any(|e| e.path == link && e.link), "the listing does not mark the link");
         assert!(!browse::list(&s.dir).unwrap().iter().any(|e| e.name == "real" && e.link));
-        assert_eq!(walk(&s.dir).unwrap().items, [s.dir.join("top.mov"), s.dir.join("real").join("in.mov")]);
+        assert_eq!(walk(&s.dir, false).unwrap().items, [s.dir.join("top.mov"), s.dir.join("real").join("in.mov")]);
     }
 
     /// adr 0004: through this pc's own share, which stands for a network volume, the walk is the same, from listings.
@@ -215,17 +279,63 @@ mod tests {
         let local = s.dir.to_string_lossy();
         let share = PathBuf::from(format!(r"\\localhost\{}${}", &local[..1], &local[2..]));
         assert_eq!(browse::volume_of(&share), Volume::Network);
-        assert_eq!(walk(&share).unwrap().items, [share.join("a.mov"), share.join("in").join("b.mov")]);
+        assert_eq!(walk(&share, false).unwrap().items, [share.join("a.mov"), share.join("in").join("b.mov")]);
     }
 
+    /// a folder plays its videos and sequences that are on the disk, and its lone stills when asked for (the setting
+    /// stills in a played folder)
     #[test]
     fn a_folder_plays_its_clips_that_are_on_the_disk() {
         let run = Kind::Sequence { first: 1, last: 9, missing: Vec::new(), pad: 4 };
         let entries = [entry("sub", Kind::Folder, false), entry("a.mov", Kind::Clip, false), entry("b.mov", Kind::Clip, true), entry("notes.txt", Kind::Other, false), entry("s.0001.exr", run, false), entry("plate.png", Kind::Clip, false)];
-        let (plays, left_out) = items(&entries);
+        let (plays, left_out) = items(&entries, false);
         assert_eq!(plays, [Path::new("shots").join("a.mov"), Path::new("shots").join("s.0001.exr")]);
-        // a lone still has one frame and never plays to its end: play would stop on it, so it is not in the folder
         assert_eq!(left_out, 1);
+        // with stills (the setting), the lone still plays too, in its place, and is held for a time
+        let (plays, left_out) = items(&entries, true);
+        assert_eq!(plays, [Path::new("shots").join("a.mov"), Path::new("shots").join("s.0001.exr"), Path::new("shots").join("plate.png")]);
+        assert_eq!(left_out, 1);
+        // one that is not on the disk is left out as a clip is
+        let away = [entry("plate.png", Kind::Clip, true)];
+        assert_eq!(items(&away, true), (Vec::new(), 1));
+        assert_eq!(items(&away, false), (Vec::new(), 0));
+    }
+
+    /// a still held in a played folder goes by the clock, not by refreshes: standing still it holds where it is; at
+    /// its end it goes round where its clip would loop, or stops there, once, for the next clip to take over. play
+    /// started at its end starts it again, and a place on its timebar stands it still there.
+    #[test]
+    fn a_held_still_plays_its_time_then_ends() {
+        let (t0, s) = (Instant::now(), Duration::from_secs);
+        let mut hold = Hold::new(s(5));
+        assert_eq!((hold.playing(), hold.at(t0 + s(9)), hold.ends()), (false, Duration::ZERO, None));
+        hold.set_playing(true, t0);
+        assert_eq!((hold.at(t0 + s(2)), hold.ends()), (s(2), Some(t0 + s(5))));
+        hold.set_playing(false, t0 + s(2));
+        assert_eq!((hold.at(t0 + s(60)), hold.ends()), (s(2), None));
+        // on again ten seconds in, three are left
+        hold.set_playing(true, t0 + s(10));
+        assert_eq!(hold.ends(), Some(t0 + s(13)));
+        assert!(!hold.end(false, t0 + s(12)), "ended early");
+        // loop one: round again, playing on
+        let mut round = hold;
+        assert!(!round.end(true, t0 + s(13)));
+        assert_eq!((round.playing(), round.at(t0 + s(14))), (true, s(1)));
+        // otherwise it stops at its end and says so once
+        assert!(hold.end(false, t0 + s(13)));
+        assert_eq!((hold.playing(), hold.at(t0 + s(20)), hold.ends()), (false, s(5), None));
+        assert!(!hold.end(false, t0 + s(20)));
+        hold.set_playing(true, t0 + s(30));
+        assert_eq!(hold.at(t0 + s(31)), s(1));
+        hold.go(s(4));
+        assert_eq!((hold.playing(), hold.at(t0 + s(40))), (false, s(4)));
+        hold.go(s(9));
+        assert_eq!(hold.at(t0 + s(40)), s(5));
+        // a hold shortened in the settings to less than it has run ends at once
+        hold.set_playing(true, t0 + s(50));
+        hold.length = s(2);
+        assert!(hold.end(false, t0 + s(53)));
+        assert_eq!(hold.at(t0 + s(60)), s(2));
     }
 
     #[test]

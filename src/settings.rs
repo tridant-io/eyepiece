@@ -86,6 +86,10 @@ pub struct Settings {
     pub window_size: Option<(u32, u32)>,
     /// none means the pictures folder (`shot::folder`)
     pub screenshot_folder: Option<PathBuf>,
+    /// a played folder plays its lone stills too, each held `still_seconds` while play runs (0.5 to 60); off, it plays
+    /// its videos and sequences alone
+    pub folder_stills: bool,
+    pub still_seconds: f32,
 }
 
 impl Default for Settings {
@@ -126,6 +130,8 @@ impl Default for Settings {
             cache_limit: 2.0,
             window_size: None,
             screenshot_folder: None,
+            folder_stills: false,
+            still_seconds: 5.0,
         }
     }
 }
@@ -182,7 +188,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 35] {
+    fn pairs(&self) -> [(&'static str, String); 37] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -193,6 +199,8 @@ impl Settings {
             ("loop_file", word(&LOOPS, self.loop_file)),
             ("loop_folder", word(&LOOPS, self.loop_folder)),
             ("loop_analysis_seconds", self.loop_analysis_seconds.to_string()),
+            ("folder_stills", word(&SWITCH, self.folder_stills)),
+            ("still_seconds", self.still_seconds.to_string()),
             ("volume", self.volume.to_string()),
             ("mute", word(&SWITCH, self.mute)),
             ("pin_controls", word(&SWITCH, self.pin_controls)),
@@ -239,6 +247,8 @@ impl Settings {
             "loop_file" => self.loop_file = pick(&LOOPS, v)?,
             "loop_folder" => self.loop_folder = pick(&LOOPS, v)?,
             "loop_analysis_seconds" => self.loop_analysis_seconds = number(v, 0.5, 10.0)?,
+            "folder_stills" => self.folder_stills = pick(&SWITCH, v)?,
+            "still_seconds" => self.still_seconds = number(v, 0.5, 60.0)?,
             "volume" => self.volume = number(v, 0.0, 1.0)?,
             "mute" => self.mute = pick(&SWITCH, v)?,
             "pin_controls" => self.pin_controls = pick(&SWITCH, v)?,
@@ -415,6 +425,8 @@ mod tests {
             cache_limit: 16.0,
             window_size: Some((1280, 720)),
             screenshot_folder: Some(PathBuf::from(r"\\nas\review = notes")),
+            folder_stills: true,
+            still_seconds: 2.5,
         };
         saved.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file), saved);
@@ -427,12 +439,14 @@ mod tests {
         let dir = scratch("odd");
         let file = dir.join("settings.txt");
         fs::create_dir_all(&dir).unwrap();
-        let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\nbrowser_sort = date added descending\r\n";
+        let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\nbrowser_sort = date added descending\r\nstill_seconds = 90\r\n";
         fs::write(&file, by_hand).unwrap();
         let loaded = Settings::load_from(&file);
         let defaults = Settings::default();
         assert_eq!((loaded.volume, loaded.guide_color), (0.5, [0xff, 0x88, 0x00]));
         assert_eq!((loaded.mute, loaded.tile), (defaults.mute, defaults.tile));
+        // a still is held half a second to a minute: 90 does not read
+        assert_eq!((loaded.still_seconds, defaults.still_seconds, defaults.folder_stills), (5.0, 5.0, false));
         // windows keeps no date added: there the sort stays as it was
         let added = crate::browse::Sort { by: crate::browse::By::Added, descending: true };
         assert_eq!(loaded.browser_sort, if cfg!(target_os = "macos") { added } else { defaults.browser_sort });

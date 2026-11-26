@@ -21,7 +21,7 @@ impl<V: Send + 'static> Jobs<V> {
     }
 
     /// works out `work` for `slot` on a thread of its own.
-    pub fn ask(&mut self, slot: PathBuf, work: fn(&Path) -> V) {
+    pub fn ask(&mut self, slot: PathBuf, work: impl FnOnce(&Path) -> V + Send + 'static) {
         let id = self.number(slot.clone());
         let send = self.send.clone();
         std::thread::spawn(move || {

@@ -62,6 +62,8 @@ pub(crate) struct View {
     seam_change: Option<Seam>,
     /// whether it played and the frame it was on before play was last toggled, for a double click to put back
     before_toggle: Option<(bool, usize)>,
+    /// a still that a played folder holds for a time while play runs: its one frame has no end for play to run to
+    hold: Option<folder::Hold>,
 }
 
 impl View {
@@ -73,7 +75,21 @@ impl View {
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new(clip.upright());
-        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None })
+        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None, hold: None })
+    }
+
+    /// whether play runs: through the clip's frames, or through a held still's hold.
+    fn playing(&self) -> bool {
+        self.hold.as_ref().map_or(self.transport.playing(), folder::Hold::playing)
+    }
+
+    /// starts or stops play: a held still's hold, or the transport. the loop's pace is the transport's alone: a hold
+    /// runs by the clock, and draws nothing while it does.
+    fn set_playing(&mut self, on: bool) {
+        match &mut self.hold {
+            Some(hold) => hold.set_playing(on, Instant::now()),
+            None => self.transport.set_playing(on),
+        }
     }
 
     /// looks for the clip's sound, once. stills have none. returns why, when there is sound that cannot be played.
@@ -341,7 +357,7 @@ impl View {
                 self.framing.pan((x * window.0 / 8.0, y * window.1 / 8.0), window);
                 return true;
             }
-            (Key::Space, _) => self.transport.set_playing(!self.transport.playing()),
+            (Key::Space, _) => self.set_playing(!self.playing()),
             (Key::F, false) => self.transport.step(-1),
             (Key::G, false) => self.transport.step(1),
             (Key::Left, false) => self.transport.step(-1),
@@ -390,7 +406,8 @@ impl View {
             muted: settings.mute,
             frame: self.transport.frame(),
             frames: self.clip.timeline.frames(),
-            playing: self.transport.playing(),
+            held: self.hold.map(|hold| (hold.at(Instant::now()).as_secs_f64(), hold.length.as_secs_f64())),
+            playing: self.playing(),
             rate: self.clip.timeline.rate(),
             clock: self.clip.clock,
             first: settings.first_frame,
@@ -428,12 +445,12 @@ impl View {
     fn act(&mut self, action: &Action, window: (f32, f32), settings: &mut Settings) {
         match action {
             Action::TogglePlay => {
-                self.before_toggle = Some((self.transport.playing(), self.transport.frame()));
-                self.transport.set_playing(!self.transport.playing());
+                self.before_toggle = Some((self.playing(), self.transport.frame()));
+                self.set_playing(!self.playing());
             }
             Action::PlayAsBefore => {
                 if let Some((playing, frame)) = self.before_toggle.take() {
-                    self.transport.set_playing(playing);
+                    self.set_playing(playing);
                     // a clip that stood still goes back to the frame it stood on
                     if !playing {
                         self.transport.go(frame as i64);
@@ -443,6 +460,11 @@ impl View {
             Action::Step(by) => self.transport.step(*by),
             Action::Seek(frame) => self.transport.go(*frame as i64),
             Action::SeekPlace(place) => self.transport.go_place(*place),
+            Action::Hold(seconds) => {
+                if let Some(hold) = &mut self.hold {
+                    hold.go(Duration::from_secs_f64(*seconds));
+                }
+            }
             Action::Seam(seconds) => {
                 self.transport.set_seam(*seconds);
                 // the transport holds the seconds to what it takes: keep what it kept
@@ -596,15 +618,18 @@ struct Played {
     names: Vec<String>,
     facts: Vec<Option<Result<crate::media::clip::Facts, String>>>,
     reading: Option<Receiver<(usize, Result<crate::media::clip::Facts, String>)>>,
+    /// played with its lone stills (the setting): a clip of one frame is held for a time while play runs. files picked
+    /// together are not, and play stops on a still among them, as it did before
+    holds: bool,
 }
 
 impl Played {
     /// a folder's clips, named by their paths from it, with their headers being read in the background: no reader is
     /// started for them and no frame read, so a folder of hundreds costs its headers.
-    fn new(title: String, folder: &Path, items: Vec<std::path::PathBuf>, wake: &Sender<Event>, local: bool) -> Played {
+    fn new(title: String, folder: &Path, items: Vec<std::path::PathBuf>, wake: &Sender<Event>, local: bool, holds: bool) -> Played {
         let names: Vec<String> = items.iter().map(|file| folder::name_in(folder, file)).collect();
         if !local {
-            return Played { title, folder: folder.to_path_buf(), at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: None };
+            return Played { title, folder: folder.to_path_buf(), at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: None, holds };
         }
         let (read, reading) = mpsc::channel();
         let (files, wake) = (items.clone(), wake.clone());
@@ -621,7 +646,7 @@ impl Played {
             drop(read);
             let _ = wake.send(Event::Wake);
         });
-        Played { title, folder: folder.to_path_buf(), at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading) }
+        Played { title, folder: folder.to_path_buf(), at: 0, local, names, facts: items.iter().map(|_| None).collect(), items, reading: Some(reading), holds }
     }
 }
 
@@ -769,7 +794,8 @@ fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: O
             if why != Why::Ran && same.0 && (why == Why::Changed || same.1) {
                 view.framing = old.framing.clone();
             }
-            if let Some(seconds) = old.transport.seam() {
+            // (a still has no end and start for loop analysis to play into each other)
+            if let Some(seconds) = old.transport.seam().filter(|_| view.clip.timeline.frames() > 1) {
                 view.transport.set_seam(Some(seconds));
             }
         }
@@ -1039,7 +1065,7 @@ impl Tabs {
             let_go(gone, stragglers);
         }
         let carried = self.tab().view.as_mut().map(|v| {
-            v.transport.set_playing(false);
+            v.set_playing(false);
             (v.clip.upright(), v.clip.timeline.frames(), v.transport.frame(), v.framing.clone(), v.look)
         });
         self.up = to;
@@ -1085,7 +1111,7 @@ impl Tabs {
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let local = browse::volume_of(folder) != browse::Volume::Network;
         let coming = self.open(gpu, first.to_string_lossy().into_owned(), wake, true);
-        (coming.played, coming.play) = (Some(Played::new(title, folder, files.to_vec(), wake, local)), true);
+        (coming.played, coming.play) = (Some(Played::new(title, folder, files.to_vec(), wake, local, false)), true);
     }
 
     /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player,
@@ -1117,7 +1143,7 @@ impl Tabs {
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let said = clips.said();
         let coming = self.open(gpu, first, wake, replace);
-        (coming.played, coming.play) = (Some(Played::new(title, folder, clips.items, wake, !network)), true);
+        (coming.played, coming.play) = (Some(Played::new(title, folder, clips.items, wake, !network, clips.stills)), true);
         said
     }
 
@@ -1320,10 +1346,7 @@ impl Tabs {
             }
             _ => coming.no_sound.take().map_or_else(String::new, |why| format!("no sound: {why}")),
         };
-        let goes_on = matches!(coming.why, Why::Stepped | Why::Changed) && tab.view.as_ref().is_some_and(|old| old.transport.playing());
-        if coming.play || goes_on {
-            view.transport.set_playing(true);
-        }
+        let goes_on = matches!(coming.why, Why::Stepped | Why::Changed) && tab.view.as_ref().is_some_and(View::playing);
         if coming.why == Why::Opened {
             tab.played = coming.played.take();
             // a folder's window is sized when its headers are read; where they are not read, to its first clip
@@ -1334,6 +1357,13 @@ impl Tabs {
             tab.held = 0;
         } else if let Some(played) = &mut tab.played {
             played.at = coming.item;
+        }
+        // a still of a folder played with its stills is held for a time, its clock started only now that it is up
+        if tab.played.as_ref().is_some_and(|played| played.holds) && view.clip.timeline.frames() == 1 {
+            view.hold = Some(folder::Hold::new(Duration::from_secs_f32(settings.still_seconds)));
+        }
+        if coming.play || goes_on {
+            view.set_playing(true);
         }
         (tab.facts, tab.watch) = (Some(read_facts(&coming.path, wake)), Some(Watching::start(&coming.path, wake)));
         (tab.path, tab.error) = (Some(std::mem::take(&mut coming.path)), None);
@@ -1600,12 +1630,13 @@ fn cache_bytes(settings: &Settings) -> u64 {
     (settings.cache_limit as f64 * (1u64 << 30) as f64) as u64
 }
 
-/// walks a folder and its subfolders (`folder::walk`) on a thread of its own, and wakes the player when that is done.
-fn walk_off(folder: std::path::PathBuf, wake: &Sender<Event>) -> (std::path::PathBuf, Receiver<Result<folder::Clips, String>>) {
+/// walks a folder and its subfolders (`folder::walk`, with its lone stills when `stills`) on a thread of its own, and
+/// wakes the player when that is done.
+fn walk_off(folder: std::path::PathBuf, stills: bool, wake: &Sender<Event>) -> (std::path::PathBuf, Receiver<Result<folder::Clips, String>>) {
     let (done, walked) = std::sync::mpsc::channel();
     let (at, wake) = (folder.clone(), wake.clone());
     std::thread::spawn(move || {
-        let _ = done.send(folder::walk(&at));
+        let _ = done.send(folder::walk(&at, stills));
         let _ = wake.send(Event::Wake);
     });
     (folder, walked)
@@ -1672,7 +1703,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     }
     // a folder dropped on the window, given at launch or handed over plays with its subfolders' clips (the owner's
     // word, 2026-11-26): a drop cannot ask for them. the walk is off this thread, as a big tree would hold the window
-    let mut walking = folder.map(|folder| walk_off(folder, &wake));
+    let mut walking = folder.map(|folder| walk_off(folder, settings.folder_stills, &wake));
     // more files given at launch, as an update's restart gives the files that were open: each in a tab of its own
     for path in std::env::args().skip(2) {
         tabs.open(&gpu, path, &wake, false);
@@ -1770,7 +1801,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 // a folder dropped on the window or handed over by another launch plays as a played folder, in a tab
                 // of its own as a file gets one (the owner's ask, 2026-11-24), once its walk is done
-                Event::Open(path) if Path::new(&path).is_dir() => walking = Some(walk_off(path.into(), &wake)),
+                Event::Open(path) if Path::new(&path).is_dir() => walking = Some(walk_off(path.into(), settings.folder_stills, &wake)),
                 Event::Open(path) => {
                     tabs.open(&gpu, path, &wake, false);
                 }
@@ -1893,7 +1924,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     Key::E => {
                         if let Some(v) = tabs.view() {
                             if !ui.markup() {
-                                v.transport.set_playing(false);
+                                v.set_playing(false);
                             }
                             ui.toggle_markup();
                         }
@@ -1903,7 +1934,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         let tab = tabs.tab();
                         tab.browsing = true;
                         if let Some(v) = &mut tab.view {
-                            v.transport.set_playing(false);
+                            v.set_playing(false);
                         }
                     }
                     Key::P => {
@@ -1926,8 +1957,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         };
                         tab.set_mode(mode, settings);
                     }
+                    // a still has no end and start to play into each other
                     _ => {
-                        if let Some(v) = tabs.view() {
+                        if let Some(v) = tabs.view().filter(|v| v.clip.timeline.frames() > 1) {
                             v.transport.set_seam(v.transport.seam().is_none().then_some(settings.loop_analysis_seconds as f64));
                         }
                     }
@@ -2151,13 +2183,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         ui.browse_to(&played.folder);
                         tab.browsing = true;
                         if let Some(v) = &mut tab.view {
-                            v.transport.set_playing(false);
+                            v.set_playing(false);
                         }
                     }
                 }
                 Action::PlayFiles(files) => tabs.play_files(&gpu, files, &wake),
                 Action::PlayFolder(folder) => {
-                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, folder::listed(folder), &wake, true, &mut asked_folder, "play folder") {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, folder::listed(folder, settings.folder_stills), &wake, true, &mut asked_folder, "play folder") {
                         toast = say(said);
                     }
                 }
@@ -2292,11 +2324,26 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         tabs.park(&gpu, &wake);
         again |= tabs.settle(window);
         let tab = tabs.tab();
+        let mut held_out = false;
         if let Some(v) = &mut tab.view {
             let ends = folder::clip_loop(tab.mode, tab.played.as_ref().map_or(1, |p| p.items.len()), v.transport.shuttle_rate() < 0);
             if v.transport.seam().is_none() && v.transport.loop_mode() != ends {
                 v.transport.set_loop(ends);
             }
+            // a held still holds as long as the settings say now. at its end it goes round where a clip would loop,
+            // or hands over as a clip that played to its end does
+            if let Some(hold) = &mut v.hold {
+                hold.length = Duration::from_secs_f32(settings.still_seconds);
+                held_out = hold.end(ends == crate::play::Loop::One, Instant::now());
+            }
+        }
+        if held_out {
+            tabs.advance(&gpu, &wake);
+            again = true;
+        }
+        // and it wakes the loop when its time is up, and not before: nothing is drawn for it while it holds
+        if let Some(ends) = tabs.view().and_then(|v| v.hold?.ends()) {
+            ui_due = Some(ui_due.map_or(ends, |due| due.min(ends)));
         }
         // a clip's sound is looked for once its first frame is up: opening the file again, and the output device,
         // must not hold the picture back
@@ -2497,6 +2544,27 @@ mod tests {
             seed(&mut next, why, None, Some(&old));
             assert_eq!(next.transport.frame(), frame, "{}", match why { Why::Stepped => "stepped", Why::Ran => "ran", _ => "changed" });
         }
+    }
+
+    /// a still that a played folder holds plays by its hold: play and pause go to the hold while the transport stands
+    /// still, so the loop sleeps; the controls are told how far it has held; a place on its timebar stands it there.
+    /// stepped to from a clip in loop analysis, it takes the speed and the look but not the analysis
+    #[test]
+    fn a_held_still_plays_by_its_hold_and_its_transport_stands_still() {
+        let (_gpu, mut still) = view("still_8bit.png");
+        still.hold = Some(folder::Hold::new(Duration::from_secs(5)));
+        let mut settings = Settings::default();
+        still.act(&Action::TogglePlay, (64.0, 64.0), &mut settings);
+        assert!(still.playing() && !still.transport.playing());
+        still.act(&Action::Hold(4.0), (64.0, 64.0), &mut settings);
+        let model = still.model((64.0, 64.0), None, &settings, Facts::Reading, "", (settings::Loop::All, true));
+        assert_eq!((model.held, model.playing), (Some((4.0, 5.0)), false));
+        still.key(Key::Space, Mods::default(), None, (64.0, 64.0));
+        assert!(still.playing() && !still.transport.playing(), "space plays the hold");
+        let (_gpu, mut old) = view("hap_64.mov");
+        old.transport.set_seam(Some(1.0));
+        seed(&mut still, Why::Stepped, None, Some(&old));
+        assert!(still.transport.seam().is_none());
     }
 
     /// the pixel readout gives the file's pixel, whatever the window shows: each one read back matches ffmpeg's

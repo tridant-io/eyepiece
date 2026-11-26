@@ -278,10 +278,11 @@ impl Browser {
     }
 
     /// draws the browser over `area`. returns what was chosen, by key or by pointer. `new_tab`: the settings open a
-    /// file from here in a tab of its own, so the right-click menu offers this tab as the other place.
-    pub fn draw(&mut self, ui: &mut egui::Ui, area: Rect, new_tab: bool) -> Option<Chosen> {
+    /// file from here in a tab of its own, so the right-click menu offers this tab as the other place. `stills`: they
+    /// play a folder's lone stills with its clips.
+    pub fn draw(&mut self, ui: &mut egui::Ui, area: Rect, new_tab: bool, stills: bool) -> Option<Chosen> {
         let state = self.state();
-        state.new_tab = new_tab;
+        (state.new_tab, state.stills) = (new_tab, stills);
         state.draw(ui, area)
     }
 }
@@ -374,8 +375,9 @@ struct State {
     menu_rect: Rect,
     /// a path the menu copied, for the clipboard
     copied: Option<String>,
-    /// the settings open a file from here in a tab of its own
+    /// the settings open a file from here in a tab of its own; and play a folder's lone stills with its clips
     new_tab: bool,
+    stills: bool,
 }
 
 /// what the right-click menu is on
@@ -632,6 +634,7 @@ impl State {
             menu_rect: Rect::NOTHING,
             copied: None,
             new_tab: false,
+            stills: false,
         }
     }
 
@@ -680,11 +683,11 @@ impl State {
         let mut folders = self.nav.shown_in_main().to_vec();
         // not `deep`: the player's ask then names play folder, which is what is there to press again, and a walk
         // of the folder kept from before is told from these
-        let mut clips = Clips { items: Vec::new(), left_out: 0, deep: false, cut: false };
+        let mut clips = Clips { items: Vec::new(), left_out: 0, deep: false, cut: false, stills: self.stills };
         let by_name = |a: &PathBuf, b: &PathBuf| browse::natural_cmp(&browse::name_of(a), &browse::name_of(b));
         folders.sort_by(by_name);
         for folder in &folders {
-            let (mut items, away) = folder::items(self.nav.entries(folder));
+            let (mut items, away) = folder::items(self.nav.entries(folder), self.stills);
             items.sort_by(by_name);
             clips.items.extend(items);
             clips.left_out += away;
@@ -954,7 +957,8 @@ impl State {
                 Some((_, clips, _)) => self.choose(Chosen::PlayTree(to, Ok(clips))),
                 None => {
                     self.walks.keep_only(|_| false);
-                    self.walks.ask(to, folder::walk);
+                    let stills = self.stills;
+                    self.walks.ask(to, move |at| folder::walk(at, stills));
                 }
             },
             Click::Read(file) => {
@@ -2899,7 +2903,7 @@ mod tests {
             let mut raw = egui::RawInput { time: Some(time), screen_rect: Some(area), ..Default::default() };
             raw.events = events;
             let mut out = ctx.run_ui(raw, |ui| {
-                browser.draw(ui, ui.max_rect(), false);
+                browser.draw(ui, ui.max_rect(), false, false);
             });
             out.textures_delta.clear();
             time += 0.05;
@@ -3132,7 +3136,7 @@ mod tests {
             let raw = egui::RawInput { time: Some(self.time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(self.wide, 700.0))), events, ..Default::default() };
             let browser = &mut self.browser;
             let mut out = self.ctx.run_ui(raw, |ui| {
-                browser.draw(ui, ui.max_rect(), false);
+                browser.draw(ui, ui.max_rect(), false, false);
             });
             out.textures_delta.clear();
             out
@@ -3523,7 +3527,7 @@ mod tests {
             let raw = egui::RawInput { time: Some(self.time), screen_rect: Some(Real::AREA), events, ..Default::default() };
             let browser = &mut self.browser;
             let mut out = self.ctx.run_ui(raw, |ui| {
-                browser.draw(ui, ui.max_rect(), false);
+                browser.draw(ui, ui.max_rect(), false, false);
             });
             out.textures_delta.clear();
             out
@@ -3727,7 +3731,7 @@ mod tests {
         real.press("reel_b", false, true);
         assert_eq!(play(&mut real), counted, "asked for again, another list played than the one counted");
         // a walk of the folder they are in, counted and kept, is not theirs to play
-        let walk = Clips { items: vec![top.join("c_own.mov")], left_out: 0, deep: true, cut: false };
+        let walk = Clips { items: vec![top.join("c_own.mov")], left_out: 0, deep: true, cut: false, stills: false };
         real.browser.state().walked = Some((top.clone(), walk, Instant::now()));
         assert_eq!(play(&mut real).0.len(), 4, "the picked folders played a walk's clips");
     }

@@ -1225,6 +1225,24 @@ foreach ($made in (Join-Path $within 'hap_64.mov'), (Join-Path $within 'hapq_64.
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
+# ---- stills in a played folder (the owner's ask, 2026-11-26): with the setting on, a folder's lone still is one of
+# its clips, held for the seconds set while play runs, and play then goes on as at a clip's end. the still is first by
+# name, and with the loop off play stops on the clip after it, the folder's last
+$held = Join-Path $env:APPDATA 'held'
+New-Item -ItemType Directory $held | Out-Null
+Copy-Item -LiteralPath (Join-Path $media 'still_8bit.png') -Destination (Join-Path $held 'a_still.png')
+Copy-Item -LiteralPath (Join-Path $media 'hapq_64.mov') -Destination (Join-Path $held 'b_clip.mov')
+Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA", 'loop_folder = off', 'folder_stills = on', 'still_seconds = 3'
+Start-Player $held
+# a held still's transport stands still, only its hold runs, so the title follows it while it plays
+Assert-Title 'with stills on, a played folder''s lone still is one of its clips, and plays' '^a_still\.png . 0 / 1 . .* . loop off . clip 1 of 2$'
+Assert-Title 'held its seconds, play goes on to the next clip, and stops at its end' '^b_clip\.mov . 2 / 3 . .* . loop off . clip 2 of 2( . \d+ held at cuts)?$'
+Stop-Player
+# the folder's two copies, then the folder, each named before it goes. nothing recursive
+foreach ($made in (Join-Path $held 'a_still.png'), (Join-Path $held 'b_clip.mov'), $held) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
 # the pictures the browser made, each named before it goes, then the folders made for them. nothing recursive
 if (Test-Path -LiteralPath $previews) {
     foreach ($made in @(Get-ChildItem -LiteralPath $previews -File)) { Write-Host "removing $($made.FullName)"; Remove-Item -LiteralPath $made.FullName }

@@ -280,7 +280,7 @@ impl Ui {
             }
             2 => {
                 (s.loop_file, s.loop_folder, s.loop_analysis_seconds, s.timecode) = (d.loop_file, d.loop_folder, d.loop_analysis_seconds, d.timecode);
-                (s.first_frame, s.volume, s.mute) = (d.first_frame, d.volume, d.mute);
+                (s.first_frame, s.volume, s.mute, s.folder_stills, s.still_seconds) = (d.first_frame, d.volume, d.mute, d.folder_stills, d.still_seconds);
             }
             3 => {
                 (s.background, s.chroma, s.grid, s.tile, s.center, s.guide_color) = (d.background, d.chroma, d.grid, d.tile, d.center, d.guide_color);
@@ -421,6 +421,10 @@ fn playback(ui: &mut egui::Ui, s: &mut Settings) {
     }
     if let Some(to) = typed(rows.row(ui, "seam", "loop analysis", words("seconds each side of the seam, 0.5 to 10"), &[Part::Field(format!("{:.1}", s.loop_analysis_seconds), "s", 46.0, number)])) {
         s.loop_analysis_seconds = to.clamp(0.5, 10.0);
+    }
+    toggle(rows.row(ui, "folder-stills", "play stills in a played folder", words("off: a folder plays its videos and sequences alone"), &[Part::Switch(s.folder_stills)]), &mut s.folder_stills);
+    if let Some(to) = typed(rows.row(ui, "still-seconds", "hold a still for", words("seconds before play goes on, 0.5 to 60"), &[Part::Field(format!("{:.1}", s.still_seconds), "s", 46.0, number)])) {
+        s.still_seconds = to.clamp(0.5, 60.0);
     }
     rows.group(ui, "readout");
     if let Some((_, Got::Chose(i))) = rows.row(ui, "count", "count in", words("T, or a click on the readout, switches it in a tab"), &[Part::Choices(&["frames", "timecode"], Some(s.timecode as usize))]) {

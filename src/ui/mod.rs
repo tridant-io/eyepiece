@@ -233,6 +233,8 @@ pub struct ListItem<'a> {
 pub struct Model<'a> {
     pub frame: usize,
     pub frames: usize,
+    /// a still that a played folder holds for a time: how far it has held, and for how long it holds, in seconds
+    pub held: Option<(f64, f64)>,
     pub playing: bool,
     /// frames a second as the file's own ratio, when it has one rate
     pub rate: Option<(i64, i64)>,
@@ -307,6 +309,8 @@ pub enum Action {
     Seek(usize),
     /// loop analysis: to this place in its round
     SeekPlace(usize),
+    /// a held still: to this many seconds into its hold
+    Hold(f64),
     Loop(Loop),
     /// loop analysis on, with this many seconds each side of the seam, or off
     Seam(Option<f64>),
@@ -931,7 +935,7 @@ impl Ui {
                         self.browser.away();
                         message(ui, body, words, "")
                     }
-                    (None, None) => match self.browser.draw(ui, body, screen.settings.browser_opens_in == crate::settings::Opens::NewTab) {
+                    (None, None) => match self.browser.draw(ui, body, screen.settings.browser_opens_in == crate::settings::Opens::NewTab, screen.settings.folder_stills) {
                         Some(browser::Chosen::Open(path)) => actions.push(Action::Open(path)),
                         Some(browser::Chosen::OpenIn(path, new_tab)) => actions.push(Action::OpenIn(path, new_tab)),
                         Some(browser::Chosen::Reveal(path)) => actions.push(Action::Reveal(path)),
@@ -1076,10 +1080,13 @@ impl Ui {
         // clip another tab or a page key brought up, the loop mode, the frame a step landed on
         let seen = (screen.current, screen.tabs[screen.current].to_string(), model.frame, model.looping);
         if let Some(was) = self.flash_seen.replace(seen.clone()).filter(|was| *was != seen && !self.shown) {
-            let rate = model.rate.map_or_else(String::new, |(n, d)| if d == 1 { n.to_string() } else { format!("{n}/{d}") });
             let said = if (was.0, &was.1) != (seen.0, &seen.1) {
-                let size = format!(" · {} × {} · ", model.shown_size.0, model.shown_size.1);
-                Some((vec![(seen.1.clone(), FG), (size, DIM), (rate, FG), (" fps".to_string(), DIM)], 2.0))
+                let mut parts = vec![(seen.1.clone(), FG), (format!(" · {} × {}", model.shown_size.0, model.shown_size.1), DIM)];
+                // a still, or a clip of no one rate, has none to say
+                if let Some((n, d)) = model.rate {
+                    parts.extend([(" · ".to_string(), DIM), (if d == 1 { n.to_string() } else { format!("{n}/{d}") }, FG), (" fps".to_string(), DIM)]);
+                }
+                Some((parts, 2.0))
             } else if was.3 != seen.3 {
                 let mode = match seen.3 {
                     Loop::Off => "loop off",
@@ -1129,7 +1136,7 @@ impl Ui {
             if opened {
                 self.commands_find.clear();
             }
-            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !timed(model));
+            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !framed(model), model.held.is_some());
             self.commands_rect = drawn;
             if let Some((key, mods)) = chosen {
                 actions.push(Action::Key(key, mods));
@@ -1602,9 +1609,10 @@ impl Ui {
         }
         self.hint(&pin, Some((if self.pinned { "let the controls go" } else { "keep the controls up" }.to_string(), String::new())));
         // a still has no time: no steps, no play, no readout, no loop, speed or sound, only what looks at the
-        // picture (the owner's word, 2026-11-26)
-        let timed = timed(model);
-        if timed {
+        // picture (the owner's word, 2026-11-26). one a played folder holds for a time has play, its seconds and the
+        // loop back, and still no frames to step through
+        let (framed, timed) = (framed(model), timed(model));
+        if framed {
             let first = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "first", Icon::First, Lit::No);
             if first.clicked() {
                 actions.push(Action::Key(Key::F, keys::SHIFT));
@@ -1615,11 +1623,15 @@ impl Ui {
                 actions.push(Action::Step(-1));
             }
             self.hint(&prev, keys::named(Key::F, keys::NONE));
-            let play = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
+        }
+        if timed {
+            let play = icon_button(ui, place(if framed { 0.0 } else { 8.0 }, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
             if play.clicked() {
                 actions.push(Action::TogglePlay);
             }
             self.hint(&play, keys::named(Key::Space, keys::NONE));
+        }
+        if framed {
             let next = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No);
             if next.clicked() {
                 actions.push(Action::Step(1));
@@ -1645,7 +1657,7 @@ impl Ui {
         self.hint(&full, keys::named(Key::P, keys::NONE));
         // sound: the button mutes, and shows when nothing is to be heard. its slider comes out to its left while
         // the pointer is on either, or holds the slider. plain, like everything on the bar
-        if timed {
+        if framed {
             let button = place(ICON_BUTTON.x, ICON_BUTTON.y);
             let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
             let mute = icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No);
@@ -1741,9 +1753,12 @@ impl Ui {
             (Menu::Loop, "loop", Some(Icon::Loop), looping, keys::named(Key::R, keys::NONE)),
         ]
         .into_iter()
-        // a still has the zoom alone
-        .take(if timed { 3 } else { 1 })
-        {
+        // a still has the zoom alone, and a held one the loop too
+        .filter(|(menu, ..)| match menu {
+            Menu::Speed => framed,
+            Menu::Loop => timed,
+            _ => true,
+        }) {
             let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
             let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
             let button = text_button(ui, rect, name, icon, galley, self.menu == Some(menu));
@@ -1752,14 +1767,19 @@ impl Ui {
             }
             self.hint(&button, tip);
         }
-        // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
+        // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two. a
+        // held still's is in seconds, with nothing to switch to
         if let Some(galley) = fitted_readout(&painter, model, self.timecode, right - readout_at).filter(|_| timed) {
             let rect = Rect::from_min_size(Pos2::new(readout_at, middle - TEXT_BUTTON / 2.0), Vec2::new(galley.size().x + 2.0 * PAD, TEXT_BUTTON));
-            let switch = text_button(ui, rect, "readout", None, galley, false);
-            if switch.clicked() {
-                self.toggle_timecode();
+            if framed {
+                let switch = text_button(ui, rect, "readout", None, galley, false);
+                if switch.clicked() {
+                    self.toggle_timecode();
+                }
+                self.hint(&switch, keys::named(Key::T, keys::NONE));
+            } else {
+                painter.galley(Pos2::new(rect.left() + PAD, text_top(&painter, font(MONO_MEDIUM, 11.5), rect.center().y)), galley, FG);
             }
-            self.hint(&switch, keys::named(Key::T, keys::NONE));
         }
 
         if timed {
@@ -1824,17 +1844,23 @@ impl Ui {
             Some((place, length)) => (place, length.saturating_sub(1).max(1) as f32),
             None => (model.frame, model.frames.saturating_sub(1).max(1) as f32),
         };
-        let stop_at = |x: f32| (((x - area.left()) / area.width()).clamp(0.0, 1.0) * last).round() as usize;
+        let along = |x: f32| ((x - area.left()) / area.width()).clamp(0.0, 1.0);
+        let stop_at = |x: f32| (along(x) * last).round() as usize;
         let scrubbing = response.is_pointer_button_down_on();
         let thick = ui.ctx().animate_bool_with_time(ui.scope_id().with("thick"), response.hovered() || scrubbing, 0.1);
         let height = TRACK_THIN + (TRACK_THICK - TRACK_THIN) * thick;
         let track = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - height), area.max);
-        let head = area.left() + area.width() * (at as f32 / last).min(1.0);
+        let head = area.left() + area.width() * model.held.map_or(at as f32 / last, |(held, of)| (held / of) as f32).min(1.0);
         painter.rect_filled(track, 0.0, TRACK);
         painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(head, track.bottom())), 0.0, FILL);
+        if let (Some((_, of)), true) = (model.held, model.playing) {
+            // a held still's head is drawn again when it has moved a pixel, or its readout a tenth: no oftener
+            let pixel = of / (area.width() * ui.ctx().pixels_per_point()) as f64;
+            ui.ctx().request_repaint_after(Duration::from_secs_f64(pixel.min(0.1)));
+        }
         if model.seam.is_some() {
             painter.rect_filled(Rect::from_min_max(Pos2::new(area.center().x - 0.5, track.top() - 9.0), Pos2::new(area.center().x + 0.5, track.bottom())), 0.0, Color32::WHITE);
-        } else {
+        } else if model.held.is_none() {
             // a sequence's missing frames: amber, the color of a fault in the file
             for gap in model.gaps {
                 let x = area.left() + area.width() * (*gap as f32 / last).min(1.0);
@@ -1846,18 +1872,29 @@ impl Ui {
         }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
 
-        // a drag follows the pointer; a click goes there too, even one that came and went within a single pass
+        // a drag follows the pointer; a click goes there too, even one that came and went within a single pass. along a
+        // held still's hold it goes in seconds
         if let Some(p) = response.interact_pointer_pos().filter(|_| scrubbing || response.clicked()) {
-            let to = stop_at(p.x);
-            if to != at {
-                actions.push(if model.seam.is_some() { Action::SeekPlace(to) } else { Action::Seek(to) });
+            match model.held {
+                Some((held, of)) => {
+                    let to = along(p.x) as f64 * of;
+                    if (to - held).abs() > 1e-3 {
+                        actions.push(Action::Hold(to));
+                    }
+                }
+                None => {
+                    let to = stop_at(p.x);
+                    if to != at {
+                        actions.push(if model.seam.is_some() { Action::SeekPlace(to) } else { Action::Seek(to) });
+                    }
+                }
             }
         }
         // the frame under the pointer: its number, and over it the picture nearest it of those had, which is at once
         // one of the clip's timebar strip and then the frame itself, or the key frame nearest it, once the spare
         // reader has read that. the design's box (fig. 04): its line, then the picture 160 by 90 two in from it and the
-        // number in the 20 under the picture
-        self.time_hover = response.hover_pos().filter(|_| model.seam.is_none()).map(|p| stop_at(p.x));
+        // number in the 20 under the picture. a held still has one frame, and no box
+        self.time_hover = response.hover_pos().filter(|_| model.seam.is_none() && model.held.is_none()).map(|p| stop_at(p.x));
         if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
             let nearest = self.time_strip.iter().chain(&self.time_read).min_by_key(|(of, ..)| of.abs_diff(frame));
             if let Some((of, size, pixels)) = nearest.filter(|(of, ..)| self.time_picture.as_ref().is_none_or(|(shown, _)| shown != of)) {
@@ -1987,9 +2024,15 @@ fn row_middle(bar: Rect, timed: bool) -> f32 {
     (bar.top() + 1.0 + bar.bottom() - if timed { TRACK_THIN } else { 0.0 }) / 2.0
 }
 
-/// a clip of more than one frame has time to go through, and a timebar for it; a still has neither
-fn timed(model: &Model) -> bool {
+/// a clip of more than one frame has frames to step through; a still has one
+fn framed(model: &Model) -> bool {
     model.frames > 1
+}
+
+/// time to go through, and a timebar for it: a clip's frames, or the seconds a played folder holds a still for. a
+/// still opened alone has neither
+fn timed(model: &Model) -> bool {
+    framed(model) || model.held.is_some()
 }
 
 /// the bar's height: its top line, the row of controls, and the timebar under them when there is one
@@ -2110,13 +2153,20 @@ fn fitted_readout(painter: &egui::Painter, model: &Model, timecode: bool, room: 
 }
 
 /// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and with `total`, the total
-/// in dim.
+/// in dim. a held still's is its seconds, "0:03.2 / 0:05.0", with no label and no frame.
 fn readout(model: &Model, timecode: bool, total: bool) -> LayoutJob {
+    let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
+    let mut job = LayoutJob::default();
+    if let Some((held, of)) = model.held {
+        job.append(&clock_of(held), 0.0, text(11.5, FG, 11.5 * 0.02));
+        if total {
+            job.append(&format!(" / {}", clock_of(of)), 0.0, text(11.5, DIM, 11.5 * 0.02));
+        }
+        return job;
+    }
     let (label, at) = stamp(model.frame, model.first, model.clock, timecode);
     // the total is a count and a length of time: neither starts where the clip's own numbers do
     let total = Some(stamp(model.frames, 0, model.clock.map(|clock| Timecode { start: 0, ..clock }), timecode).1).filter(|_| total);
-    let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
-    let mut job = LayoutJob::default();
     // the label is smaller than the numbers: set on their foot it sat low, so it is centered on their row
     job.append(label, 0.0, TextFormat { valign: egui::Align::Center, ..text(9.5, DIM, 9.5 * 0.12) });
     job.append(&at, 2.0 + 7.0, text(11.5, FG, 11.5 * 0.02));
@@ -2124,6 +2174,14 @@ fn readout(model: &Model, timecode: bool, total: bool) -> LayoutJob {
         job.append(&format!(" / {total}"), 0.0, text(11.5, DIM, 11.5 * 0.02));
     }
     job
+}
+
+/// seconds as a held still's readout says them: minutes, seconds and tenths, "0:03.2". a tenth is shown once it has
+/// gone by
+fn clock_of(seconds: f64) -> String {
+    // (the nudge keeps 0.3 from reading as 0.2999…)
+    let tenths = (seconds * 10.0 + 1e-6).floor() as u64;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
 }
 
 /// a frame as the readout names it: "F" and its number, counted from `first`, or "TC" and what the clip's clock
@@ -2284,6 +2342,7 @@ pub(super) mod tests {
         Model {
             frame: 0,
             frames: 3,
+            held: None,
             playing: false,
             rate: Some((60, 1)),
             clock: Some(Timecode::counted(60)),
@@ -2707,15 +2766,73 @@ pub(super) mod tests {
     #[test]
     fn over_a_still_the_right_click_menu_has_nothing_of_time() {
         for (frames, wanted) in [(3, Action::Key(Key::F, keys::NONE)), (1, Action::Key(Key::C, keys::CTRL))] {
-            let mut ui = Ui::new((900, 700), 1.0, false, None, None);
-            drive_with(&mut ui, Model { frames, ..model() }, &right_click(100.0, 60.0));
-            for c in "frame".chars() {
-                ui.char(c);
-            }
-            drive_with(&mut ui, Model { frames, ..model() }, &[(5.0, 5.0, None)]);
-            ui.key(Key::Enter, keys::NONE);
-            assert_eq!(drive_with(&mut ui, Model { frames, ..model() }, &[(5.0, 5.0, None)]), vec![wanted]);
+            assert_eq!(found_in_menu(|| Model { frames, ..model() }, "frame"), vec![wanted]);
         }
+    }
+
+    /// what enter runs in the right-click menu over the clip `model` tells of, once `typed` is typed in its field
+    fn found_in_menu(model: impl Fn() -> Model<'static>, typed: &str) -> Vec<Action> {
+        let mut ui = Ui::new((900, 700), 1.0, false, None, None);
+        drive_with(&mut ui, model(), &right_click(100.0, 60.0));
+        for c in typed.chars() {
+            ui.char(c);
+        }
+        drive_with(&mut ui, model(), &[(5.0, 5.0, None)]);
+        ui.key(Key::Enter, keys::NONE);
+        drive_with(&mut ui, model(), &[(5.0, 5.0, None)])
+    }
+
+    /// a still that a played folder holds for a time has back what goes with time, as a clip's bar has it (the lead's
+    /// call on the owner's ask, 2026-11-26): play and pause, 8 after the pin; a timebar of the hold, along which a
+    /// click goes in seconds and nothing asks for a frame; its place in seconds; and the loop. no steps, speed, sound
+    /// or frame readout. the bar is as tall as a clip's
+    #[test]
+    fn a_held_stills_bar_has_play_its_seconds_and_the_loop() {
+        let held = || Model { frames: 1, held: Some((3.25, 5.0)), ..model() };
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        assert_eq!(drive_with(&mut ui, held(), &click(PAD + ICON_BUTTON.x + GAP + 8.0 + ICON_BUTTON.x / 2.0, 333.0)), vec![Action::TogglePlay]);
+        // where a clip has its play button a held still has its readout, which switches nothing
+        assert_eq!(drive_with(&mut ui, held(), &click(127.0, 333.0)), vec![]);
+        // (the press and the release each go there: the model here stays where it was)
+        let along = drive_with(&mut ui, held(), &click(320.0, 357.0));
+        assert!(!along.is_empty() && along.iter().all(|a| *a == Action::Hold(2.5)), "{along:?}");
+        assert_eq!(ui.time_hover, None);
+        // what opens along the right: the loop and the zoom, never the speed
+        let mut menus = Vec::new();
+        for x in (300..640).step_by(4) {
+            drive_with(&mut ui, held(), &click(x as f32, 333.0));
+            menus.extend(ui.menu.take());
+        }
+        assert!(menus.contains(&Menu::Loop) && menus.contains(&Menu::Zoom) && !menus.contains(&Menu::Speed));
+        // its readout: seconds and tenths, held and of the hold, and no frame number
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let text = fitted_readout(ui.painter(), &held(), false, 1000.0).map(|g| g.text().to_string());
+            assert_eq!(text.as_deref(), Some("0:03.2 / 0:05.0"));
+            assert_eq!((clock_of(0.0), clock_of(0.3), clock_of(59.99), clock_of(60.0)), ("0:00.0".to_string(), "0:00.3".to_string(), "0:59.9".to_string(), "1:00.0".to_string()));
+        });
+        out.textures_delta.clear();
+        // and its right-click menu has play and the loop of what has to do with time, as its bar does
+        assert_eq!(found_in_menu(held, "play"), vec![Action::Key(Key::Space, keys::NONE)]);
+        assert_eq!(found_in_menu(held, "loop"), vec![Action::Key(Key::R, keys::NONE)]);
+        assert_eq!(found_in_menu(held, "next frame"), vec![]);
+        assert_eq!(found_in_menu(held, "faster"), vec![]);
+    }
+
+    /// a clip that comes up with the controls away names itself, its size and its rate (fig. 09); a still has no
+    /// rate, and says none
+    #[test]
+    fn a_still_that_comes_up_names_no_rate() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let screen = |tab: &'static str, frames| Screen { tabs: vec![tab], current: 0, places: Vec::new(), clip: Some(Model { frames, rate: (frames > 1).then_some((60, 1)), ..model() }), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS };
+        let said = |ui: &mut Ui, tab, frames| {
+            ui.run(&screen(tab, frames)).textures.clear();
+            ui.flash.as_ref().map(|(parts, _)| parts.iter().map(|(words, _)| words.as_str()).collect::<String>())
+        };
+        said(&mut ui, "a.mov", 3);
+        assert_eq!(said(&mut ui, "plate.png", 1).as_deref(), Some("plate.png · 64 × 64"));
+        assert_eq!(said(&mut ui, "b.mov", 3).as_deref(), Some("b.mov · 64 × 64 · 60 fps"));
     }
 
     /// a right click and the passes after it, at one place

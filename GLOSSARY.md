@@ -29,7 +29,7 @@ the small frames of the clip on screen made ready for the timebar's picture, onc
 _Avoid_: strip alone (that is the row of tabs), hover previews (those are a card's), thumbnails, filmstrip
 
 **played folder**:
-the clips of one folder that a tab plays one after another, in name order; played with its subfolders, then each subfolder's in name order, depth first. the loop mode all goes round it.
+the clips of one folder that a tab plays one after another, in name order; played with its subfolders, then each subfolder's in name order, depth first. the loop mode all goes round it. with the setting on, its lone stills are among its clips, each held for a set time while play runs (a held still).
 _Avoid_: playlist, queue, bin
 
 **kept frames**:
