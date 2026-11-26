@@ -348,6 +348,8 @@ struct State {
     dropdown: Option<Dropdown>,
     sort: Sort,
     tip: Option<(egui::Id, f64)>,
+    /// the folder last listed in the main area holds videos to play one after another: open folder is a button
+    plays: bool,
     /// the videos picked together with shift or control, when there are more than the one selected; and the one a
     /// run picked with shift starts from
     picked: Vec<PathBuf>,
@@ -606,6 +608,7 @@ impl State {
             dropdown: None,
             sort: Sort::default(),
             tip: None,
+            plays: false,
             picked: Vec::new(),
             anchor: None,
             held: (false, false),
@@ -1070,8 +1073,8 @@ impl State {
         }
         // at its right, where nothing comes and goes: what is shown of a folder and how it is sorted, as icons with
         // their lists under them (the owner's ask, 2026-11-25: as words they would take the address's room), and open
-        // folder where the folder holds more than one video. (as "play folder" it stood at the main area's right, and
-        // jumped away when the metadata column came in: the owner saw it flash, 2026-11-24.)
+        // folder. (as "play folder" it stood at the main area's right, and jumped away when the metadata column came
+        // in: the owner saw it flash, 2026-11-24.)
         let (view, sort) = right_buttons(rect);
         let shown = VIEWS.into_iter().find(|(to, ..)| *to == self.nav.view).unwrap_or(VIEWS[0]);
         let mut hint = None;
@@ -1087,21 +1090,27 @@ impl State {
         if let Some(list) = self.dropdown {
             self.dropdown_list(ui, list, if list == Dropdown::View { view } else { sort }, clicks);
         }
-        let mut right = sort.left() - 6.0;
-        if self.nav.cards().nth(1).is_some() {
-            let label = painter.layout_no_wrap("open folder".to_string(), font(SANS, 12.0), FG);
-            let keys = painter.layout_no_wrap("shift + enter".to_string(), font(MONO_MEDIUM, 9.5), DIM);
-            let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
-            let play = Rect::from_min_size(Pos2::new(right - size.x, middle - size.y / 2.0), size);
-            if button(ui, &painter, play, "brw-play", label, false) {
-                clicks.push((Click::PlayFolder(self.nav.main().folder.clone()), None));
-            }
-            let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
-            painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
-            painter.galley(Pos2::new(cap.center().x - keys.size().x / 2.0, top_of(&painter, &keys, cap.center().y)), keys, DIM);
-            right = play.left() - 6.0;
+        // open folder is always there, in its one place: coming and going with what each folder holds, it flashed as
+        // folders were gone through (the owner's word, 2026-11-26). it is dim, and no button, where the folder shown
+        // has fewer than two videos to play one after another; while a folder's listing is on its way it stays as
+        // it was for the one before
+        if self.nav.listings.contains_key(&self.nav.main().folder) {
+            self.plays = self.nav.cards().nth(1).is_some();
         }
-        let (left, room) = (left + 6.0, right - 8.0 - left - 6.0);
+        let label = painter.layout_no_wrap("open folder".to_string(), font(SANS, 12.0), if self.plays { FG } else { ROW_DIM });
+        let keys = painter.layout_no_wrap("shift + enter".to_string(), font(MONO_MEDIUM, 9.5), DIM);
+        let size = Vec2::new(1.0 + 9.0 + label.size().x + 6.0 + keys.size().x + 8.0 + 9.0 + 1.0, 27.5);
+        let play = Rect::from_min_size(Pos2::new(sort.left() - 6.0 - size.x, middle - size.y / 2.0), size);
+        if !self.plays {
+            painter.rect_stroke(play, 0.0, (1.0, LINE), StrokeKind::Inside);
+            painter.galley(Pos2::new(play.left() + 1.0 + 9.0, top_of(&painter, &label, middle)), label, ROW_DIM);
+        } else if button(ui, &painter, play, "brw-play", label, false) {
+            clicks.push((Click::PlayFolder(self.nav.main().folder.clone()), None));
+        }
+        let cap = Rect::from_min_size(Pos2::new(play.right() - 10.0 - keys.size().x - 8.0, middle - 6.75), Vec2::new(keys.size().x + 8.0, 13.5));
+        painter.rect_stroke(cap, 3.0, (1.0, LINE), StrokeKind::Inside);
+        painter.galley(Pos2::new(cap.center().x - keys.size().x / 2.0, top_of(&painter, &keys, cap.center().y)), keys, DIM);
+        let (left, room) = (left + 6.0, play.left() - 6.0 - 8.0 - left - 6.0);
         if self.address.is_some() {
             self.address_field(ui, Rect::from_min_size(Pos2::new(left - 8.0, middle - 13.75), Vec2::new(room + 16.0, 27.5)), clicks);
         } else {
@@ -2403,6 +2412,66 @@ mod tests {
         assert_eq!(state.address, Some(gone.to_string_lossy().into_owned()));
     }
 
+    /// "open folder" stands in one place and does not flash as folders are gone through (the owner's word,
+    /// 2026-11-26): it is drawn in every pass of a switch from one folder to another, where it was and as bright,
+    /// while the new folder's listing is on its way too. in a folder with fewer than two videos it is still there,
+    /// dim, and a press on it plays nothing.
+    #[cfg(windows)]
+    #[test]
+    fn open_folder_stays_put_and_steady_as_folders_are_gone_through() {
+        let mut made = Scratch(Vec::new());
+        let top = made.folder(std::env::temp_dir().join(format!("eyepiece-steady-{}", std::process::id())));
+        let (one, two, none) = (made.folder(top.join("one")), made.folder(top.join("two")), made.folder(top.join("none")));
+        for file in [one.join("a.mov"), one.join("b.mov"), two.join("c.mov"), two.join("d.mov")] {
+            made.file(file);
+        }
+        let mut state = State::new(Some(one.clone()), Vec::new(), None);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut time = 0.0;
+        // a pass: where "open folder" is written, and in what color
+        let mut pass = |state: &mut State, events: Vec<egui::Event>| {
+            time += 1.0 / 60.0;
+            let raw = egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), events, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                state.draw(ui, ui.max_rect());
+            });
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "open folder" => Some((t.pos, t.galley.job.sections[0].format.color)),
+                _ => None,
+            })
+        };
+        // goes to a folder, and says what every pass drew until its listing was in and a few more
+        let mut go = |state: &mut State, to: &Path| {
+            state.click(Click::Go(to.to_path_buf()));
+            let mut drew = Vec::new();
+            for _ in 0..400 {
+                drew.push(pass(state, Vec::new()));
+                if state.nav.listings.contains_key(to) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(state.nav.listings.contains_key(to), "the folder was not listed");
+            drew.extend((0..5).map(|_| pass(state, Vec::new())));
+            drew
+        };
+        let first = go(&mut state, &one).last().copied().flatten().expect("open folder, in a folder of two videos");
+        assert_eq!(first.1, FG);
+        let switch = go(&mut state, &two);
+        assert!(switch.len() > 6 && switch.iter().all(|drew| *drew == Some(first)), "from a folder of two videos to another, open folder was drawn as {switch:?}, not as {first:?} throughout");
+        // a folder with no video: there all the same, dim once the folder is listed and not before
+        let switch = go(&mut state, &none);
+        assert!(switch.iter().all(|drew| drew.is_some_and(|(at, _)| at == first.0)), "open folder moved or went: {switch:?}");
+        assert_eq!((switch[0], switch.last().copied().flatten()), (Some(first), Some((first.0, ROW_DIM))), "bright while the listing is on its way, dim once it shows no video");
+        let at = first.0 + Vec2::new(10.0, 5.0);
+        for events in [vec![egui::Event::PointerMoved(at)], vec![held(at, egui::PointerButton::Primary, true)], vec![held(at, egui::PointerButton::Primary, false)]] {
+            pass(&mut state, events);
+        }
+        assert!(state.chosen.is_none(), "a press on it while dim played something");
+    }
+
     /// an edge dragged resizes its part, each folder column alone, so the edge stays under the pointer; a double click
     /// on an edge puts it back. the widths keep within what keeps every part usable.
     #[test]
@@ -2446,7 +2515,10 @@ mod tests {
         let texts: Vec<(String, Rect)> = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t.galley.text().to_string(), Rect::from_min_size(t.pos, t.galley.size()).intersect(s.clip_rect))) } else { None }).collect();
         let under: Vec<&String> = texts.iter().filter(|(_, r)| r.intersect(view).is_positive() || r.intersect(sort).is_positive()).map(|(t, _)| t).collect();
         assert!(under.is_empty(), "drawn under the buttons: {under:?}");
-        assert!(texts.iter().any(|(t, _)| t.contains('…') && t.ends_with("terrane")), "the folder's name, cut in its middle: {texts:?}");
+        // in the room open folder leaves it, which is always there
+        let (name, cut) = texts.iter().find(|(t, _)| t.contains('…') && t.starts_with("a-re") && t.ends_with("rrane")).unwrap_or_else(|| panic!("the folder's name, cut in its middle: {texts:?}"));
+        let play = texts.iter().find(|(t, _)| t == "open folder").expect("open folder is drawn").1;
+        assert!(cut.right() < play.left(), "{name} runs under open folder");
     }
 
     /// at the address's right end, the view and the sort are icons side by side, each narrower than the words the
