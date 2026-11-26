@@ -294,6 +294,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\notices.ps1 -Check
 
 ## releases and updates
 
+before a release, the readme is brought up to date with what it ships, and its screenshots are retaken (below, "the readme's screenshots"), in the release commit or before it.
+
 a release is cut from the installer with `scripts\release.ps1`. it writes `dist\eyepiece-release.txt`, the release manifest (adr 0007): the version from Cargo.toml, the day, a line for each change in the notes file, and the installer, `dist\eyepiece-<version>-windows-setup.exe`, with its size and sha-256 (adr 0008). with `-Publish` it makes the release `v<version>` on github with `gh`: the installer and the manifest as its assets, and the notes as its text. it refuses first if the installer is not signed. `-Mac` adds the mac's disk image as one more asset, as it is, kept out of the manifest. no library or text file is an asset of a release: they are inside the installer.
 
 ```powershell
@@ -304,6 +306,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release.ps1 -Notes n
 ```
 
 what the player checks (`src/update`): it reads the manifest of the latest release, `releases/latest/download/eyepiece-release.txt`, and offers only a greater version, compared number by number, whose manifest names its installer. it downloads the installer into `%LOCALAPPDATA%\eyepiece\update\<version>`, checking its size and sha-256 as it lands; one that fails is set aside there as `<name>.failed` (its next failure replaces it), and one already there whole is not downloaded again. before it runs, it is checked again from the disk, and taken only when windows trusts its signature and its signer is the running program's (the certificate's subject and its root; nothing is fetched to decide it). from that check the player holds it open for reading only, starts it with `/SILENT /NORESTART /update=<its pid>` and the files open now in `EYEPIECE_REOPEN`, and closes. the installer waits for that player to end (up to 30 s), installs with its progress on screen, and starts the new build on those files. a build that is not signed itself (a developer build) checks but never updates itself. nothing is sent but the requests, as `eyepiece/<version>`. `EYEPIECE_UPDATE_FROM` (as `http://127.0.0.1:39417/`) reads releases from a folder served by hand, laid out as github's (`latest/download/eyepiece-release.txt`, `download/v<version>/<file>`), with every check as it is; plain http is taken only from 127.0.0.1 (a port outside windows' reserved 8085 to 8184). tried end to end on the dev machine on 2026-11-25, once, with two signed builds: 0.3.0 installed by its installer, very silently, in 5 s; 0.3.1's manifest and installer (40.6 MB) served from 127.0.0.1; update pressed in 0.3.0, open on two clips, by posted messages. 0.3.0 had ended 1.5 s after the press, and 0.3.1's window was up 4.8 s after that, one process, installed byte for byte, on the same two clips (one named with a space and an é). none of it has run against a real github release: the repo is private and adr 0005 holds public downloads. on macOS only the check is written, and it has been neither compiled nor run there.
+
+## the readme's screenshots
+
+the pictures in `docs\images` are the player's own window, each from a player of its own (`scripts\shot.ps1`: its own settings, instance and mute, sized to 1280 × 720, driven by posted keys and pointer, saved with PrintWindow; the screen is never copied). they are of the demo footage: four free 4K sources (credited in the readme) cut to six-second excerpts, without their sound, by `scripts\footage.ps1`, put on `X:` so every path the player shows is `X:\...` and nothing of the pc that took them.
+
+```powershell
+# once: the demo footage (about 2.4 GB, read over https from nasa, esa/webb and eso), then a drive for it
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\footage.ps1 -Root C:\eyepiece-demo
+subst X: C:\eyepiece-demo
+# every release: all of them from the release build, or -Only hero,browser for some
+cargo build --release
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\shots.ps1
+```
+
+each player window opens on the screen for a few seconds. the browser's picture is cut clear of its sidebar, which lists the pc's own pinned folders. the steps are pointer places in a 1280 × 720 window: when the controls move, a shot that clicks them has to be told where they went. look at every picture before it is committed.
 
 ## the gates (phase 0)
 
