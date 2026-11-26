@@ -1928,10 +1928,15 @@ impl Ui {
                 job.append(&words, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 10.5), color, ..Default::default() });
             }
             let galley = painter.layout_job(job);
-            // (wider than the design's when its line is: a timecode outside the trim)
+            // as wide as its widest line wherever the pointer is, so it never jumps at the trim's edge (wider than the
+            // design's when that line is: a timecode outside the trim)
+            let widest = trimmed(model).map_or(galley.size().x, |(_, kept)| {
+                let number = stamp(frame, model.first, model.clock, self.timecode).1;
+                [format!("{number} · outside the trim"), format!("{number} · {kept} of {kept}")].into_iter().map(|line| painter.layout_no_wrap(line, font(MONO_MEDIUM, 10.5), FG).size().x).fold(0.0, f32::max)
+            });
             let size = match &self.time_picture {
-                Some(_) => Vec2::new((galley.size().x + 8.0).max(164.0), 3.0 + 90.0 + 20.0 + 1.0),
-                None => galley.size() + Vec2::new(16.0, 10.0),
+                Some(_) => Vec2::new((widest + 8.0).max(164.0), 3.0 + 90.0 + 20.0 + 1.0),
+                None => Vec2::new(widest + 16.0, galley.size().y + 10.0),
             };
             let left = (p.x - size.x / 2.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0);
             let rect = Rect::from_min_size(Pos2::new(left, over - 7.0 - size.y), size);

@@ -227,8 +227,8 @@ on a Mac, command does what control does.
 | | shift+S | screenshot of the view |
 | | ctrl+C | copy frame |
 | | E | markup mode |
-| | ctrl+Z | take back a change to the marks |
-| | ctrl+shift+Z · ctrl+Y | bring back a change taken back |
+| | ctrl+Z | undo a change to marks |
+| | ctrl+shift+Z · ctrl+Y | redo a change to marks |
 | | delete · backspace | take off the selected mark (backspace is 1× speed when none is selected) |
 | **sound** | M | mute |
 | | ↑ · ↓ | volume up / down |

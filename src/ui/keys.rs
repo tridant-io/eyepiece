@@ -137,8 +137,8 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("screenshot", "screenshot of the view", "shift S", Key::S, SHIFT),
             menu_only("copy frame", "ctrl C", Key::C, CTRL),
             both("markup", "markup mode", "E", Key::E, NONE),
-            menu_only("take back a change to the marks", "ctrl Z", Key::Z, CTRL),
-            menu_only("bring back a change taken back", "ctrl shift Z", Key::Z, CTRL_SHIFT),
+            menu_only("undo a change to marks", "ctrl Z", Key::Z, CTRL),
+            menu_only("redo a change to marks", "ctrl shift Z", Key::Z, CTRL_SHIFT),
         ],
     ),
     (
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(rows.len(), 55);
         assert_eq!(named(Key::BracketLeft, SHIFT), Some(("set in".to_string(), "shift [".to_string())));
         assert_eq!(named(Key::Backspace, SHIFT), Some(("clear in and out".to_string(), "shift backspace".to_string())));
-        assert_eq!(named(Key::Z, CTRL_SHIFT), Some(("bring back a change taken back".to_string(), "ctrl shift Z".to_string())));
+        assert_eq!(named(Key::Z, CTRL_SHIFT), Some(("redo a change to marks".to_string(), "ctrl shift Z".to_string())));
         for (name, key, send) in rows {
             assert_eq!(shown(send), key, "{name}");
             assert_eq!(named(send.0, send.1), Some((name.to_string(), key.to_string())));
@@ -406,8 +406,10 @@ mod tests {
                 if let Some(name) = c.name {
                     let name_wide = ui.painter().layout_no_wrap(name.to_string(), font(SANS, 12.0), FG).size().x;
                     let cap_wide = ui.painter().layout_no_wrap(c.key.to_string(), font(MONO_MEDIUM, 10.0), DIM).size().x + 10.0;
-                    // the menu's border and padding are 26, the row's insets 6 each side, and 12 at least between
-                    assert!(6.0 + name_wide + 12.0 + cap_wide + 6.0 <= MENU_WIDTH - 26.0, "{name} with {} does not fit", c.key);
+                    // a row is one of the menu's two columns: the menu's border and padding are 26 and the columns are
+                    // MENU_GAP apart; the row's insets are 6 each side, and 12 at least between the name and its key
+                    let column = (MENU_WIDTH - 26.0 - MENU_GAP) / 2.0;
+                    assert!(6.0 + name_wide + 12.0 + cap_wide + 6.0 <= column, "{name} with {} does not fit: {}", c.key, 6.0 + name_wide + 12.0 + cap_wide + 6.0);
                 }
             }
         });
