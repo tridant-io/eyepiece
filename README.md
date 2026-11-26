@@ -124,7 +124,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
 - the screenshot menu can add a caption, the guides and the markup.
 - screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one. the note that says where has **reveal in explorer** (finder on macOS), and stays up while the pointer is on it.
-- **markup:** **E** pauses and shows the tools: rectangle, circle, pen, text and four inks. in a text field, **enter** keeps and **esc** drops. **ctrl+Z** takes back a mark. marks stay on their frame until the tab closes.
+- **markup:** **E** pauses and shows the tools: rectangle, circle, pen, text and four inks. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. in a text field, **enter** keeps and **esc** drops. **ctrl+Z** takes back a mark. marks stay on their frame until the tab closes.
 
 ![markup on a frame: rectangle, circle, text and the tools](docs/images/markup.png)
 

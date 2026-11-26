@@ -380,6 +380,12 @@ define_class!(
             }
         }
 
+        // shift, option, control or command went down or came up: shift keeps a box being drawn square, at once
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            send(Event::Held(mods(event)));
+        }
+
         #[unsafe(method(setFrameSize:))]
         fn set_frame_size(&self, size: NSSize) {
             let _: () = unsafe { msg_send![super(self), setFrameSize: size] };

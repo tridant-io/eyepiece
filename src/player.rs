@@ -1750,6 +1750,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     ui.set_held(mods);
                     ui.pointer_button(button, down, x, y);
                 }
+                Event::Held(mods) => ui.keys_held(mods),
                 Event::PointerLeave => {
                     pointer = None;
                     ui.pointer_leave();

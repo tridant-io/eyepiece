@@ -44,6 +44,17 @@ public static class EyepiecePicture {
       return n;
     }
   }
+  // the colors of a part of the window's picture area, row by row, so a later look can tell what changed there
+  public static int[] Pixels(IntPtr h, int x0, int y0, int x1, int y1) {
+    Rect c; GetClientRect(h, out c);
+    using (var bmp = new Bitmap(c.R, c.B)) {
+      using (var g = Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 3); g.ReleaseHdc(dc); }
+      var all = new System.Collections.Generic.List<int>();
+      for (int y = Math.Max(0, y0); y < Math.Min(c.B, y1); y++)
+        for (int x = Math.Max(0, x0); x < Math.Min(c.R, x1); x++) all.Add(bmp.GetPixel(x, y).ToArgb());
+      return all.ToArray();
+    }
+  }
   // the first row from the top with a pixel of bright text between x0 and x1, or -1
   public static int FirstBright(IntPtr h, int x0, int y0, int x1, int y1) {
     Rect c; GetClientRect(h, out c);
@@ -114,6 +125,12 @@ function Get-Bright([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]
     $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
     [EyepiecePicture]::Bright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16), $Any.IsPresent)
 }
+# the colors between two corners of the window, in the design's pixels, and how many of them differ between two looks
+function Get-Pixels([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
+    $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
+    , [EyepiecePicture]::Pixels($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16))
+}
+function Get-Changed([int[]]$before, [int[]]$after) { @(0..($before.Count - 1) | Where-Object { $before[$_] -ne $after[$_] }).Count }
 # the first line of bright text from the top between two corners, in the design's pixels, or -1
 function Get-FirstBright([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
     $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
@@ -562,12 +579,19 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
 # the picture draws a rectangle on the frame on screen, and control + Z takes it back. the screenshot menu's three
 # switches put the marks, the guides and a caption into a saved frame, and are kept between runs
 Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA", "screenshot_folder = $shots"
-# a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other
-function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
+# a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other.
+# -Shift presses shift halfway, as a key of its own with no scan code (1 is shift held), and lets it go after the
+# release; the messages after it carry it, as the system's do (4 is shift)
+function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]$Shift) {
+    $held = 0
     Move-Pointer $x0 $y0
     [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]0x8001, (Get-Place $x0 $y0)); Start-Sleep -Milliseconds 100
-    foreach ($t in 0.25, 0.5, 0.75, 1) { [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0x8001, (Get-Place ($x0 + ($x1 - $x0) * $t) ($y0 + ($y1 - $y0) * $t))); Start-Sleep -Milliseconds 100 }
-    [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr]0x8000, (Get-Place $x1 $y1)); Start-Sleep -Milliseconds 300
+    foreach ($t in 0.25, 0.5, 0.75, 1) {
+        [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr](0x8001 -bor $held), (Get-Place ($x0 + ($x1 - $x0) * $t) ($y0 + ($y1 - $y0) * $t))); Start-Sleep -Milliseconds 100
+        if ($Shift -and $t -eq 0.5) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]0x10, [IntPtr]1); $held = 4; Start-Sleep -Milliseconds 100 }
+    }
+    [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr](0x8000 -bor $held), (Get-Place $x1 $y1)); Start-Sleep -Milliseconds 300
+    if ($Shift) { [void][EyepieceE2e]::PostMessage($script:h, 0x101, [IntPtr]0x10, [IntPtr]0); Start-Sleep -Milliseconds 100 }
 }
 # a png's color type, from its header: 2 is red, green and blue; 6 is with alpha
 function Get-PngColor([string]$file) { [IO.File]::ReadAllBytes($file)[25] }
@@ -580,6 +604,18 @@ Send-Key 0x45; Assert-Title 'E turns markup mode on, and the title says so' ' fp
 Drag-On 200 120 300 200
 Assert-Title 'a drag on the picture draws a mark on the frame' ' fps . 1 mark . markup$'
 Send-Key 0x5A 1 4; Assert-Title 'control + Z takes it back' ' fps . markup$'
+# shift keeps a box square as the window shows it, pressed in the middle of the drag: a drag 100 across and 50 down
+# draws its far side 100 down, in a band the plain drag leaves alone
+$band = 220, 212, 280, 228
+$untouched = Get-Pixels @band
+Drag-On 200 120 300 170
+$drawn = Get-Pixels @band
+Confirm-That 'without shift the box is as the drag went' ((Get-Changed $untouched $drawn) -eq 0) "$(Get-Changed $untouched $drawn) pixels changed 100 down"
+Send-Key 0x5A 1 4
+Drag-On 200 120 300 170 -Shift
+$drawn = Get-Pixels @band
+Confirm-That 'with shift held it is square: its far side is as far down as across' ((Get-Changed $untouched $drawn) -gt 20) "$(Get-Changed $untouched $drawn) pixels changed 100 down"
+Send-Key 0x5A 1 4; Assert-Title 'and control + Z takes that back' ' fps . markup$'
 Drag-On 200 120 300 200; Assert-Title 'a mark again' ' fps . 1 mark . markup$'
 Send-Key 0x47; Assert-Title 'a mark sits on its frame: the next one has none' '^h264_320\.mp4 . 1 / 24 .* fps . markup$'
 Send-Key 0x46; Assert-Title 'and back on its frame, there it is' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'

@@ -586,7 +586,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     if (*shared).posted {
         let theirs = match msg {
             WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_XBUTTONDOWN => wp.0 & POSTED != 0,
-            WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR => (lp.0 >> 16) & 0xff == 0,
+            WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_CHAR => (lp.0 >> 16) & 0xff == 0,
             _ => true,
         };
         if !theirs {
@@ -594,6 +594,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
     }
     match msg {
+        // shift or control going down or up is no key pressed, but what is held changes: shift keeps a box being
+        // drawn square, at once. a posted one says what is held after it in its own low bits, as a posted key does
+        WM_KEYDOWN | WM_KEYUP if matches!(wp.0, 0x10 | 0x11) => {
+            send(Event::Held(if (*shared).posted { Mods { shift: lp.0 & 1 != 0, alt: lp.0 & 2 != 0, ctrl: lp.0 & 4 != 0 } } else { mods() }));
+            LRESULT(0)
+        }
         WM_KEYDOWN => {
             if let Some(key) = key(wp.0 as u16) {
                 // a posted key says what is held with it in its own low bits

@@ -71,6 +71,14 @@ impl Mark {
     }
 }
 
+/// the far corner of a square from `from` toward `to`: the larger of the two extents, both ways, each the way the
+/// drag went. shift keeps a box square and a circle round with it, in the window's pixels, so it is square as seen.
+pub fn square(from: (f32, f32), to: (f32, f32)) -> (f32, f32) {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let side = dx.abs().max(dy.abs());
+    (from.0 + side * dx.signum(), from.1 + side * dy.signum())
+}
+
 /// the marks of one clip, by frame
 #[derive(Clone, Debug, Default)]
 pub struct Marks(BTreeMap<usize, Vec<Mark>>);

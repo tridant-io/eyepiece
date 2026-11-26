@@ -81,6 +81,8 @@ pub enum Event {
     PointerMove { x: f32, y: f32 },
     /// `mods`: the keys held with the press
     PointerButton { button: Button, down: bool, x: f32, y: f32, mods: Mods },
+    /// shift or control went down or came up: what is held now
+    Held(Mods),
     /// the pointer left the window
     PointerLeave,
     /// the picture area changed size, in physical pixels

@@ -6,7 +6,7 @@ use super::icons::{self, Icon};
 use super::widgets::{CHOSEN, ON_CHOSEN};
 use super::{font, keys, text_top, Action, Model, Shot, Ui, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID};
 use crate::event::Key;
-use crate::markup::{Mark, Marks, Placing, Point, Shape, Tool, INKS};
+use crate::markup::{square, Mark, Marks, Placing, Point, Shape, Tool, INKS};
 use crate::timecode::Timecode;
 use crate::view::Guides;
 use egui::text::LayoutJob;
@@ -51,6 +51,8 @@ pub(super) struct Markup {
     writing: Option<Writing>,
     /// where the row of tools was drawn last: the controls stay up while the pointer is on it
     pub(super) row: Option<Rect>,
+    /// shift is held: a box or a circle being drawn is kept as wide as it is high on screen
+    pub(super) shift: bool,
 }
 
 /// text being typed: the frame and the place in the file it goes on, where its field stands, and what is typed so far
@@ -111,7 +113,12 @@ impl Markup {
             }
         }
         if let (Some((_, mark)), Some(at)) = (&mut self.drawing, picture.interact_pointer_pos()) {
-            mark.reach(file(at));
+            let mut at = (at.x * scale, at.y * scale);
+            // squared in the window, from where its first corner is there now, so it is square as it is seen
+            if let (true, Shape::Rectangle(from, _) | Shape::Circle(from, _)) = (self.shift, &mark.shape) {
+                at = square(place.to_window(*from), at);
+            }
+            mark.reach(place.to_file(at));
         }
         if picture.drag_stopped() {
             // how many of the design's pixels one of the file's takes on screen
@@ -371,6 +378,7 @@ mod tests {
     use super::*;
     use crate::event::Button::{self, Left};
     use crate::event::Mods;
+    use crate::view::Look;
 
     type Step = (f32, f32, Option<(Button, bool)>);
 
@@ -410,6 +418,70 @@ mod tests {
                 _ => panic!("markup on, overflowing {overflows}: {marked:?}"),
             }
         }
+    }
+
+    /// shift keeps a box square and a circle round (the owner's ask, 2026-11-25): the larger of the drag's two
+    /// extents both ways, toward where the drag went. without it the drag is drawn as it went.
+    #[test]
+    fn shift_keeps_a_box_square_and_a_circle_round() {
+        let from = (300.0, 180.0);
+        for tool in [Tool::Rectangle, Tool::Circle] {
+            for (dx, dy) in [(60.0, 24.0), (-60.0, 24.0), (60.0, -24.0), (-24.0, -60.0)] {
+                let to = (from.0 + dx, from.1 + dy);
+                for shift in [false, true] {
+                    let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+                    ui.toggle_markup();
+                    ui.markup.tool = tool;
+                    ui.keys_held(Mods { shift, ..Mods::default() });
+                    let kept = drive(&mut ui, &drag(from, to));
+                    let side = dx.abs().max(dy.abs());
+                    let want = if shift { (from.0 + side * dx.signum(), from.1 + side * dy.signum()) } else { to };
+                    let shape = match &kept[..] {
+                        [Action::Mark(0, mark)] => &mark.shape,
+                        _ => panic!("{tool:?} shift {shift} to {to:?}: {kept:?}"),
+                    };
+                    let (Shape::Rectangle(a, b) | Shape::Circle(a, b)) = shape else { panic!("{shape:?}") };
+                    assert_eq!(matches!(shape, Shape::Circle(..)), tool == Tool::Circle);
+                    assert!(near(*a, file(from)) && near(*b, file(want)), "{tool:?} shift {shift} to {to:?}: {shape:?}, wanted the far corner at {:?}", file(want));
+                }
+            }
+        }
+    }
+
+    /// shift is read in every pass, so pressing it or letting it go in the middle of a drag changes the box at once,
+    /// the pointer still; the mark kept is the one last shown. square is square on screen: with the picture turned a
+    /// quarter and the file's pixels drawn twice as wide as high, the box is as wide as high in the window, not in the
+    /// file.
+    #[test]
+    fn shift_is_read_as_it_changes_and_square_is_square_on_screen() {
+        // a 64 x 32 file turned a quarter: 32 x 64 as shown, in 360 x 360, so a pixel is 11.25 across and 5.625 down
+        let turned = Look { turns: 1, ..Look::default() };
+        let clip = || Model { shown_size: (32, 64), turned, ..model() };
+        let place = Placing { picture: clip().picture, look: turned, size: (64, 32) };
+        let (from, to) = ((250.0, 150.0), (330.0, 180.0));
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        let corners = |ui: &Ui| match &ui.markup.drawing {
+            Some((_, Mark { shape: Shape::Rectangle(a, b), .. })) => (place.to_window(*a), place.to_window(*b)),
+            other => panic!("drawing {other:?}"),
+        };
+        let mut steps = drag(from, to);
+        let release = steps.split_off(4);
+        drive_with(&mut ui, clip(), &steps);
+        ui.keys_held(Mods { shift: true, ..Mods::default() });
+        drive_with(&mut ui, clip(), &[(to.0, to.1, None)]);
+        let (a, b) = corners(&ui);
+        assert!((a.0 - from.0).abs() < 1e-3 && (a.1 - from.1).abs() < 1e-3, "the box starts where the drag did: {a:?}");
+        assert!((b.0 - a.0 - 80.0).abs() < 1e-3 && (b.1 - a.1 - 80.0).abs() < 1e-3, "square in the window as shift goes down: {a:?} to {b:?}");
+        ui.keys_held(Mods::default());
+        drive_with(&mut ui, clip(), &[(to.0, to.1, None)]);
+        let (_, b) = corners(&ui);
+        assert!((b.0 - to.0).abs() < 1e-3 && (b.1 - to.1).abs() < 1e-3, "back with the pointer as it comes up: {b:?}");
+        ui.keys_held(Mods { shift: true, ..Mods::default() });
+        drive_with(&mut ui, clip(), &[(to.0, to.1, None)]);
+        let shown = ui.markup.drawing.clone().map(|(_, mark)| mark);
+        let kept = drive_with(&mut ui, clip(), &release);
+        assert_eq!(kept, vec![Action::Mark(0, shown.expect("a box being drawn"))]);
     }
 
     /// the pointer is a cross where a drag would draw: on the picture in markup mode, not on the row of tools or the

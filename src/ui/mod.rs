@@ -664,6 +664,12 @@ impl Ui {
     pub fn set_held(&mut self, mods: Mods) {
         self.held = egui::Modifiers { alt: mods.alt, ctrl: mods.ctrl, shift: mods.shift, mac_cmd: false, command: mods.ctrl };
         self.browser.set_held(mods.shift, mods.ctrl);
+        self.keys_held(mods);
+    }
+
+    /// what is held now, as it changes between presses: shift keeps a box being drawn square.
+    pub fn keys_held(&mut self, mods: Mods) {
+        self.markup.shift = mods.shift;
     }
 
     pub fn pointer_button(&mut self, button: crate::event::Button, down: bool, x: f32, y: f32) {
