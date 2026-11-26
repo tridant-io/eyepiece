@@ -618,8 +618,8 @@ struct Played {
     names: Vec<String>,
     facts: Vec<Option<Result<crate::media::clip::Facts, String>>>,
     reading: Option<Receiver<(usize, Result<crate::media::clip::Facts, String>)>>,
-    /// played with its lone stills (the setting): a clip of one frame is held for a time while play runs. files picked
-    /// together are not, and play stops on a still among them, as it did before
+    /// played with its lone stills (the setting), or picked by hand: a clip of one frame is held for a time while play
+    /// runs. a still picked by hand was asked for, so it holds whatever the setting says
     holds: bool,
 }
 
@@ -1111,7 +1111,7 @@ impl Tabs {
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let local = browse::volume_of(folder) != browse::Volume::Network;
         let coming = self.open(gpu, first.to_string_lossy().into_owned(), wake, true);
-        (coming.played, coming.play) = (Some(Played::new(title, folder, files.to_vec(), wake, local, false)), true);
+        (coming.played, coming.play) = (Some(Played::new(title, folder, files.to_vec(), wake, local, true)), true);
     }
 
     /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player,

@@ -128,7 +128,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - nothing jumps at a cut: the window is sized once and the next clip is ready.
 - **play with subfolders** (right-click a folder, or **ctrl+shift+enter**) plays its own clips, then each subfolder's, depth first. the list names each by its path from the folder. it stops at 2000 videos or 10000 folders, and says so.
 - a folder dropped on the window, or given to eyepiece at launch, plays with its subfolders the same way.
-- **stills:** a played folder plays its videos and sequences. turn on settings > playback > **play stills in a played folder** and its lone stills play too, in name order with the rest: each holds for 5 seconds while play runs (**hold a still for** sets 0.5 to 60), then play goes on as at a clip's end. paused, a still stays. files picked together in the browser are not held: play stops on a still among them.
+- **stills:** a played folder plays its videos and sequences. turn on settings > playback > **play stills in a played folder** and its lone stills play too, in name order with the rest: each holds for 5 seconds while play runs (**hold a still for** sets 0.5 to 60), then play goes on as at a clip's end. paused, a still stays. a still among files picked together in the browser holds the same way, whatever the setting.
 
 ---
 
