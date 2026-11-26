@@ -100,6 +100,9 @@ pub struct Nav {
     pub path: Vec<Column>,
     /// the last folder on the path is only shown, not entered: it has no column
     pub previewing: bool,
+    /// the folders picked together in the path's last column, in its order, when there are more than one: the main
+    /// area shows the videos of them all, and none of them has a column of its own (the owner's ask, 2026-11-26)
+    pub together: Vec<PathBuf>,
     pub focus: Focus,
     /// what the path is on
     pub volume: Volume,
@@ -123,6 +126,7 @@ impl Nav {
         Nav {
             path: columns(&root, folder),
             previewing: false,
+            together: Vec::new(),
             focus: Focus::Columns,
             volume: browse::volume_of(&root),
             view: View::Both,
@@ -140,6 +144,7 @@ impl Nav {
     pub fn go(&mut self, folder: &Path, places: &[PathBuf]) {
         let root = root_of(folder, places);
         (self.path, self.previewing, self.focus) = (columns(&root, folder), false, Focus::Columns);
+        self.together.clear();
         self.volume = browse::volume_of(&root);
     }
 
@@ -242,19 +247,37 @@ impl Nav {
         self.entries(&column.folder).iter().find(|e| &e.path == path)
     }
 
-    /// the main area's cards
+    /// the folders whose videos the main area shows: the one shown, or the ones picked together
+    pub fn shown_in_main(&self) -> &[PathBuf] {
+        if self.together.is_empty() { std::slice::from_ref(&self.main().folder) } else { &self.together }
+    }
+
+    /// the main area's cards: of folders picked together, one folder's after another's
     pub fn cards(&self) -> impl Iterator<Item = &Entry> {
-        self.entries(&self.main().folder).iter().filter(|e| is_card(e))
+        self.shown_in_main().iter().flat_map(|folder| self.entries(folder)).filter(|e| is_card(e))
     }
 
     /// the selected card. a folder only shown has none: what was selected in it is not where the keys are
     pub fn card(&self) -> Option<&Entry> {
-        self.selected(self.main()).filter(|e| is_card(e) && !self.previewing)
+        let selected = self.main().selected.as_ref().filter(|_| !self.previewing)?;
+        self.cards().find(|e| &e.path == selected)
+    }
+
+    /// folders of drawn column `at` are picked together: the path ends at their column, with none of them selected in
+    /// it, so none has a column of its own.
+    pub fn pick_together(&mut self, at: usize, folders: Vec<PathBuf>) {
+        self.path.truncate(at + 1);
+        (self.path[at].selected, self.path[at].arriving) = (None, false);
+        (self.previewing, self.focus, self.together) = (false, Focus::Columns, folders);
     }
 
     /// selects an entry of drawn column `at`: the columns after it go, and a folder is shown in the main area until it
     /// is entered.
     pub fn select(&mut self, at: usize, entry: PathBuf, folder: bool) {
+        // anything selected but a card of the folders picked together lets them go
+        if folder || !self.cards().any(|card| card.path == entry) {
+            self.together.clear();
+        }
         // the folder already next on the path keeps what is selected in it
         let kept = folder && self.path.get(at + 1).is_some_and(|c| c.folder == entry);
         self.path.truncate(at + 1 + kept as usize);
@@ -343,6 +366,7 @@ impl Nav {
         }
         self.previewing = true;
         self.focus = Focus::Columns;
+        self.together.clear();
     }
 
     /// left from the grid: to the column that lists its cards, on the card, or with the cards alone showing and that
@@ -375,6 +399,7 @@ impl Nav {
 
     /// backspace: the main area shows the folder above the one it shows.
     fn up(&mut self) {
+        self.together.clear();
         if self.previewing {
             return self.back();
         }
@@ -471,7 +496,8 @@ impl Nav {
         self.typed.extend(c.to_lowercase());
         let (at, grid) = (self.active(), self.in_grid());
         let folders = self.view == View::Gallery;
-        let found = self.entries(&self.path[at].folder).iter().find(|e| (if grid { is_card(e) } else { !folders || e.kind == Kind::Folder }) && e.name.to_lowercase().starts_with(&self.typed));
+        let named = |e: &&Entry| e.name.to_lowercase().starts_with(&self.typed);
+        let found = if grid { self.cards().find(named) } else { self.entries(&self.path[at].folder).iter().filter(|e| !folders || e.kind == Kind::Folder).find(named) };
         if let Some((path, folder)) = found.map(|e| (e.path.clone(), e.kind == Kind::Folder)) {
             self.select(at, path, folder);
         }
@@ -495,12 +521,13 @@ impl Nav {
         }
     }
 
-    /// the folders to list, most wanted first: the main area's, then the drawn columns from `first` on, deepest first.
+    /// the folders to list, most wanted first: the main area's, the ones picked together in it, then the drawn
+    /// columns from `first` on, deepest first.
     pub fn needed(&self, first: usize) -> Vec<PathBuf> {
         let mut out = vec![self.main().folder.clone()];
-        for column in self.shown()[first.min(self.active())..].iter().rev() {
-            if !out.contains(&column.folder) {
-                out.push(column.folder.clone());
+        for folder in self.together.iter().chain(self.shown()[first.min(self.active())..].iter().rev().map(|column| &column.folder)) {
+            if !out.contains(folder) {
+                out.push(folder.clone());
             }
         }
         out

@@ -197,8 +197,9 @@ impl Browser {
     }
 
     /// the folder shown is listed and holds no video or still: a screenshot may be written there, never beside media.
+    /// its own entries say so, whatever folders are picked in it.
     pub fn clear_of_media(&self) -> bool {
-        self.state.as_ref().is_some_and(|state| matches!(state.nav.listings.get(&state.nav.main().folder), Some(Ok(_))) && state.nav.cards().next().is_none())
+        self.state.as_ref().is_some_and(|state| matches!(state.nav.listings.get(&state.nav.main().folder), Some(Ok(entries)) if !entries.iter().any(is_card)))
     }
 
     /// how wide its parts are: kept between runs.
@@ -330,8 +331,8 @@ struct State {
     grid_scroll: f32,
     meta_scroll: f32,
     meta_height: f32,
-    /// the folder the grid was last drawn for, and the card last brought into view in it
-    grid_folder: PathBuf,
+    /// the folders the grid was last drawn for, and the card last brought into view in it
+    grid_of: Vec<PathBuf>,
     revealed: Option<PathBuf>,
     /// cards across the grid when it was last drawn: up and down move by it
     per_row: usize,
@@ -435,6 +436,8 @@ enum Click {
     /// or a card, which the keys then act in; and the videos picked, opened together
     Pick(PathBuf, bool, nav::Focus),
     OpenPicked,
+    /// a folder of the drawn column at this place pressed with control held, or with shift (true)
+    PickFolder(usize, PathBuf, bool),
 }
 
 /// what the last thing done asks of the columns' scroll. with nothing asked, columns at the path's end stay at it
@@ -597,7 +600,7 @@ impl State {
             grid_scroll: 0.0,
             meta_scroll: 0.0,
             meta_height: 0.0,
-            grid_folder: PathBuf::new(),
+            grid_of: Vec::new(),
             revealed: None,
             per_row: 1,
             twice: None,
@@ -627,6 +630,14 @@ impl State {
     /// what the host is asked for. a file opened from here counts as asked about, and the folder a file is opened or
     /// played from becomes the newest recent one.
     fn choose(&mut self, chosen: Chosen) {
+        // with folders picked together in it, the folder shown plays what the main area shows of them
+        let chosen = match chosen {
+            Chosen::PlayFolder(folder) if !self.nav.together.is_empty() && folder == self.nav.main().folder => {
+                let clips = self.picked_clips(&folder);
+                Chosen::PlayTree(folder, Ok(clips))
+            }
+            chosen => chosen,
+        };
         match &chosen {
             Chosen::Open(file) | Chosen::OpenIn(file, _) => {
                 self.asked.insert(file.clone());
@@ -648,6 +659,31 @@ impl State {
             self.walks.keep_only(|_| false);
         }
         self.chosen = Some(chosen);
+    }
+
+    /// what the folders picked together play, as one played folder of the folder they are in: folder after folder
+    /// and each folder's videos in name order, as a played folder plays, whatever the browser sorts by. from their
+    /// listings alone. on a network volume the player asks before it plays: what it counted is kept while that ask
+    /// stands, as a walk's is, and plays when asked for again, whatever is picked by then.
+    fn picked_clips(&mut self, of: &Path) -> Clips {
+        if let Some((_, counted, _)) = self.walked.take().filter(|(kept, _, at)| kept == of && at.elapsed() < folder::ASKED_FOR) {
+            return counted;
+        }
+        let mut folders = self.nav.together.clone();
+        // `deep`, as they are folders in the one that plays: an ask about that folder alone is not theirs
+        let mut clips = Clips { items: Vec::new(), left_out: 0, deep: true, cut: false };
+        let by_name = |a: &PathBuf, b: &PathBuf| browse::natural_cmp(&browse::name_of(a), &browse::name_of(b));
+        folders.sort_by(by_name);
+        for folder in &folders {
+            let (mut items, away) = folder::items(self.nav.entries(folder));
+            items.sort_by(by_name);
+            clips.items.extend(items);
+            clips.left_out += away;
+        }
+        if self.nav.volume == Volume::Network {
+            self.walked = Some((of.to_path_buf(), clips.clone(), Instant::now()));
+        }
+        clips
     }
 
     /// a folder files were opened from, first among the recent ones. a place of the sidebar is there already
@@ -736,8 +772,8 @@ impl State {
         // a press here is not a press on a picture under the browser
         ui.interact(area, ui.scope_id().with("browser"), Sense::click_and_drag());
 
-        // videos picked together belong to the folder shown: gone from it, they are let go
-        if self.picked.first().is_some_and(|picked| picked.parent() != Some(self.nav.main().folder.as_path())) {
+        // videos picked together belong to what the main area shows: gone from it, they are let go
+        if self.picked.first().is_some_and(|picked| !self.nav.cards().any(|card| &card.path == picked)) {
             self.picked.clear();
         }
         let layout = self.lay_out(ui, area, back);
@@ -844,7 +880,7 @@ impl State {
         }
         match &click {
             Click::Place(_) | Click::Go(_) | Click::Retrace(_) => self.bring = Some(Bring::End),
-            Click::Row(..) | Click::Enter | Click::Card(_) | Click::Pick(..) => self.bring = Some(Bring::On),
+            Click::Row(..) | Click::Enter | Click::Card(_) | Click::Pick(..) | Click::PickFolder(..) => self.bring = Some(Bring::On),
             // after the press that selected the folder: the columns stay where they are under its menu
             Click::Menu(On::Folder(_), _) => self.bring = Some(Bring::Stay),
             _ => {}
@@ -852,6 +888,7 @@ impl State {
         match click {
             Click::Place(place) => self.nav.go(&place, &self.roots),
             Click::Row(at, entry, folder) => {
+                self.anchor = Some(entry.clone());
                 self.nav.select(at, entry, folder);
                 self.nav.focus = nav::Focus::Columns;
             }
@@ -864,6 +901,7 @@ impl State {
                 self.pick(card, run);
                 self.nav.focus = focus;
             }
+            Click::PickFolder(at, folder, run) => self.pick_folder(at, folder, run),
             // in name order, as a played folder plays, whatever order they were picked in or the browser sorts them in
             Click::OpenPicked => {
                 let mut picked: Vec<&Entry> = self.nav.cards().filter(|e| self.picked.contains(&e.path)).collect();
@@ -875,6 +913,8 @@ impl State {
             Click::OpenIn(file, new_tab) => self.choose(Chosen::OpenIn(file, new_tab)),
             Click::Reveal(file) => self.choose(Chosen::Reveal(file)),
             Click::PlayFolder(to) => self.choose(Chosen::PlayFolder(to)),
+            // with folders picked together in the folder shown, their own videos are all there is to play of it
+            Click::PlayTree(to) if !self.nav.together.is_empty() && to == self.nav.main().folder => {}
             // off the drawing thread, as a folder is listed: played when its answer comes in
             Click::PlayTree(to) => match self.walked.take().filter(|(of, _, at)| *of == to && at.elapsed() < folder::ASKED_FOR) {
                 Some((_, clips, _)) => self.choose(Chosen::PlayTree(to, Ok(clips))),
@@ -888,6 +928,8 @@ impl State {
             }
             Click::Copy(path) => self.copied = Some(path.to_string_lossy().into_owned()),
             Click::Menu(on, at) => (self.menu, self.dropdown) = (Some((on, at)), None),
+            // of the folder shown, they are those of the folders its cards are from
+            Click::Previews(folder) if folder == self.nav.main().folder => self.previews.extend(self.nav.shown_in_main().iter().cloned()),
             Click::Previews(folder) => {
                 self.previews.insert(folder);
             }
@@ -925,23 +967,27 @@ impl State {
     /// to this one are, in the order the folder lists them. the one the metadata column shows is the last one picked.
     fn pick(&mut self, card: PathBuf, run: bool) {
         let cards: Vec<PathBuf> = self.nav.cards().map(|e| e.path.clone()).collect();
-        let Some(to) = cards.iter().position(|c| *c == card) else { return };
-        let selected = self.nav.main().selected.clone().filter(|s| cards.contains(s));
-        if run {
-            let from = self.anchor.clone().filter(|a| cards.contains(a)).or(selected).and_then(|a| cards.iter().position(|c| *c == a)).unwrap_or(0);
-            self.anchor = Some(cards[from].clone());
-            self.picked = cards[from.min(to)..=from.max(to)].to_vec();
-        } else {
-            if self.picked.is_empty() {
-                self.picked.extend(selected);
-            }
-            match self.picked.iter().position(|p| *p == card) {
-                Some(at) => drop(self.picked.remove(at)),
-                None => self.picked.push(card.clone()),
-            }
-            self.anchor = Some(card.clone());
+        if !pick_among(&cards, &mut self.picked, &mut self.anchor, self.nav.main().selected.clone(), &card, run) {
+            return;
         }
         self.nav.choose_card(self.picked.last().cloned().filter(|_| !self.picked.contains(&card)).unwrap_or(card));
+    }
+
+    /// a folder of column `at` pressed with shift or control is picked with others of its column as videos are picked
+    /// (the owner's ask, 2026-11-26), the one selected there being the first. more than one, and the main area shows
+    /// the videos of them all; one left is that folder selected, and none the column with nothing selected.
+    fn pick_folder(&mut self, at: usize, folder: PathBuf, run: bool) {
+        let folders: Vec<PathBuf> = self.nav.entries(&self.nav.path[at].folder).iter().filter(|e| e.kind == Kind::Folder).map(|e| e.path.clone()).collect();
+        // the ones picked are of the path's last column: in another column the picking starts over
+        let mut picked = if at + 1 == self.nav.path.len() { self.nav.together.clone() } else { Vec::new() };
+        if !pick_among(&folders, &mut picked, &mut self.anchor, self.nav.path[at].selected.clone(), &folder, run) {
+            return;
+        }
+        picked.sort_by_key(|folder| folders.iter().position(|f| f == folder));
+        match picked.len() {
+            1 => self.nav.select(at, picked.remove(0), true),
+            _ => self.nav.pick_together(at, picked),
+        }
     }
 
     /// the edges the parts are resized by, each 7 wide over its rule: the sidebar's right, the right of every folder
@@ -1094,7 +1140,7 @@ impl State {
         // folders were gone through (the owner's word, 2026-11-26). it is dim, and no button, where the folder shown
         // has fewer than two videos to play one after another; while a folder's listing is on its way it stays as
         // it was for the one before
-        if self.nav.listings.contains_key(&self.nav.main().folder) {
+        if self.nav.shown_in_main().iter().all(|folder| self.nav.listings.contains_key(folder)) {
             self.plays = self.nav.cards().nth(1).is_some();
         }
         let label = painter.layout_no_wrap("open folder".to_string(), font(SANS, 12.0), if self.plays { FG } else { ROW_DIM });
@@ -1302,9 +1348,9 @@ impl State {
                 self.lists.ask(folder, list);
             }
         }
-        // a folder off the path is listed again when it comes back
-        let nav::Nav { listings, path, .. } = &mut self.nav;
-        listings.retain(|folder, _| path.iter().any(|c| &c.folder == folder));
+        // a folder off the path and not picked is listed again when it comes back
+        let nav::Nav { listings, path, together, .. } = &mut self.nav;
+        listings.retain(|folder, _| path.iter().any(|c| &c.folder == folder) || together.contains(folder));
         self.stale.retain(|folder| listings.contains_key(folder));
 
         // what was read is kept for the files asked about, so going back to one does not open it again
@@ -1463,7 +1509,7 @@ impl State {
         let first = ((scroll - 8.0) / ROW).floor().max(0.0) as usize;
         for (i, entry) in entries.iter().enumerate().skip(first).take((rect.height() / ROW) as usize + 2) {
             let row = Rect::from_min_size(Pos2::new(inner.left(), inner.top() + 8.0 + i as f32 * ROW - scroll), Vec2::new(inner.width(), ROW));
-            let on = selected == Some(i) || self.picked.contains(&entry.path);
+            let on = selected == Some(i) || self.picked.contains(&entry.path) || self.nav.together.contains(&entry.path);
             if on {
                 painter.rect_filled(row, 0.0, if current { ROW_ON } else { PLACE_ON });
             }
@@ -1496,6 +1542,11 @@ impl State {
                     clicks.push((Click::Pick(entry.path.clone(), shift, nav::Focus::Columns), None));
                     continue;
                 }
+                // and a folder, in any column, with the others of its column
+                if (shift || more) && folder {
+                    clicks.push((Click::PickFolder(at, entry.path.clone(), shift), None));
+                    continue;
+                }
                 let twice = if folder { Some(Click::Enter) } else { is_card(entry).then(|| Click::Open(entry.path.clone())) };
                 clicks.push((Click::Row(at, entry.path.clone(), folder), twice));
             }
@@ -1515,10 +1566,14 @@ impl State {
         let line = Rect::from_min_size(rect.min, Vec2::new(rect.width(), PATH_LINE));
         painter.rect_filled(Rect::from_min_max(Pos2::new(line.left(), line.bottom() - 1.0), line.max), 0.0, LINE);
         let middle = line.top() + (PATH_LINE - 1.0) / 2.0;
-        let holds = match self.nav.listings.get(&folder) {
-            None => "reading…".to_string(),
-            Some(Err(_)) => String::new(),
-            Some(Ok(entries)) => holds(entries),
+        let shown = self.nav.shown_in_main();
+        let holds = match (self.nav.listings.get(&folder), shown.len()) {
+            (None, _) => "reading…".to_string(),
+            (Some(Err(_)), _) => String::new(),
+            (Some(Ok(entries)), 1) => holds(entries),
+            // of folders picked together, the videos of them all
+            (_, picked) if shown.iter().any(|folder| !self.nav.listings.contains_key(folder)) => format!("reading {picked} folders…"),
+            (_, picked) => format!("{} in {picked} folders", if self.nav.cards().next().is_none() { "no video".to_string() } else { holds(self.nav.cards()) }),
         };
         text(&painter, line.left() + 14.0, middle, &holds, font(MONO, 11.5), DIM, line.width() - 28.0);
 
@@ -1529,10 +1584,10 @@ impl State {
         // cards keep its room (the previews are asked for in the right-click menu too)
         let words = rect.width() - 28.0 - 3.0 - 24.0;
         if self.nav.volume == Volume::Network && words >= NOTE_LEAST {
-            let asked = self.previews.contains(&folder);
-            let reads: usize = self.nav.entries(&folder).iter().filter(|e| nav::makes_pictures(Volume::Network, e, true)).map(nav::files_read).sum();
+            let asked = shown.iter().all(|folder| self.previews.contains(folder));
+            let reads: usize = self.nav.cards().filter(|e| nav::makes_pictures(Volume::Network, e, true)).map(nav::files_read).sum();
             let ask = (!asked && reads > 0).then(|| painter.layout_no_wrap(previews_label(reads), font(SANS, 12.0), FG));
-            let (head, rest) = network_note(asked, self.asked.iter().any(|f| f.parent() == Some(folder.as_path())));
+            let (head, rest) = network_note(asked, self.asked.iter().any(|f| f.parent().is_some_and(|of| shown.iter().any(|folder| folder == of))));
             let button_size = ask.as_ref().map(|label| Vec2::new(label.size().x + 20.0, 11.5 * 1.5 + 14.0));
             // the button stands beside the words while that leaves them their least, and under them where it does not
             let beside = button_size.is_none_or(|s| words - s.x - 14.0 >= NOTE_LEAST);
@@ -1562,32 +1617,37 @@ impl State {
             }
             top = note.bottom();
         }
-        self.grid(ui, Rect::from_min_max(Pos2::new(rect.left(), top), rect.max), &folder, clicks);
+        self.grid(ui, Rect::from_min_max(Pos2::new(rect.left(), top), rect.max), clicks);
     }
 
-    /// the cards of the folder shown, as many across as fit; the selected one outlined.
-    fn grid(&mut self, ui: &egui::Ui, rect: Rect, folder: &Path, clicks: &mut Vec<Press>) {
+    /// the cards of the folder shown, or of the folders picked together, one folder's after another's, as many
+    /// across as fit; the selected one outlined.
+    fn grid(&mut self, ui: &egui::Ui, rect: Rect, clicks: &mut Vec<Press>) {
         let painter = ui.painter().with_clip_rect(rect);
         self.take_pictures(ui.ctx());
-        if self.grid_folder != folder {
-            (self.grid_folder, self.grid_scroll, self.revealed) = (folder.to_path_buf(), 0.0, None);
+        if self.grid_of != self.nav.shown_in_main() {
+            (self.grid_of, self.grid_scroll, self.revealed) = (self.nav.shown_in_main().to_vec(), 0.0, None);
         }
         let say = |words: &str| text(&painter, rect.left() + 14.0, rect.top() + 14.0 + NAME / 2.0, words, font(SANS, 12.5), DIM, rect.width() - 28.0);
-        let entries = match self.nav.listings.get(folder) {
-            None => {
-                say("reading…");
-                return self.want(Vec::new());
-            }
-            Some(Err(why)) => {
-                let why = why.to_lowercase();
-                self.want(Vec::new());
-                return self.cannot_read(ui, rect, &why, clicks);
-            }
-            Some(Ok(entries)) => entries,
-        };
-        let cards: Vec<&Entry> = entries.iter().filter(|e| is_card(e)).collect();
+        // a folder shown alone says that it is being read, or why it cannot be; of several, the ones listed show
+        match self.grid_of.as_slice() {
+            [folder] => match self.nav.listings.get(folder) {
+                None => {
+                    say("reading…");
+                    return self.want(Vec::new());
+                }
+                Some(Err(why)) => {
+                    let why = why.to_lowercase();
+                    self.want(Vec::new());
+                    return self.cannot_read(ui, rect, &why, clicks);
+                }
+                Some(Ok(_)) => {}
+            },
+            _ => {}
+        }
+        let cards: Vec<&Entry> = self.nav.cards().collect();
         if cards.is_empty() {
-            say("no video here");
+            say(if self.grid_of.iter().all(|folder| self.nav.listings.contains_key(folder)) { "no video here" } else { "reading…" });
             return self.want(Vec::new());
         }
         let inner = rect.width() - 28.0;
@@ -1613,8 +1673,9 @@ impl State {
         // the cards on screen ask for their posters, and the one the pointer rests on for all of its previews first
         let now = ui.input(|i| i.time);
         let (mut wants, mut hovered) = (Vec::new(), false);
-        let asked = self.previews.contains(folder);
         for (i, card) in cards.iter().enumerate() {
+            // on a network volume, whether the previews of the card's own folder were asked for
+            let asked = card.path.parent().is_some_and(|folder| self.previews.contains(folder));
             let top = rect.top() + 14.0 + (i / per_row) as f32 * pitch - self.grid_scroll;
             if top + height < rect.top() || top > rect.bottom() {
                 continue;
@@ -1795,7 +1856,10 @@ impl State {
                 if !shown || self.nav.cards().next().is_some() {
                     rows.push(("play folder", "shift enter", Click::PlayFolder(folder.clone()), None));
                 }
-                rows.push(("play with subfolders", "ctrl shift enter", Click::PlayTree(folder.clone()), None));
+                // with folders picked together in it, the folder shown plays their own videos and nothing deeper
+                if !shown || self.nav.together.is_empty() {
+                    rows.push(("play with subfolders", "ctrl shift enter", Click::PlayTree(folder.clone()), None));
+                }
                 if shown {
                     rows.push(("read again", "f5", Click::Refresh, None));
                 }
@@ -1803,7 +1867,9 @@ impl State {
                     rows.push((reveal, "", Click::Reveal(folder.clone()), None));
                 }
                 rows.push(("copy path", "", Click::Copy(folder.clone()), None));
-                if !local && !self.previews.contains(folder) {
+                // of the folder shown, the previews are those of the folders its cards are from
+                let of = if shown { self.nav.shown_in_main() } else { std::slice::from_ref(folder) };
+                if !local && !of.iter().all(|folder| self.previews.contains(folder)) {
                     rows.push(("make previews", "", Click::Previews(folder.clone()), None));
                 }
                 if shown {
@@ -1867,6 +1933,29 @@ impl State {
             clicks.push((click, None));
         }
     }
+}
+
+/// `one` of `all`, the videos or the folders that can be picked together, pressed with control held: one more picked,
+/// or one less, the one `selected` being the first. with shift (`run`): all from the one last pressed (`anchor`), else
+/// the one selected, to this one, in the order `all` has them. false when it is none of them.
+fn pick_among(all: &[PathBuf], picked: &mut Vec<PathBuf>, anchor: &mut Option<PathBuf>, selected: Option<PathBuf>, one: &PathBuf, run: bool) -> bool {
+    let Some(to) = all.iter().position(|a| a == one) else { return false };
+    let selected = selected.filter(|s| all.contains(s));
+    if run {
+        let from = anchor.clone().filter(|a| all.contains(a)).or(selected).and_then(|a| all.iter().position(|of| *of == a)).unwrap_or(0);
+        *anchor = Some(all[from].clone());
+        *picked = all[from.min(to)..=from.max(to)].to_vec();
+    } else {
+        if picked.is_empty() {
+            picked.extend(selected);
+        }
+        match picked.iter().position(|p| p == one) {
+            Some(at) => drop(picked.remove(at)),
+            None => picked.push(one.clone()),
+        }
+        *anchor = Some(one.clone());
+    }
+    true
 }
 
 /// a right click on something the menu can be on: a row or a card is selected first, as a press selects it, unless it
@@ -2043,11 +2132,12 @@ fn spec(entry: &Entry) -> (String, bool) {
 }
 
 /// what a folder holds, as the path line says it: "4 folders · 3 videos · 1 sequence"
-fn holds(entries: &[Entry]) -> String {
-    if entries.is_empty() {
+fn holds<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> String {
+    let kinds: Vec<&Kind> = entries.into_iter().map(|e| &e.kind).collect();
+    if kinds.is_empty() {
         return "empty".to_string();
     }
-    let count = |kind: fn(&Kind) -> bool| entries.iter().filter(|e| kind(&e.kind)).count();
+    let count = |kind: fn(&Kind) -> bool| kinds.iter().filter(|k| kind(k)).count();
     let counts = [(count(|k| *k == Kind::Folder), "folder"), (count(|k| *k == Kind::Clip), "video"), (count(|k| matches!(k, Kind::Sequence { .. })), "sequence")];
     counts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}{}", if *n == 1 { "" } else { "s" })).collect::<Vec<_>>().join(" · ")
 }
@@ -3271,5 +3361,200 @@ mod tests {
         assert!(said.len() == 2 && said[1].top() >= said[0].bottom(), "the button stands under the words: {said:?}");
         deep.press(said[1].center(), egui::PointerButton::Primary);
         assert!(deep.browser.state().previews.contains(&deep.folders[6]), "the button asks for the previews");
+    }
+
+    /// a browser on folders that are on the disk, which it lists itself: drawn 60 times a second in fig. 28's window
+    #[cfg(windows)]
+    struct Real {
+        browser: Browser,
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    #[cfg(windows)]
+    impl Real {
+        const AREA: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(1240.0, 700.0));
+
+        fn new(folder: &Path, pictures: Option<Pictures>) -> Real {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(super::super::fonts());
+            let mut real = Real { browser: Browser::new(Some(folder.to_path_buf()), pictures), ctx, time: 0.0 };
+            real.rest();
+            real
+        }
+
+        fn pass(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let raw = egui::RawInput { time: Some(self.time), screen_rect: Some(Real::AREA), events, ..Default::default() };
+            let browser = &mut self.browser;
+            let mut out = self.ctx.run_ui(raw, |ui| {
+                browser.draw(ui, ui.max_rect(), false);
+            });
+            out.textures_delta.clear();
+            out
+        }
+
+        /// passes until every listing asked for is in, and half a second more for what they moved to come to rest
+        fn rest(&mut self) -> egui::FullOutput {
+            for _ in 0..2000 {
+                self.pass(Vec::new());
+                let state = self.browser.state();
+                if !state.lists.busy() && !state.pins.busy() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            (0..30).map(|_| self.pass(Vec::new())).last().unwrap()
+        }
+
+        /// a press on the row or the card that says `words`, with shift or control held: what each of its passes
+        /// drew, and then everything at rest
+        fn press(&mut self, words: &str, shift: bool, more: bool) -> Vec<egui::FullOutput> {
+            let out = self.rest();
+            let (_, seen) = *drawn(&out, words).first().unwrap_or_else(|| panic!("no {words} in view"));
+            let at = seen.center();
+            self.browser.set_held(shift, more);
+            let mut drew = vec![self.pass(vec![egui::Event::PointerMoved(at)]), self.pass(vec![held(at, egui::PointerButton::Primary, true)]), self.pass(vec![held(at, egui::PointerButton::Primary, false)])];
+            drew.extend((0..20).map(|_| self.pass(Vec::new())));
+            drew.push(self.rest());
+            self.browser.set_held(false, false);
+            drew
+        }
+
+        /// the names on the cards in the main area, in the order they stand, and what its path line says
+        fn shows(&mut self) -> (Vec<String>, String) {
+            let out = self.rest();
+            let state = self.browser.state();
+            let main = Layout::new(Real::AREA, state.nav.drawn(), state.widths, state.laid.as_ref().unwrap().to).main;
+            let texts: Vec<(String, Pos2)> = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t.galley.text().to_string(), t.pos)) } else { None }).filter(|(_, at)| main.x_range().contains(at.x)).collect();
+            let line = texts.iter().find(|(_, at)| at.y > main.top() && at.y < main.top() + PATH_LINE).map_or(String::new(), |(said, _)| said.clone());
+            (texts.into_iter().filter(|(said, at)| at.y > main.top() + PATH_LINE && said.ends_with(".mov")).map(|(said, _)| said).collect(), line)
+        }
+    }
+
+    /// folders reel_a to reel_e in a folder with a video of its own: two videos in the first, one each in the
+    /// second and third, none in the last two
+    #[cfg(windows)]
+    fn reels(made: &mut Scratch, name: &str) -> PathBuf {
+        let top = made.folder(std::env::temp_dir().join(format!("eyepiece-{name}-{}", std::process::id())));
+        for (reel, clips) in [("reel_a", &["a1.mov", "a2.mov"][..]), ("reel_b", &["b1.mov"]), ("reel_c", &["c1.mov"]), ("reel_d", &[]), ("reel_e", &[])] {
+            let folder = made.folder(top.join(reel));
+            for clip in clips {
+                made.file(folder.join(clip));
+            }
+        }
+        made.file(top.join("c_own.mov"));
+        top
+    }
+
+    /// shift picks a run of folders in a column and control one more or one less, as they do videos (the owner's ask,
+    /// 2026-11-26), and the main area shows the videos of them all: the folders in the column's order, each folder's
+    /// videos in its own, with no column for any one of them. the columns stay where they are under the presses.
+    /// one folder left is that folder selected as a plain press selects it, and a plain press goes back to one. a
+    /// card of them can be selected, and the keys and letters in the grid go through the cards shown.
+    #[cfg(windows)]
+    #[test]
+    fn folders_picked_together_show_the_videos_of_them_all() {
+        let mut made = Scratch(Vec::new());
+        let top = reels(&mut made, "reels");
+        let reel = |name: &str| top.join(name);
+        let mut real = Real::new(&top, None);
+        real.press("reel_a", false, false);
+        assert_eq!((real.shows().0, real.browser.state().nav.main().folder.clone()), (vec!["a1.mov".to_string(), "a2.mov".to_string()], reel("reel_a")), "a plain press shows the one folder");
+        let before = left_of(&real.rest(), "reel_a");
+        // shift takes all from the folder selected to this one
+        let drew = real.press("reel_c", true, false);
+        assert!(drew.iter().all(|out| left_of(out, "reel_a") == before), "the columns moved under a press that picked folders");
+        assert_eq!(real.browser.state().nav.together, [reel("reel_a"), reel("reel_b"), reel("reel_c")]);
+        assert_eq!(real.shows(), (["a1.mov", "a2.mov", "b1.mov", "c1.mov"].map(String::from).to_vec(), "4 videos in 3 folders".to_string()));
+        assert_eq!(real.browser.state().nav.main().folder, top, "no folder of them has a column of its own");
+        // control takes one out, and puts one in
+        real.press("reel_b", false, true);
+        assert_eq!(real.shows(), (["a1.mov", "a2.mov", "c1.mov"].map(String::from).to_vec(), "3 videos in 2 folders".to_string()));
+        // a card of them is selected by a press, and the folders stay picked; right goes on to the next card, in
+        // another folder, and a letter to the first card shown that starts with it, not the folder's own video
+        real.press("a2.mov", false, false);
+        assert_eq!((real.browser.state().nav.card().map(|card| card.path.clone()), real.browser.state().nav.together.len()), (Some(reel("reel_a").join("a2.mov")), 2));
+        real.browser.key(Key::Right, Mods::default());
+        assert_eq!(real.browser.state().nav.card().map(|card| card.path.clone()), Some(reel("reel_c").join("c1.mov")));
+        real.browser.key(Key::Home, Mods::default());
+        real.browser.char('c');
+        assert_eq!(real.browser.state().nav.card().map(|card| card.path.clone()), Some(reel("reel_c").join("c1.mov")), "a letter selects among the cards shown");
+        // shift + enter, and open folder, play what is shown as one played folder: each folder's videos in name order
+        real.browser.key(Key::Enter, Mods { shift: true, ctrl: false, alt: false });
+        let played = match real.browser.state().chosen.take() {
+            Some(Chosen::PlayTree(folder, Ok(clips))) => (folder, clips.items),
+            _ => (PathBuf::new(), Vec::new()),
+        };
+        assert_eq!(played, (top.clone(), vec![reel("reel_a").join("a1.mov"), reel("reel_a").join("a2.mov"), reel("reel_c").join("c1.mov")]));
+        // with subfolders is not offered of them: its key walks nothing, and the main area's menu has no row for it
+        real.browser.key(Key::Enter, Mods { shift: true, ctrl: true, alt: false });
+        assert!(!real.browser.state().walks.busy() && real.browser.state().chosen.is_none(), "control + shift + enter played or walked something");
+        let rows: Vec<&str> = real.browser.state().menu_rows(&On::Shown(top.clone())).into_iter().map(|(words, ..)| words).collect();
+        assert!(rows.contains(&"play folder") && !rows.contains(&"play with subfolders"), "the menu of the folder shown offers {rows:?}");
+        // two folders with nothing in them, in a folder that holds a video: no place for a screenshot
+        real.press("reel_d", false, false);
+        real.press("reel_e", false, true);
+        assert_eq!(real.shows(), (Vec::new(), "no video in 2 folders".to_string()));
+        assert!(!real.browser.clear_of_media(), "a folder with a video in it is not clear of media, whatever is picked in it");
+        // control on the one of two leaves the other, selected as a plain press selects it
+        real.press("reel_e", false, true);
+        assert!(real.browser.state().nav.together.is_empty());
+        assert_eq!(real.browser.state().nav.main().folder, reel("reel_d"));
+        real.press("reel_a", false, true);
+        assert_eq!(real.browser.state().nav.together, [reel("reel_a"), reel("reel_d")], "in the column's order, whichever was picked first");
+        // a plain press goes back to one folder; so does a key that moves in the column
+        real.press("reel_b", false, false);
+        assert!(real.browser.state().nav.together.is_empty());
+        assert_eq!((real.shows().0, real.browser.state().nav.main().folder.clone()), (vec!["b1.mov".to_string()], reel("reel_b")));
+        real.press("reel_c", false, true);
+        assert_eq!(real.browser.state().nav.together.len(), 2);
+        real.browser.key(Key::Down, Mods::default());
+        assert!(real.browser.state().nav.together.is_empty(), "a step in the column lets the picked folders go");
+    }
+
+    /// adr 0004 with several folders picked on a share: each is listed and nothing more is asked of any file, no
+    /// picture and no metadata, a card selected and the pointer on the cards. asked for, the previews are wanted of
+    /// the picked folders' cards and of no other's. played, they are asked about once, with the count, and asked
+    /// for again they play what was counted.
+    #[cfg(windows)]
+    #[test]
+    fn folders_picked_together_on_a_share_are_listed_and_nothing_more() {
+        let mut made = Scratch(Vec::new());
+        let top = shared(&reels(&mut made, "shared-reels"));
+        let reel = |name: &str| top.join(name);
+        let (pictures, wants, _got) = Pictures::new();
+        let mut real = Real::new(&top, Some(pictures));
+        assert_eq!(real.browser.state().nav.volume, Volume::Network);
+        real.press("reel_a", false, false);
+        real.press("reel_c", false, true);
+        assert_eq!(real.shows().0, ["a1.mov", "a2.mov", "c1.mov"]);
+        real.press("a2.mov", false, false);
+        // two seconds with the pointer on the first card's picture
+        let over = drawn(&real.rest(), "a1.mov")[0].1.center() - Vec2::new(0.0, 40.0);
+        for _ in 0..120 {
+            real.pass(vec![egui::Event::PointerMoved(over)]);
+        }
+        assert_eq!(wants.try_iter().flatten().count(), 0, "a picture was wanted of a file on a share");
+        assert!(!real.browser.state().metas.busy() && real.browser.state().read.is_empty(), "a file on a share was read for its metadata");
+        let main = real.browser.state().nav.main().folder.clone();
+        real.browser.state().click(Click::Previews(main));
+        real.rest();
+        let mut of: Vec<PathBuf> = wants.try_iter().last().expect("pictures are wanted").iter().map(|w| w.path.clone()).collect();
+        of.sort();
+        assert_eq!(of, [reel("reel_a").join("a1.mov"), reel("reel_a").join("a2.mov"), reel("reel_c").join("c1.mov")]);
+        // played: what is counted is kept while the player's ask stands, and plays when asked for again, though
+        // other folders are picked by then
+        let play = |real: &mut Real| {
+            real.browser.key(Key::Enter, Mods { shift: true, ctrl: false, alt: false });
+            match real.browser.state().chosen.take() {
+                Some(Chosen::PlayTree(_, Ok(clips))) => clips.items,
+                _ => Vec::new(),
+            }
+        };
+        let counted = play(&mut real);
+        assert_eq!(counted.len(), 3);
+        real.press("reel_b", false, true);
+        assert_eq!(play(&mut real), counted, "asked for again, another list played than the one counted");
     }
 }

@@ -115,6 +115,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **the address** shows the path. press it, or **ctrl+L**, to type one.
 - the two icons at its right **sort** the folder by name, size, date modified or created (and on a mac, date added), either way, folders first; and switch between **list**, **gallery** and both.
 - **shift+click** or **ctrl+click** picks several videos to play as a played folder.
+- **shift+click** or **ctrl+click** on folders in a column picks several of them: the cards then show the videos of them all, folder after folder, and **open folder** plays them as one played folder. a plain click goes back to one folder. in the list view, which has no cards, the folders only light up.
 - **right-click** a folder, a video or the empty area for what can be done with it: open, play, reveal, copy path and more.
 - **network folders are look-only:** names, sizes and dates, until you open a file or press **make previews**.
 - previews are cached in the system's cache folder, never near your media.
