@@ -1,6 +1,6 @@
 # trademarks
 
-"eyepiece", "tridant", the phrase "a tridant system" and the tridant mark (`assets/brand/tridant-mark.svg`) are trademarks of Tridant, Inc. The license in `LICENSE` (CPAL-1.0) covers the code and grants no rights to them (its section 2.1 leaves trademarks out, and section 14(d) says the attribution's marks stay their owner's).
+"eyepiece", "tridant", the phrase "a tridant system" and the tridant mark (`assets/brand/tridant-mark.svg`, and its favicon form, `assets/brand/tridant-favicon-star.svg`) are trademarks of Tridant, Inc. The license in `LICENSE` (CPAL-1.0) covers the code and grants no rights to them (its section 2.1 leaves trademarks out, and section 14(d) says the attribution's marks stay their owner's).
 
 ## What the license requires of every copy
 

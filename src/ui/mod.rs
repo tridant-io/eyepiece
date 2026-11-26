@@ -1434,8 +1434,9 @@ impl Ui {
         self.hint(&response, keys::named(Key::N, keys::NONE));
     }
 
-    /// the tridant mark at the strip's right end (fig. 32): the brand's star, 14 across, in the strip's dim ink and
-    /// brighter under the pointer, never in the brand's colors. resting on it brings up its card, which stays while
+    /// the tridant mark at the strip's right end (fig. 32): the star of tridant.io's favicon, 16 across, which reads
+    /// where the kit's thinner star did not (the owner's word, 2026-11-25), in the strip's dim ink and brighter under
+    /// the pointer, never in the brand's colors. resting on it brings up its card, which stays while
     /// the pointer is on the mark or the card, so the card's link can be pressed; a press on the mark opens about.
     fn mark(&mut self, ui: &egui::Ui, painter: &egui::Painter, mark: Rect, actions: &mut Vec<Action>) {
         let now = ui.input(|i| i.time);
@@ -1443,7 +1444,7 @@ impl Ui {
         if response.clicked() {
             self.open_panel(panel::Which::Settings, panel::ABOUT);
         }
-        let (star, size) = self.on_pixels(mark.center(), Vec2::splat(14.0));
+        let (star, size) = self.on_pixels(mark.center(), Vec2::splat(16.0));
         brand::draw(painter, self.pictures.get(ui.ctx(), brand::Art::Star, size), star, 0.0, if response.hovered() { FG } else { DIM });
         let on = self.panel.is_none() && (response.hovered() || (self.card.is_some() && ui.ctx().pointer_latest_pos().is_some_and(|p| self.card_rect.contains(p))));
         let (since, wait) = if on {

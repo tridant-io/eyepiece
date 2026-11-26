@@ -9,6 +9,8 @@ use egui::{Color32, Pos2, Rect, TextureHandle, Vec2};
 use std::sync::LazyLock;
 
 static STAR: LazyLock<Drawing> = LazyLock::new(|| Drawing::parse(include_str!("../../assets/brand/tridant-mark.svg")));
+/// the star of tridant.io's favicon, bolder than the kit's at the strip's size
+static MARK: LazyLock<Drawing> = LazyLock::new(|| Drawing::parse(include_str!("../../assets/brand/tridant-favicon-star.svg")));
 static WORDMARK: LazyLock<Drawing> = LazyLock::new(|| Drawing::parse(include_str!("../../assets/brand/tridant-wordmark.svg")));
 /// samples a pixel takes along each side
 const SAMPLES: usize = 4;
@@ -25,7 +27,7 @@ pub const TURNING_SIZE: f32 = 40.0 * TURNING / 92.0;
 /// what is drawn as a texture
 #[derive(Clone, Copy, PartialEq)]
 pub enum Art {
-    /// the star in its view box: the strip's mark, about's small star
+    /// the favicon's star in its view box: the strip's mark, about's small star
     Star,
     /// the star round its own middle, for the card's star that turns
     Turning,
@@ -45,7 +47,7 @@ impl Pictures {
             return made.id();
         }
         let image = match art {
-            Art::Star => alpha(size, &STAR.raster(STAR.view, size)),
+            Art::Star => alpha(size, &MARK.raster(MARK.view, size)),
             Art::Turning => alpha(size, &STAR.raster(Rect::from_center_size(MIDDLE, Vec2::splat(TURNING)), size)),
             Art::Wordmark => alpha(size, &WORDMARK.raster(WORDMARK.view, size)),
             Art::Icon => icon(size),
@@ -138,25 +140,31 @@ fn unit(seed: u64, k: u64) -> f64 {
     (z ^ (z >> 31)) as f64 / u64::MAX as f64
 }
 
-/// a drawing read from an svg file: its view box, its outlines as closed polygons in the file's units, and the width
-/// of the stroke drawn along its edges with the fill (0 for none)
+/// a drawing read from an svg file: its view box, its outlines as closed polygons in the file's units, whether they
+/// are filled, the width of the stroke drawn along their edges (0 for none), and the circle a clip path keeps it in
 pub struct Drawing {
     view: Rect,
     outlines: Vec<Vec<Pos2>>,
+    fill: bool,
     stroke: f32,
+    clip: Option<(Pos2, f32)>,
 }
 
 impl Drawing {
-    /// reads the view box, and every path's outline and stroke width. what it does not know it leaves out.
+    /// reads the view box, every path's outline, fill and stroke width, and a clip path's circle. what it does not
+    /// know it leaves out.
     pub fn parse(svg: &str) -> Drawing {
         let view = match attribute(svg, "viewBox").map(numbers).as_deref() {
             Some(&[x, y, w, h]) => Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)),
             _ => Rect::from_min_size(Pos2::ZERO, Vec2::splat(1.0)),
         };
-        let mut drawing = Drawing { view, outlines: Vec::new(), stroke: 0.0 };
+        let number = |tag: &str, name: &str| attribute(tag, name).and_then(|v| v.parse::<f32>().ok());
+        let clip = svg.split("<clipPath").nth(1).and_then(|c| c.split("<circle").nth(1)).and_then(|c| Some((Pos2::new(number(c, "cx")?, number(c, "cy")?), number(c, "r")?)));
+        let mut drawing = Drawing { view, outlines: Vec::new(), fill: true, stroke: 0.0, clip };
         for path in svg.split("<path").skip(1) {
             drawing.outlines.extend(attribute(path, "d").map(outlines).unwrap_or_default());
-            if let Some(width) = attribute(path, "stroke-width").and_then(|w| w.parse().ok()) {
+            drawing.fill = attribute(path, "fill") != Some("none");
+            if let Some(width) = number(path, "stroke-width") {
                 drawing.stroke = width;
             }
         }
@@ -176,7 +184,7 @@ impl Drawing {
         let mut inside = vec![false; sw * sh];
         // a sample's column from a place along a row: the first whose middle is at or past it
         let column = |x: f32| ((x - 0.5).ceil().max(0.0) as usize).min(sw);
-        for row in 0..sh {
+        for row in (0..sh).filter(|_| self.fill) {
             let y = row as f32 + 0.5;
             let mut crossings: Vec<(f32, i32)> = edges().filter(|(a, b)| (a.y <= y) != (b.y <= y)).map(|(a, b)| (a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y), if b.y > a.y { 1 } else { -1 })).collect();
             crossings.sort_by(|p, q| p.0.total_cmp(&q.0));
@@ -201,6 +209,13 @@ impl Drawing {
                         }
                     }
                 }
+            }
+        }
+        // the clip: no sample outside its circle
+        if let Some((middle, r)) = self.clip {
+            let (middle, r) = ((((middle - window.min) * k + margin) * n).to_pos2(), r * k * n);
+            for (i, sample) in inside.iter_mut().enumerate() {
+                *sample &= Pos2::new((i % sw) as f32 + 0.5, (i / sw) as f32 + 0.5).distance(middle) <= r;
             }
         }
         let mut coverage = vec![0u8; w * h];
@@ -379,6 +394,21 @@ mod tests {
         assert_eq!((star[20 * 40 + 20], star[0], star[39 * 40 + 39]), (255, 0, 0));
         let icon = icon([4, 4]);
         assert!(icon.pixels.iter().any(|p| p.a() == 255), "the icon read as nothing");
+    }
+
+    /// the strip's mark is the star of tridant.io's favicon, without its disc (the owner's choice, 2026-11-25, of the
+    /// mockup's "d"): a stroke with no fill, so its middle is open; its long ray runs out to where the favicon's disc
+    /// would end, and nothing is drawn past that edge, as the disc clips it.
+    #[test]
+    fn the_strips_mark_is_the_favicons_star() {
+        assert_eq!((MARK.stroke, MARK.fill, MARK.clip), (11.34, false, Some((Pos2::new(50.0, 50.0), 47.8))));
+        let mark = MARK.raster(MARK.view, [64, 64]);
+        let at = |x: usize, y: usize| mark[y * 64 + x];
+        // the open middle, the long ray to the right at the disc's edge, and the corners past the disc
+        assert_eq!((at(32, 32), at(61, 32), at(0, 0), at(63, 63)), (0, 255, 0, 0));
+        // nothing past the disc's edge: 47.8 of 100 is 30.6 of 64, from the middle
+        let past = (0..64 * 64).filter(|&i| ((i % 64) as f32 + 0.5 - 32.0).hypot((i / 64) as f32 + 0.5 - 32.0) > 31.5).map(|i| mark[i]).max();
+        assert_eq!(past, Some(0), "drawn past the disc's edge");
     }
 
     /// the card's star boots from −150° at 55% to upright at full size, holds, then throws a third of a turn and
