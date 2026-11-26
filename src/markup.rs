@@ -5,8 +5,22 @@
 use crate::view::Look;
 use std::collections::BTreeMap;
 
-/// the four inks, in the design's order: red, yellow, cyan, white
-pub const INKS: [[u8; 3]; 4] = [[0xff, 0x3b, 0x30], [0xff, 0xd6, 0x0a], [0x32, 0xd3, 0xff], [0xff, 0xff, 0xff]];
+/// the inks: red, orange, yellow, green, blue, indigo, violet, then white, black and grey (the owner's ask,
+/// 2026-11-25). the design's red, yellow and white are as it has them, the rest from the same family of bright system
+/// colors; its cyan is a blue now, which stands apart from indigo where cyan stood near it in name only. a mark keeps
+/// its ink as red, green and blue, so one drawn in cyan before stays cyan
+pub const INKS: [[u8; 3]; 10] = [
+    [0xff, 0x3b, 0x30],
+    [0xff, 0x95, 0x00],
+    [0xff, 0xd6, 0x0a],
+    [0x34, 0xc7, 0x59],
+    [0x1e, 0x90, 0xff],
+    [0x4b, 0x3c, 0xf0],
+    [0xc7, 0x4d, 0xff],
+    [0xff, 0xff, 0xff],
+    [0x00, 0x00, 0x00],
+    [0x8e, 0x8e, 0x93],
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Tool {
@@ -281,6 +295,21 @@ mod tests {
         assert!(!marks.undo(5), "nothing to take back");
         marks.clear(9);
         assert_eq!(marks.frames().count(), 0);
+    }
+
+    /// the inks are the rainbow, then white, black and grey (the owner's ask, 2026-11-25): ten, the design's red,
+    /// yellow and white as they were, its cyan a blue. no two are near: at least 60 apart in red, green and blue
+    /// together.
+    #[test]
+    fn the_inks_are_the_rainbow_then_white_black_and_grey_each_apart() {
+        let hex = |rgb: [u8; 3]| format!("{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+        assert_eq!(INKS.iter().map(|ink| hex(*ink)).collect::<Vec<_>>(), ["ff3b30", "ff9500", "ffd60a", "34c759", "1e90ff", "4b3cf0", "c74dff", "ffffff", "000000", "8e8e93"]);
+        for (i, a) in INKS.iter().enumerate() {
+            for b in &INKS[i + 1..] {
+                let apart = a.iter().zip(b).map(|(x, y)| (*x as f32 - *y as f32).powi(2)).sum::<f32>().sqrt();
+                assert!(apart > 60.0, "{} and {} are {apart:.0} apart", hex(*a), hex(*b));
+            }
+        }
     }
 
     /// every change to a frame's marks is a step undo takes back, the last first: a mark drawn, changed, taken off,

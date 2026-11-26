@@ -23,11 +23,12 @@ const TEXT_BACK: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 204); // rg
 // the field text is typed into (`.pl-mtxt`): 170 wide inside a padding of 6 across and 5 down, a white line round it
 const FIELD_WIDTH: f32 = 170.0;
 const FIELD_BACK: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 209); // rgba(0,0,0,.82)
-// the row of tools (`.pl-mk`): 3 inside its line, items 2 apart, a tool 30 wide, an ink 22, a rule with 4 clear each side
+// the row of tools (`.pl-mk`): 3 inside its line, items 2 apart, a tool 30 wide, an ink 18 (the design's 22 for its
+// four; ten at 18 fit a window 640 wide), a rule with 4 clear each side
 const TOOLS_PAD: f32 = 3.0;
 const TOOLS_GAP: f32 = 2.0;
 const TOOL: f32 = 30.0;
-const SWATCH: f32 = 22.0;
+const SWATCH: f32 = 18.0;
 const RULE: f32 = 9.0;
 const ITEM_HIGH: f32 = 28.0;
 // the caption under a saved picture, as fig. 20 draws it on a picture 1200 wide at 2.1 of its pixels to one of the
@@ -481,7 +482,7 @@ impl Markup {
     }
 
     /// the row of tools at the top middle of the picture while markup mode is on (`.pl-mk`): select and the four tools,
-    /// the four inks, undo and clear, then save image and done. `top` is its top edge.
+    /// the inks, undo and clear, then save image and done. `top` is its top edge.
     pub(super) fn tools(&mut self, ui: &mut egui::Ui, middle: f32, top: f32, actions: &mut Vec<Action>) {
         enum Item {
             Pick(Tool, Icon),
@@ -492,24 +493,9 @@ impl Markup {
             Words(&'static str),
         }
         use Item::*;
-        let items = [
-            Pick(Tool::Select, Icon::Select),
-            Pick(Tool::Rectangle, Icon::Rectangle),
-            Pick(Tool::Circle, Icon::Circle),
-            Pick(Tool::Pen, Icon::Pen),
-            Pick(Tool::Text, Icon::Text),
-            Rule,
-            Ink(0),
-            Ink(1),
-            Ink(2),
-            Ink(3),
-            Rule,
-            Undo,
-            Clear,
-            Rule,
-            Words("save image"),
-            Words("done"),
-        ];
+        let tools = [Pick(Tool::Select, Icon::Select), Pick(Tool::Rectangle, Icon::Rectangle), Pick(Tool::Circle, Icon::Circle), Pick(Tool::Pen, Icon::Pen), Pick(Tool::Text, Icon::Text), Rule];
+        let rest = [Rule, Undo, Clear, Rule, Words("save image"), Words("done")];
+        let items: Vec<Item> = tools.into_iter().chain((0..INKS.len()).map(Ink)).chain(rest).collect();
         let painter = ui.painter().clone();
         let words = |text: &str| painter.layout_no_wrap(text.to_string(), font(SANS, 12.0), FG);
         let wide = |item: &Item| match item {
@@ -1074,6 +1060,18 @@ mod tests {
         assert!(ui.escape() && !ui.markup.on);
     }
 
+    /// the row of tools, every ink in it, fits the narrowest window the player opens (640 wide) with 8 to spare each
+    /// side, where it stands as it always does: in the middle, under the strip's place.
+    #[test]
+    fn the_row_of_tools_fits_the_narrowest_window() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        drive(&mut ui, &[(320.0, 200.0, None)]);
+        let row = ui.markup.row.expect("the row of tools is up");
+        assert!(row.left() >= 8.0 && row.right() <= 632.0, "{row:?}");
+        assert!((row.center().x - 320.0).abs() < 0.01 && row.top() == 42.0, "{row:?}");
+    }
+
     /// a click on the row of tools picks a tool or an ink, or does what undo, clear, save image and done say (their
     /// keys, or the screenshot), and draws nothing.
     #[test]
@@ -1094,15 +1092,15 @@ mod tests {
             let x = if along < 0.0 { row.right() + along } else { row.left() + along };
             drive(ui, &click((x, row.top() + 4.0 + ITEM_HIGH / 2.0)))
         };
-        // inside the line and the padding (4): the tools 32 apart, select first, a rule 11, the inks 24 apart, a
+        // inside the line and the padding (4): the tools 32 apart, select first, a rule 11, the ten inks 20 apart, a
         // rule, undo, clear, a rule, then the words
         assert_eq!(press(&mut ui, 4.0 + 15.0), vec![]);
         assert_eq!(ui.markup.tool, Tool::Select);
         assert_eq!(press(&mut ui, 4.0 + 4.0 * 32.0 + 15.0), vec![]);
-        assert_eq!(press(&mut ui, 4.0 + 5.0 * 32.0 + 11.0 + 24.0 + 11.0), vec![]);
-        assert_eq!(press(&mut ui, 4.0 + 278.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL)]);
-        assert_eq!(press(&mut ui, 4.0 + 278.0 + 32.0 + 15.0), vec![Action::ClearMarks]);
-        assert_eq!(press(&mut ui, 4.0 + 278.0 + 64.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
+        assert_eq!(press(&mut ui, 4.0 + 5.0 * 32.0 + 11.0 + 20.0 + 9.0), vec![]);
+        assert_eq!(press(&mut ui, 4.0 + 382.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL)]);
+        assert_eq!(press(&mut ui, 4.0 + 382.0 + 32.0 + 15.0), vec![Action::ClearMarks]);
+        assert_eq!(press(&mut ui, 4.0 + 382.0 + 64.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
         assert_eq!(press(&mut ui, -14.0), vec![Action::Key(Key::E, keys::NONE)]);
         assert_eq!((ui.markup.tool, ui.markup.ink), (Tool::Text, 1));
     }
