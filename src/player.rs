@@ -2331,15 +2331,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 v.transport.set_loop(ends);
             }
             // a held still holds as long as the settings say now. at its end it goes round where a clip would loop,
-            // or hands over as a clip that played to its end does
+            // or hands over as a clip that played to its end does (below, after this turn's refresh)
             if let Some(hold) = &mut v.hold {
                 hold.length = Duration::from_secs_f32(settings.still_seconds);
                 held_out = hold.end(ends == crate::play::Loop::One, Instant::now());
             }
-        }
-        if held_out {
-            tabs.advance(&gpu, &wake);
-            again = true;
         }
         // and it wakes the loop when its time is up, and not before: nothing is drawn for it while it holds
         if let Some(ends) = tabs.view().and_then(|v| v.hold?.ends()) {
@@ -2444,6 +2440,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     titled = Some(title);
                 }
             }
+        }
+        // a held still that has held its time hands over too, after the refresh: a next clip that is ready is no
+        // refresh held at a cut
+        if held_out {
+            tabs.advance(&gpu, &wake);
+            again = true;
         }
         ui_painter.free_textures(&out.textures);
         // both halves are done with: egui checks that no change is dropped unseen
