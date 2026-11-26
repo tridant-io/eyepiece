@@ -20,9 +20,9 @@ a video review player for video professionals: extremely fast, lightweight, and 
 
 download the [latest release](https://github.com/tridant-io/eyepiece/releases/latest) from GitHub.
 
-**Windows:** download `eyepiece-<version>-windows-setup.exe` and run it. it installs for the current user only, with no admin prompt, into `%LOCALAPPDATA%\Programs\eyepiece`, and adds a Start menu entry. uninstall it from Windows Settings > Apps. it updates itself: a newer release shows an **update** button, which says what changed and installs it. it needs 64-bit Windows 11 and a GPU with Direct3D 11.
+**Windows:** download `eyepiece-<version>-windows-setup.exe` and run it. it installs for the current user only, with no admin prompt, into `%LOCALAPPDATA%\Programs\eyepiece`, and adds a Start menu entry. uninstall it from Windows Settings > Apps. it adds eyepiece to Explorer's **Open with** for mov, mp4, m4v, mkv and webm files, and makes it the default for none of them: to do that, settings > general > **make eyepiece the default for videos** opens eyepiece's page in Windows' Default apps, where you choose. it updates itself: a newer release shows an **update** button, which says what changed and installs it. it needs 64-bit Windows 11 and a GPU with Direct3D 11.
 
-**macOS:** download `eyepiece-<version>-macos.dmg`, open it and drag eyepiece to Applications. it is signed with an Apple Developer ID and notarized by Apple, and needs a Mac with Apple silicon and macOS 13 or later. it does not update itself yet: its **update** button opens the new release, downloaded the same way. this is the first macOS release, and it has been tried on macOS 26 only.
+**macOS:** download `eyepiece-<version>-macos.dmg`, open it and drag eyepiece to Applications. it is signed with an Apple Developer ID and notarized by Apple, and needs a Mac with Apple silicon and macOS 13 or later. Finder lists it under **Open With** for mov, mp4, m4v, mkv and webm files and leaves the default as it is: to make eyepiece the default for a kind of video, select one in Finder, choose **Get Info**, pick eyepiece under **Open with** and press **Change All**. it does not update itself yet: its **update** button opens the new release, downloaded the same way. this is the first macOS release, and it has been tried on macOS 26 only.
 
 ## quick start
 

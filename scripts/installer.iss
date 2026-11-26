@@ -29,6 +29,8 @@ UninstallDisplayIcon={app}\eyepiece.exe
 WizardStyle=modern
 OutputDir=..\dist
 OutputBaseFilename=eyepiece-{#Version}-windows-setup
+; the shell is told when [Registry]'s open with comes and goes
+ChangesAssociations=yes
 #ifdef Signed
 SignTool=artifact
 SignedUninstaller=yes
@@ -40,6 +42,36 @@ Source: "..\dist\eyepiece\*"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\eyepiece"; Filename: "{app}\eyepiece.exe"
+
+; open with: explorer's "open with" and settings > apps > default apps offer eyepiece for the videos it plays, and it is
+; the default for none of them. windows lets only the user choose a default, so nothing here writes one: no
+; UserChoice, no extension's own value. the uninstaller takes away what is written here and nothing else, and a key
+; that may hold other programs' values only once it is empty
+[Registry]
+; the type eyepiece opens a video as. with no name of its own, explorer names each kind as it does now
+Root: HKCU; Subkey: "Software\Classes\eyepiece.video"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\eyepiece.video\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\eyepiece.exe,0"
+Root: HKCU; Subkey: "Software\Classes\eyepiece.video\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\eyepiece.exe"" ""%1"""
+; the program as "open with" names it: the exe carries no name of its own
+Root: HKCU; Subkey: "Software\Classes\Applications\eyepiece.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "eyepiece"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Applications\eyepiece.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\eyepiece.exe"" ""%1"""
+; default apps' page for eyepiece, which its settings open by the name "eyepiece" (src\ui\panel.rs)
+Root: HKCU; Subkey: "Software\Tridant"; Flags: uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Tridant\eyepiece"; Flags: uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Tridant\eyepiece\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "eyepiece"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Tridant\eyepiece\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "a video review player for video professionals"
+Root: HKCU; Subkey: "Software\Tridant\eyepiece\Capabilities"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: "{app}\eyepiece.exe,0"
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "eyepiece"; ValueData: "Software\Tridant\eyepiece\Capabilities"; Flags: uninsdeletevalue
+; each video it plays: src\browse's clips, less mxf and avi, which do not play yet
+#dim Videos[5] {".mov", ".mp4", ".m4v", ".mkv", ".webm"}
+#define I
+#sub Video
+Root: HKCU; Subkey: "Software\Classes\{#Videos[I]}"; Flags: uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Classes\{#Videos[I]}\OpenWithProgids"; ValueType: string; ValueName: "eyepiece.video"; ValueData: ""; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Classes\Applications\eyepiece.exe\SupportedTypes"; ValueType: string; ValueName: "{#Videos[I]}"; ValueData: ""
+Root: HKCU; Subkey: "Software\Tridant\eyepiece\Capabilities\FileAssociations"; ValueType: string; ValueName: "{#Videos[I]}"; ValueData: "eyepiece.video"
+#endsub
+#for {I = 0; I < DimOf(Videos); I++} Video
 
 [Run]
 Filename: "{app}\eyepiece.exe"; Description: "{cm:LaunchProgram,eyepiece}"; Flags: nowait postinstall skipifsilent

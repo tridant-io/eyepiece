@@ -227,6 +227,15 @@ define_class!(
             close(Handle(std::ptr::null()));
             NSApplicationTerminateReply::TerminateCancel
         }
+
+        // finder's open with, a double click or a drop on the dock's icon come here, not on the command line, at launch
+        // and to a player already open alike: each opens as a later launch's file does
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            for path in paths(urls) {
+                handed(path);
+            }
+        }
     }
 
     unsafe impl NSWindowDelegate for Delegate {
@@ -872,6 +881,11 @@ pub fn handed(path: String) {
     });
 }
 
+/// the paths of the files among urls the system hands over
+fn paths(urls: &NSArray<NSURL>) -> Vec<String> {
+    urls.iter().filter(|url| url.isFileURL()).filter_map(|url| url.path()).map(|path| path.to_string()).collect()
+}
+
 /// shows a file in finder, selected in its folder's window; a line in the window says so when finder could not.
 pub fn reveal(file: &std::path::Path, wake: Sender<Event>) {
     let file = file.to_string_lossy().into_owned();
@@ -928,5 +942,18 @@ pub fn refresh_rate() -> f64 {
         let rate = CGDisplayModeGetRefreshRate(mode);
         CGDisplayModeRelease(mode);
         if rate > 0.0 { rate } else { 60.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// finder hands files over as urls: each opens by its own path, its escapes undone, and what is not a file is left
+    #[test]
+    fn finders_urls_open_by_their_paths() {
+        let url = |text: &str| NSURL::URLWithString(&NSString::from_str(text)).unwrap();
+        let urls = NSArray::from_retained_slice(&[url("file:///clips/a%20b%20%C3%A9.mov"), url("https://tridant.io/"), url("file:///clips/folder/")]);
+        assert_eq!(paths(&urls), ["/clips/a b é.mov", "/clips/folder"]);
     }
 }

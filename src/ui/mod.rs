@@ -2777,6 +2777,21 @@ pub(super) mod tests {
         assert_eq!(page(&ui), Some((panel::Which::Settings, panel::ABOUT)));
     }
 
+    /// on windows, general's fourth row opens windows' own default apps on eyepiece's page and sets nothing itself
+    /// (the owner's word, 2026-11-26): windows lets only the user choose a default. under autoplay (48.65 high), the
+    /// browser's choice (40) and one window (48.65), from 102 down. its button ends 31 in from the panel's right: the
+    /// page's 20, and 11 for the scrollbar general has now that its rows no longer fit
+    #[cfg(windows)]
+    #[test]
+    fn general_opens_windows_default_apps_and_sets_nothing() {
+        let mut ui = Ui::new((1088, 612), 1.0, false, None, None);
+        ui.toggle_settings();
+        let (x, y) = (924.0 - 31.0 - 20.0, 102.0 + 48.65 + 40.0 + 48.65 + 24.3);
+        // the panel's first pass lays it out unseen
+        drive(&mut ui, &[(x, y, None)]);
+        assert_eq!(drive(&mut ui, &click(x, y)), vec![Action::OpenUrl("ms-settings:defaultapps?registeredAppUser=eyepiece".to_string())]);
+    }
+
     /// resting on the mark brings its card up, under the strip with its right edge on the mark's; it stays while the
     /// pointer is on the mark or the card, and goes a moment after it leaves both.
     #[test]

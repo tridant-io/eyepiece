@@ -390,6 +390,11 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, actions: &mut Vec<Action>) {
         s.browser_opens_in = opens[i];
     }
     toggle(rows.row(ui, "one-window", "one window", words("a second launch opens its file in a tab here"), &[Part::Switch(s.one_window)]), &mut s.one_window);
+    // windows lets only the user choose a default: its own page, on eyepiece, which the installer registers under
+    // this name (scripts\installer.iss). a mac's is get info > open with > change all, which needs no row
+    if cfg!(windows) && rows.row(ui, "default", "make eyepiece the default for videos", words("windows' own page, where you choose: eyepiece never sets it itself"), &[Part::Button("open default apps", true)]).is_some() {
+        actions.push(Action::OpenUrl("ms-settings:defaultapps?registeredAppUser=eyepiece".to_string()));
+    }
     toggle(rows.row(ui, "pin", "keep the controls up", words("the pin at the bar's left does the same"), &[Part::Switch(s.pin_controls)]), &mut s.pin_controls);
     if let Some(to) = typed(rows.row(ui, "after", "controls go after", words("once the pointer rests off them"), &[Part::Field(format!("{:.1}", s.controls_after), "s", 46.0, number)])) {
         s.controls_after = to.clamp(1.0, 10.0);

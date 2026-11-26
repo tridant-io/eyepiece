@@ -60,6 +60,9 @@ build)
     [ $size = 512 ] || run "icon$size@2x" sips -z $((size * 2)) $((size * 2)) assets/icon/eyepiece.png --out "$set/icon_${size}x${size}@2x.png"
   done
   run iconutil iconutil -c icns "$set" -o "$r/eyepiece.icns"
+  # finder's open with lists it for the videos it plays (src/browse's clips, less mxf and avi, which do not play yet),
+  # an alternate that never takes the default from quicktime: get info > open with > change all does that. macos 13
+  # may not declare mkv and webm itself, so they are imported, which gives way to a declaration of the system's
   cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -76,6 +79,38 @@ build)
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>Copyright (c) 2026 Tridant, Inc.</string>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>video</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array>
+      <string>com.apple.quicktime-movie</string>
+      <string>public.mpeg-4</string>
+      <string>com.apple.m4v-video</string>
+      <string>org.matroska.mkv</string>
+      <string>org.webmproject.webm</string>
+    </array>
+  </dict></array>
+  <key>UTImportedTypeDeclarations</key><array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.matroska.mkv</string>
+      <key>UTTypeDescription</key><string>Matroska video</string>
+      <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key><dict>
+        <key>public.filename-extension</key><array><string>mkv</string></array>
+        <key>public.mime-type</key><array><string>video/x-matroska</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.webmproject.webm</string>
+      <key>UTTypeDescription</key><string>WebM video</string>
+      <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key><dict>
+        <key>public.filename-extension</key><array><string>webm</string></array>
+        <key>public.mime-type</key><array><string>video/webm</string></array>
+      </dict>
+    </dict>
+  </array>
 </dict></plist>
 EOF
   run plist plutil -lint "$app/Contents/Info.plist"
