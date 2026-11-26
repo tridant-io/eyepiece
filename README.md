@@ -38,7 +38,7 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ### the window
 
 - **the strip** on top holds the tabs, help and settings. drag it to move the window.
-- **the bar** at the bottom holds play, the readout, the menus, metadata, screenshot, sound and the timebar.
+- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar.
 - **chips** stay on the picture while it differs from the file.
 - the window takes the clip's shape, up to 90% of the screen.
 - **one window:** a file opened while eyepiece runs, or dropped on it, gets a tab of its own.
@@ -123,7 +123,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 
 - **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
 - the screenshot menu can add a caption, the guides and the markup.
-- screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one.
+- screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one. the note that says where has **reveal in explorer** (finder on macOS), and stays up while the pointer is on it.
 - **markup:** **E** pauses and shows the tools: rectangle, circle, pen, text and four inks. in a text field, **enter** keeps and **esc** drops. **ctrl+Z** takes back a mark. marks stay on their frame until the tab closes.
 
 ![markup on a frame: rectangle, circle, text and the tools](docs/images/markup.png)

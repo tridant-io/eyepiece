@@ -164,8 +164,9 @@ pub struct Screen<'a> {
     /// the browser is up: in a tab with nothing in it, or laid over the clip
     pub browsing: bool,
     pub fullscreen: bool,
-    /// what just happened, said low in the middle of the window for a moment
-    pub toast: Option<&'a str>,
+    /// what just happened, said low in the middle of the window for a moment, and the file it names, if any, which
+    /// it offers to reveal
+    pub toast: Option<(&'a str, Option<&'a Path>)>,
     /// what is kept between runs, which the settings panel shows and changes
     pub settings: &'a Settings,
 }
@@ -385,6 +386,8 @@ pub struct Output {
     pub cross: bool,
     /// the pointer is on an edge of the browser that resizes a part: it is shown as a two-way arrow
     pub resize: bool,
+    /// the pointer is on a toast that offers to reveal a file: it stays up until the pointer leaves
+    pub toast_held: bool,
 }
 
 /// the menus that open over the bar
@@ -410,6 +413,8 @@ pub struct Ui {
     moved: bool,
     inside: bool,
     cross: bool,
+    /// the pointer is on a toast that offers to reveal a file
+    toast_held: bool,
     /// the controls are wanted on screen, and until when with the pointer at rest
     shown: bool,
     awake_until: f64,
@@ -506,6 +511,7 @@ impl Ui {
             moved: false,
             inside: false,
             cross: false,
+            toast_held: false,
             shown: false,
             awake_until: 0.0,
             pinned: false,
@@ -879,7 +885,7 @@ impl Ui {
         self.moved = false;
         // under a panel the strip stays up, though the bar steps aside: the pointer shows, and the mac's buttons stay
         let shown = self.shown || self.panel.is_some();
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: screen.browsing && self.browser.over_edge()}
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: screen.browsing && self.browser.over_edge(), toast_held: self.toast_held }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -925,8 +931,9 @@ impl Ui {
         self.panel_over(ui, full, screen, actions);
         self.update_modal(ui, full, actions);
         // a folder's subfolders are walked before it plays, which on a share can take a while
-        if let Some(said) = screen.toast.or_else(|| self.browser.walking().then_some("finding the videos in its subfolders…")) {
-            toast(ui, full, said);
+        self.toast_held = false;
+        if let Some((said, file)) = screen.toast.or_else(|| self.browser.walking().then_some(("finding the videos in its subfolders…", None))) {
+            self.toast_held = toast(ui, full, said, file, actions);
         }
     }
 
@@ -1556,7 +1563,7 @@ impl Ui {
         let middle = row_middle(bar);
         let narrow = bar.width() < NARROW;
 
-        // from the left: previous frame, play, next frame, the readout
+        // from the left: first frame, previous frame, play, next frame, the readout
         let mut x = bar.left() + PAD;
         // the next item in the row, `lead` further along than the usual gap
         let mut place = |lead: f32, w: f32, h: f32| {
@@ -1571,7 +1578,12 @@ impl Ui {
             self.pinned = !self.pinned;
         }
         self.hint(&pin, Some((if self.pinned { "let the controls go" } else { "keep the controls up" }.to_string(), String::new())));
-        let prev = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
+        let first = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "first", Icon::First, Lit::No);
+        if first.clicked() {
+            actions.push(Action::Key(Key::F, keys::SHIFT));
+        }
+        self.hint(&first, keys::named(Key::F, keys::SHIFT));
+        let prev = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
         if prev.clicked() {
             actions.push(Action::Step(-1));
         }
@@ -1878,21 +1890,41 @@ fn cut_middle(painter: &egui::Painter, name: &str, font_id: FontId, color: Color
     painter.layout_no_wrap(cut, font_id, color)
 }
 
+/// what the system's file browser is called where a file is revealed in it
+pub(crate) const REVEAL: &str = if cfg!(target_os = "macos") { "reveal in finder" } else { "reveal in explorer" };
+
 /// what just happened, low in the middle of the window and over everything: what was done in bright, the rest of
-/// it, after the first dot, in dim.
-fn toast(ui: &egui::Ui, full: Rect, said: &str) {
+/// it, after the first dot, in dim. a toast that names a file ends with a link that reveals it, underlined dotted as
+/// the about card's link is. true while the pointer is on such a toast, which holds it up.
+fn toast(ui: &egui::Ui, full: Rect, said: &str, file: Option<&Path>, actions: &mut Vec<Action>) -> bool {
     let (done, rest) = said.split_once(" · ").map_or((said, ""), |(done, rest)| (done, rest));
     let mut job = LayoutJob::default();
     job.append(done, 0.0, TextFormat { font_id: font(SANS, 12.5), color: FG, ..Default::default() });
     if !rest.is_empty() {
         job.append(&format!(" · {rest}"), 0.0, TextFormat { font_id: font(SANS, 12.5), color: DIM, ..Default::default() });
     }
+    if file.is_some() {
+        job.append(" · ", 0.0, TextFormat { font_id: font(SANS, 12.5), color: DIM, ..Default::default() });
+    }
     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
     let galley = painter.layout_job(job);
-    let rect = Align2::CENTER_BOTTOM.anchor_size(Pos2::new(full.center().x, full.bottom() - 64.0), galley.size() + Vec2::new(24.0, 18.0));
+    let link = file.map(|_| painter.layout_no_wrap(REVEAL.to_string(), font(SANS, 12.5), FG));
+    let wide = galley.size().x + link.as_ref().map_or(0.0, |l| l.size().x);
+    let rect = Align2::CENTER_BOTTOM.anchor_size(Pos2::new(full.center().x, full.bottom() - 64.0), Vec2::new(wide, galley.size().y) + Vec2::new(24.0, 18.0));
     painter.rect_filled(rect, 0.0, SOLID);
     painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-    painter.galley(Pos2::new(rect.left() + 12.0, text_top(&painter, font(SANS, 12.5), rect.center().y)), galley, FG);
+    let at = Pos2::new(rect.left() + 12.0, text_top(&painter, font(SANS, 12.5), rect.center().y));
+    let after = at.x + galley.size().x;
+    painter.galley(at, galley, FG);
+    let (Some(file), Some(link)) = (file, link) else { return false };
+    let link_at = Pos2::new(after, at.y);
+    let link_rect = Rect::from_min_size(Pos2::new(after, rect.top()), Vec2::new(link.size().x, rect.height()));
+    dotted(&painter, font(SANS, 12.5), link_at, link.size().x, FG);
+    painter.galley(link_at, link, FG);
+    if ui.interact(link_rect, ui.scope_id().with("toast-reveal"), Sense::click()).clicked() {
+        actions.push(Action::Reveal(file.to_path_buf()));
+    }
+    ui.rect_contains_pointer(rect)
 }
 
 /// a tab whose file did not open: its name and why, in the middle.
@@ -2013,7 +2045,8 @@ fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
     let total = Some(stamp(model.frames, 0, model.clock.map(|clock| Timecode { start: 0, ..clock }), timecode).1).filter(|_| label == "F" || !narrow);
     let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
     let mut job = LayoutJob::default();
-    job.append(label, 0.0, text(9.5, DIM, 9.5 * 0.12));
+    // the label is smaller than the numbers: set on their foot it sat low, so it is centered on their row
+    job.append(label, 0.0, TextFormat { valign: egui::Align::Center, ..text(9.5, DIM, 9.5 * 0.12) });
     job.append(&at, 2.0 + 7.0, text(11.5, FG, 11.5 * 0.02));
     if let Some(total) = total {
         job.append(&format!(" / {total}"), 0.0, text(11.5, DIM, 11.5 * 0.02));
@@ -2067,6 +2100,29 @@ pub(super) mod tests {
             }
         });
         out.textures_delta.clear();
+    }
+
+    /// the readout's small label, F or TC, is centered by eye on the numbers after it (the owner's word, 2026-11-25:
+    /// it sat low, by 1.5 to 2.5 of the screen's pixels at 150 to 200%): the middles of its capitals and of the
+    /// figures are within half a pixel of the screen's, as near as whole pixels allow when the label's ink is an odd
+    /// number of them taller or shorter than the figures'.
+    #[test]
+    fn the_readouts_label_is_centered_on_its_numbers() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(fonts());
+            ctx.set_pixels_per_point(scale);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for timecode in [false, true] {
+                    let galley = ui.painter().layout_job(readout(&Model { frame: 30, frames: 60, clock: Some(Timecode::counted(24)), ..model() }, timecode, false));
+                    let glyphs = &galley.rows[0].row.glyphs;
+                    let middle = |g: &egui::epaint::text::Glyph| g.pos.y + g.uv_rect.offset.y + g.uv_rect.size.y / 2.0;
+                    let (label, figure) = (middle(&glyphs[0]), middle(glyphs.iter().find(|g| g.chr == '0').expect("a figure")));
+                    assert!((label - figure).abs() <= 0.5 / scale + 0.01, "at {scale}, timecode {timecode}: the label's middle is at {label}, the figures' at {figure}");
+                }
+            });
+            out.textures_delta.clear();
+        }
     }
 
     /// the design's fig. 09: a step taken with the controls away says the frame it landed on, at the lower left, for
@@ -2205,6 +2261,33 @@ pub(super) mod tests {
         [(x, y, None), (x, y, Some((Left, true))), (x, y, Some((Left, false))), (x, y, None)]
     }
 
+    /// a toast that names a saved file offers to reveal it (the owner's word, 2026-11-25): a click on its last words
+    /// asks for the file to be shown in the system's file browser, and the pointer on the toast holds it up. a toast
+    /// with no file offers nothing and is not held.
+    #[test]
+    fn a_saved_files_toast_reveals_it_and_stays_while_pointed_at() {
+        let file = std::env::temp_dir().join("a.f000001.png");
+        let said = "saved to pictures / eyepiece · a.f000001.png · 64 × 64";
+        let screen = |file: Option<&'static Path>| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: Some((said, file)), settings: &DEFAULTS };
+        let file: &'static Path = Box::leak(file.into_boxed_path());
+        // the toast's middle is 64 + half its height above the window's foot, in the middle across
+        let y = 700.0 - 64.0 - 17.0;
+        let reveal = vec![Action::Reveal(file.to_path_buf())];
+        let mut ui = Ui::new((1240, 700), 1.0, false, None, None);
+        let clicks = |ui: &mut Ui, file| (0..160).map(|i| 620.0 + 3.0 * i as f32).filter(|&x| drive_on(ui, &screen(file), &click(x, y)).contains(&reveal[0])).count();
+        assert!(clicks(&mut ui, Some(file)) > 20, "its last words reveal the file");
+        assert_eq!(clicks(&mut ui, None), 0, "a toast with no file offers nothing");
+        let held = |ui: &mut Ui, file, x| {
+            ui.pointer_move(x, y);
+            let mut out = ui.run(&screen(file));
+            out.textures.clear();
+            out.toast_held
+        };
+        assert!(held(&mut ui, Some(file), 620.0), "held while pointed at");
+        assert!(!held(&mut ui, Some(file), 620.0 + 600.0), "not held once the pointer is off it");
+        assert!(!held(&mut ui, None, 620.0), "a toast with no file is not held");
+    }
+
     /// zoomed in past the window, the navigator stands at the lower left, clear of the bar: a plan of the whole
     /// picture, 112 on its longer side, with the part in view marked. a press in it brings that part of the picture
     /// to the middle of the window. fitted, there is none, and a click there is a click on the picture.
@@ -2301,7 +2384,8 @@ pub(super) mod tests {
 
     /// the pin at the bar's far left keeps the controls up when the pointer leaves the window, where they go at
     /// once without it; a second click lets them go again. the bar's row is 32 above the window's bottom, the pin
-    /// 23 in, and the previous-frame button after it.
+    /// 23 in, then the first-frame button, which does what shift + F does (the owner's word, 2026-11-25), and the
+    /// previous-frame button after it.
     #[test]
     fn the_pin_keeps_the_controls_up() {
         let mut ui = Ui::new((900, 360), 1.0, false, None, None);
@@ -2312,7 +2396,9 @@ pub(super) mod tests {
         out.textures.clear();
         assert!(ui.shown && out.shown, "pinned, the controls stay when the pointer leaves");
         std::thread::sleep(Duration::from_millis(350));
-        assert_eq!(drive(&mut ui, &click(63.0, 328.0)), vec![Action::Step(-1)], "the previous-frame button stands after the pin");
+        assert_eq!(drive(&mut ui, &click(63.0, 328.0)), vec![Action::Key(Key::F, keys::SHIFT)], "the first-frame button stands after the pin");
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(drive(&mut ui, &click(63.0 + 32.0, 328.0)), vec![Action::Step(-1)], "and the previous-frame button after it");
         std::thread::sleep(Duration::from_millis(350));
         assert_eq!(drive(&mut ui, &click(23.0, 328.0)), vec![]);
         assert!(!ui.pinned());

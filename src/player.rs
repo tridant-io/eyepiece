@@ -23,7 +23,7 @@ use crate::shot;
 use crate::ui::{self, Action, Extras, Facts, FolderList, ListItem, Model, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -850,9 +850,22 @@ fn loudness(speaker: &mut Speaker, settings: &Settings) {
     speaker.set_muted(settings.mute);
 }
 
-/// a line for the window to say, and until when
-fn say(words: impl Into<String>) -> Option<(String, Instant)> {
-    Some((words.into(), Instant::now() + Duration::from_millis(2600)))
+/// a line for the window to say, until when, and the file it names, which it offers to reveal
+struct Toast {
+    said: String,
+    until: Instant,
+    file: Option<PathBuf>,
+}
+
+/// a line for the window to say, for a moment
+fn say(words: impl Into<String>) -> Option<Toast> {
+    Some(Toast { said: words.into(), until: Instant::now() + Duration::from_millis(2600), file: None })
+}
+
+/// a line that names a file just saved: up for longer than others, so there is time to read it and reveal the file
+/// (the owner's word, 2026-11-25)
+fn say_saved(words: String, file: PathBuf) -> Option<Toast> {
+    Some(Toast { said: words, until: Instant::now() + Duration::from_millis(5000), file: Some(file) })
 }
 
 /// a tab that was closed: its file, the frame it was on and how the picture sat, for bringing it back
@@ -1381,10 +1394,10 @@ fn shoot(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings: &Sett
     }
     std::thread::spawn(move || {
         let said = match shot::save(&pixels, size.0, size.1, deep, alpha, &folder, &stem) {
-            Ok(file) => format!("saved to {} · {} · {detail}", shots_to(&folder), file.file_name().map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned())),
-            Err(why) => format!("not saved · {why}"),
+            Ok(file) => Event::Saved(format!("saved to {} · {} · {detail}", shots_to(&folder), file.file_name().map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned())), file),
+            Err(why) => Event::Toast(format!("not saved · {why}")),
         };
-        let _ = wake.send(Event::Toast(said));
+        let _ = wake.send(said);
     });
 }
 
@@ -1632,7 +1645,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         None => (Tab::empty(), None),
     };
     // what just happened, said in the window until then; and where screenshots go, as the menu names it
-    let mut toast: Option<(String, Instant)> = None;
+    let mut toast: Option<Toast> = None;
+    // the pointer was on the toast at the last pass: it is not taken away under it
+    let mut toast_held = false;
     let mut shots_label = shots_to(&shots_folder(settings));
     let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open };
     // the file given at launch, opened before there were tabs, plays as any file opened does
@@ -1752,6 +1767,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Changed(path) => tabs.reload(&path, &gpu, &wake),
                 Event::Gone(path) => toast = say(format!("{} is no longer where it was on disk", Path::new(&path).file_name().map_or(path.as_str().into(), |n| n.to_string_lossy()))),
                 Event::Toast(said) => toast = say(said),
+                Event::Saved(said, file) => toast = say_saved(said, file),
                 // what was read in the background is taken up below, with everything else
                 Event::Wake => {}
                 Event::Key { .. } if panel_took => {}
@@ -1951,7 +1967,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if let Some(facts) = &mut tabs.tab().facts {
             facts.poll();
         }
-        if toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+        if !toast_held && toast.as_ref().is_some_and(|t| Instant::now() >= t.until) {
             toast = None;
         }
         if !looked && gpu.reached() {
@@ -2012,7 +2028,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }),
                 browsing: tab.browsing(),
                 fullscreen,
-                toast: opening.as_deref().filter(|_| tab.view.is_some() || tab.error.is_some()).or(toast.as_ref().map(|(said, _)| said.as_str())),
+                toast: opening.as_deref().filter(|_| tab.view.is_some() || tab.error.is_some()).map(|said| (said, None)).or(toast.as_ref().map(|t| (t.said.as_str(), t.file.as_deref()))),
                 settings,
             };
             ui.run(&screen)
@@ -2163,9 +2179,14 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             Some(wait) => ui_due = Some(Instant::now() + wait),
             None => {}
         }
-        // a toast is taken away when its time is up, even if nothing else happens
-        if let Some((_, until)) = &toast {
-            ui_due = Some(ui_due.map_or(*until, |due| due.min(*until)));
+        // a toast is taken away when its time is up, even if nothing else happens; one the pointer is on stays, and
+        // goes a second after the pointer leaves it
+        toast_held = out.toast_held;
+        if let Some(t) = &mut toast {
+            if toast_held {
+                t.until = t.until.max(Instant::now() + Duration::from_secs(1));
+            }
+            ui_due = Some(ui_due.map_or(t.until, |due| due.min(t.until)));
         }
         // fullscreen with the controls away is the frame and nothing else: no pointer either. where a drag would
         // draw a mark the pointer is a cross, and stays

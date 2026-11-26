@@ -5,6 +5,7 @@ use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Icon {
+    First,
     Prev,
     Next,
     Play,
@@ -79,6 +80,13 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         (0..=6).map(|i| (from + (to - from) * i as f32 / 6.0).to_radians()).map(|a| (cx + r * a.cos(), cy + r * a.sin())).collect()
     };
     match icon {
+        // not in the design: previous frame's bar with a second chevron, its ink centered in the box (the owner's
+        // word, 2026-11-25)
+        Icon::First => {
+            line(&[(3.0, 3.5), (3.0, 12.5)]);
+            line(&[(8.5, 3.5), (4.3, 8.0), (8.5, 12.5)]);
+            line(&[(13.0, 3.5), (8.8, 8.0), (13.0, 12.5)]);
+        }
         Icon::Prev => {
             line(&[(5.0, 3.5), (5.0, 12.5)]);
             line(&[(11.5, 3.5), (6.8, 8.0), (11.5, 12.5)]);

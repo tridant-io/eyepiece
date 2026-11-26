@@ -1542,7 +1542,7 @@ impl State {
     /// applies to it here (reveal is not offered on a network volume, where explorer would read the folder to show it).
     fn menu_rows(&self, on: &On) -> Vec<MenuRow> {
         let local = self.nav.volume != Volume::Network;
-        let reveal = if cfg!(target_os = "macos") { "reveal in finder" } else { "reveal in explorer" };
+        let reveal = super::REVEAL;
         let mut rows: Vec<MenuRow> = Vec::new();
         match on {
             On::File(file) => {
@@ -2389,7 +2389,7 @@ mod tests {
     /// volume, where nothing is revealed and metadata and previews are asked for. every row fits the menu in its fonts.
     #[test]
     fn the_right_click_menu_offers_what_applies_to_what_it_is_on() {
-        let reveal = if cfg!(target_os = "macos") { "reveal in finder" } else { "reveal in explorer" };
+        let reveal = super::super::REVEAL;
         let rows = |state: &State, on: On| state.menu_rows(&on).into_iter().map(|(words, key, _, view)| (words, key, view)).collect::<Vec<_>>();
         let folder = std::env::temp_dir().join("eyepiece-no-such-menu");
         let at = |name: &str| folder.join(name);

@@ -95,6 +95,8 @@ pub enum Event {
     Gone(String),
     /// work done in the background has this to say, for a moment, in the window
     Toast(String),
+    /// a screenshot was saved: what to say of it, and the file, which the toast offers to reveal
+    Saved(String, std::path::PathBuf),
     /// work done in the background is ready to be looked at
     Wake,
     Close,
