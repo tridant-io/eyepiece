@@ -97,6 +97,7 @@ rest the pointer on the metadata button to read it. click it or press **I** to p
 a folder's clips, played in name order in one tab. press **open folder** in the browser, or drop a folder on the window.
 
 - **R** goes round loop all, one and off. **ctrl+←** and **ctrl+→** go to the clip before and after.
+- every clip starts from its first frame, whether play runs on to it or you step to it.
 - click the tab to list the clips. a size or rate unlike the first clip's is amber.
 - nothing jumps at a cut: the window is sized once and the next clip is ready.
 - **play with subfolders** (right-click a folder, or **ctrl+shift+enter**) plays its own clips, then each subfolder's, depth first. the list names each by its path from the folder. it stops at 2000 videos or 10000 folders, and says so.

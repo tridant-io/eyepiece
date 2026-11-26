@@ -745,9 +745,10 @@ impl Coming {
 }
 
 /// what a tab hands on to the clip coming to it. a file opened in the tab starts as a clip does (a closed tab
-/// brought back, on its frame, zoom and pan). a step by hand between clips of one size and length keeps the frame,
-/// zoom and pan, so two versions flip on the spot, and so does a file that changed on disk, as far as the new file
-/// has them; the speed, the look and loop analysis are the tab's and stay through a folder's cuts.
+/// brought back, on its frame, zoom and pan). another clip of the folder starts from its first frame (the owner,
+/// 2026-11-25); a step by hand between clips of one size and length keeps the zoom and pan. a file that changed on
+/// disk keeps its frame, zoom and pan, as far as the new file has them. the speed, the look and loop analysis are the
+/// tab's and stay through a folder's cuts. two tabs, not a folder, are how versions flip on the same frame.
 fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: Option<&View>) {
     match (why, old) {
         (Why::Opened, _) => {
@@ -760,7 +761,7 @@ fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: O
             view.transport.set_speed(old.transport.speed());
             view.set_look(old.look);
             let same = (view.clip.upright() == old.clip.upright(), view.clip.timeline.frames() == old.clip.timeline.frames());
-            if why == Why::Changed || (why == Why::Stepped && same == (true, true)) {
+            if why == Why::Changed {
                 view.transport.go(old.transport.frame() as i64);
             }
             if why != Why::Ran && same.0 && (why == Why::Changed || same.1) {
@@ -2463,6 +2464,22 @@ mod tests {
         let mut view = View::new(&gpu, clip, 60.0).expect("view");
         assert!(view.load(&gpu, Duration::from_secs(20)), "the first frame arrived");
         (gpu, view)
+    }
+
+    /// another clip of a played folder starts from its first frame, stepped to or run onto, even a version of the
+    /// same size and length (the owner: "always play from the beginning of the next clip"); a file that changed on
+    /// disk comes up on the frame it was on.
+    #[test]
+    fn a_played_folders_next_clip_starts_from_its_first_frame() {
+        let (_gpu, mut old) = view("hap_64.mov");
+        old.transport.go(5);
+        let at = old.transport.frame();
+        assert!(at > 0, "the clip has frames past its first");
+        for (why, frame) in [(Why::Stepped, 0), (Why::Ran, 0), (Why::Changed, at)] {
+            let (_gpu, mut next) = view("hap_64.mov");
+            seed(&mut next, why, None, Some(&old));
+            assert_eq!(next.transport.frame(), frame, "{}", match why { Why::Stepped => "stepped", Why::Ran => "ran", _ => "changed" });
+        }
     }
 
     /// the pixel readout gives the file's pixel, whatever the window shows: each one read back matches ffmpeg's
