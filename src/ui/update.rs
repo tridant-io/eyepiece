@@ -9,10 +9,13 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, Galley, Pos2, Rect, Sense, Vec2};
 use std::sync::Arc;
 
+/// about's button that asks github for the latest release
+const CHECK: &str = "check for updates";
+
 /// what the player knows of updates
 #[derive(Clone, Default)]
 pub enum Updates {
-    /// not looked for in this run
+    /// not checked for in this run
     #[default]
     Unchecked,
     Checking,
@@ -264,17 +267,18 @@ impl Ui {
         }
     }
 
-    /// about's update line (fig. 34): what the last look for a release found, and check now, or see the update
+    /// about's update line (fig. 34): what the last check for updates found, and check for updates, or see the update
     pub(super) fn update_line(&mut self, ui: &mut egui::Ui, check_at_start: bool, actions: &mut Vec<Action>) {
         let width = ui.available_width();
         let painter = ui.painter().clone();
         let (title, sub, label, busy) = match &self.updates {
-            Updates::Unchecked if !check_at_start => ("checks at start are off".to_string(), "turned off in general. check now still asks, once.".to_string(), Some("check now"), false),
-            Updates::Unchecked => ("not looked for in this run".to_string(), "eyepiece asks github at most once a day.".to_string(), Some("check now"), false),
-            Updates::Checking => ("checking for updates".to_string(), "asking github for the latest release".to_string(), Some("check now"), true),
-            Updates::Current(at) => ("up to date".to_string(), format!("checked today at {at}"), Some("check now"), false),
+            // "check for updates", as every program says it (the owner's word, 2026-11-25)
+            Updates::Unchecked if !check_at_start => ("update checks are off".to_string(), "turned off in general settings. you can still check by hand.".to_string(), Some(CHECK), false),
+            Updates::Unchecked => ("not checked for updates yet".to_string(), "eyepiece checks github for updates at most once a day.".to_string(), Some(CHECK), false),
+            Updates::Checking => ("checking for updates".to_string(), "asking github for the latest release".to_string(), Some(CHECK), true),
+            Updates::Current(at) => ("up to date".to_string(), format!("checked for updates today at {at}"), Some(CHECK), false),
             Updates::Found(release, _) => (format!("eyepiece {} is out", release.version), format!("you have {} · released {}", super::panel::VERSION, release.date), Some("see the update"), false),
-            Updates::Failed(at) => ("could not check".to_string(), format!("github did not answer at {at}. it is asked again at the next start."), Some("check now"), false),
+            Updates::Failed(at) => ("could not check for updates".to_string(), format!("github did not answer at {at}. eyepiece checks again at the next start."), Some(CHECK), false),
         };
         let room = width - 28.0 - label.map_or(0.0, |l| button_width(ui, l) + 14.0);
         let title = painter.layout_no_wrap(title, font(SANS, 12.5), FG);

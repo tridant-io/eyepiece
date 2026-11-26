@@ -1027,13 +1027,20 @@ impl State {
         if ui.interact(line, ui.scope_id().with("brw-address"), Sense::click()).clicked() {
             clicks.push((Click::Address, None));
         }
+        // nothing of the address is drawn past its room: the buttons are there (the owner's word, 2026-11-25)
+        let painter = &painter.with_clip_rect(line.intersect(painter.clip_rect()));
         let crumbs = crumbs(folder);
         let last = crumbs.len().saturating_sub(1);
-        let laid: Vec<Arc<Galley>> = crumbs.iter().enumerate().map(|(i, (name, _))| painter.layout_no_wrap(name.clone(), font(if i == last { MONO_MEDIUM } else { MONO }, 11.5), FG)).collect();
+        let mut laid: Vec<Arc<Galley>> = crumbs.iter().enumerate().map(|(i, (name, _))| painter.layout_no_wrap(name.clone(), font(if i == last { MONO_MEDIUM } else { MONO }, 11.5), FG)).collect();
         let between = painter.layout_no_wrap(" / ".to_string(), font(MONO, 11.5), ROW_DIM);
         let more = painter.layout_no_wrap("…".to_string(), font(MONO, 11.5), ROW_DIM);
-        let wide = |first: usize| laid[first..].iter().map(|g| g.size().x).sum::<f32>() + between.size().x * (laid.len() - first - 1) as f32 + if first > 0 { more.size().x + between.size().x } else { 0.0 };
+        let lead = |first: usize| if first > 0 { more.size().x + between.size().x } else { 0.0 };
+        let wide = |first: usize| laid[first..].iter().map(|g| g.size().x).sum::<f32>() + between.size().x * (laid.len() - first - 1) as f32 + lead(first);
         let first = (0..=last).find(|&first| wide(first) <= room).unwrap_or(last);
+        // the folder shown alone is longer than the room: its name is cut in its middle, as a tab's is
+        if wide(first) > room {
+            laid[last] = super::cut_middle(painter, &crumbs[last].0, font(MONO_MEDIUM, 11.5), FG, room - lead(first));
+        }
         let mut x = left;
         if first > 0 {
             painter.galley(Pos2::new(x, top_of(painter, &more, middle)), more.clone(), ROW_DIM);
@@ -2214,6 +2221,27 @@ mod tests {
             pass_with(&mut state, vec![egui::Event::PointerMoved(Pos2::new(110.0, 300.0)), press(110.0, true), press(110.0, false)]);
         }
         assert_eq!(state.widths.side, 150.0, "a double click puts it back");
+    }
+
+    /// text never runs under the address's buttons (the owner's word, 2026-11-25): a folder whose name is longer than
+    /// the line has room for is cut in its middle, as a tab's name is, and nothing of it is drawn past its room.
+    #[test]
+    fn the_address_never_runs_under_its_buttons() {
+        let folder = std::env::temp_dir().join("a-render-folder-whose-name-runs-on-past-the-room-the-address-has-off-terrane");
+        let mut state = State::new(Some(folder.clone()), Vec::new(), None);
+        state.nav.listings.insert(folder.clone(), Ok(Vec::new()));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 400.0));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(area), ..Default::default() }, |ui| {
+            state.draw(ui, ui.max_rect());
+        });
+        out.textures_delta.clear();
+        let (view, sort) = right_buttons(Layout::new(area, state.nav.drawn(), false, state.nav.view, state.widths).address);
+        let texts: Vec<(String, Rect)> = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t.galley.text().to_string(), Rect::from_min_size(t.pos, t.galley.size()).intersect(s.clip_rect))) } else { None }).collect();
+        let under: Vec<&String> = texts.iter().filter(|(_, r)| r.intersect(view).is_positive() || r.intersect(sort).is_positive()).map(|(t, _)| t).collect();
+        assert!(under.is_empty(), "drawn under the buttons: {under:?}");
+        assert!(texts.iter().any(|(t, _)| t.contains('…') && t.ends_with("terrane")), "the folder's name, cut in its middle: {texts:?}");
     }
 
     /// at the address's right end, the view and the sort are icons side by side, each narrower than the words the
