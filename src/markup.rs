@@ -5,7 +5,7 @@
 use crate::view::Look;
 use std::collections::BTreeMap;
 
-/// the inks: red, orange, yellow, green, blue, indigo, violet, then white, black and grey (the owner's ask,
+/// the inks: red, orange, yellow, green, blue, indigo, violet, then white, black and gray (the owner's ask,
 /// 2026-11-25). the design's red, yellow and white are as it has them, the rest from the same family of bright system
 /// colors; its cyan is a blue now, which stands apart from indigo where cyan stood near it in name only. a mark keeps
 /// its ink as red, green and blue, so one drawn in cyan before stays cyan
@@ -308,11 +308,11 @@ mod tests {
         assert_eq!(marks.frames().count(), 0);
     }
 
-    /// the inks are the rainbow, then white, black and grey (the owner's ask, 2026-11-25): ten, the design's red,
+    /// the inks are the rainbow, then white, black and gray (the owner's ask, 2026-11-25): ten, the design's red,
     /// yellow and white as they were, its cyan a blue. no two are near: at least 60 apart in red, green and blue
     /// together.
     #[test]
-    fn the_inks_are_the_rainbow_then_white_black_and_grey_each_apart() {
+    fn the_inks_are_the_rainbow_then_white_black_and_gray_each_apart() {
         let hex = |rgb: [u8; 3]| format!("{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
         assert_eq!(INKS.iter().map(|ink| hex(*ink)).collect::<Vec<_>>(), ["ff3b30", "ff9500", "ffd60a", "34c759", "1e90ff", "4b3cf0", "c74dff", "ffffff", "000000", "8e8e93"]);
         for (i, a) in INKS.iter().enumerate() {
