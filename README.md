@@ -127,6 +127,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - click the tab to list the clips. a size or rate unlike the first clip's is amber.
 - nothing jumps at a cut: the window is sized once and the next clip is ready.
 - **play with subfolders** (right-click a folder, or **ctrl+shift+enter**) plays its own clips, then each subfolder's, depth first. the list names each by its path from the folder. it stops at 2000 videos or 10000 folders, and says so.
+- a folder dropped on the window, or given to eyepiece at launch, plays with its subfolders the same way.
 
 ---
 
