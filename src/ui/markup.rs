@@ -20,6 +20,7 @@ const TEXT_SIZE: f32 = 13.0;
 const TEXT_PAD: f32 = 5.0;
 const TEXT_BOX: f32 = 23.0;
 const TEXT_BACK: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 204); // rgba(0,0,0,.8)
+const TEXT_BACK_LIGHT: Color32 = Color32::from_rgba_premultiplied(204, 204, 204, 204); // rgba(255,255,255,.8)
 // the field text is typed into (`.pl-mtxt`): 170 wide inside a padding of 6 across and 5 down, a white line round it
 const FIELD_WIDTH: f32 = 170.0;
 const FIELD_BACK: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 209); // rgba(0,0,0,.82)
@@ -206,6 +207,25 @@ fn placing(model: &Model) -> Placing {
 
 fn ink(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+}
+
+/// the box behind text: dark, or light for an ink too dark to read on it (black, indigo), so every ink reads at 4.5:1
+/// or better
+fn text_back(rgb: [u8; 3]) -> Color32 {
+    if contrast(rgb, [0, 0, 0]) < 4.5 { TEXT_BACK_LIGHT } else { TEXT_BACK }
+}
+
+/// the contrast of two colors, as wcag counts it: 1 to 21
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let lum = |rgb: [u8; 3]| {
+        let [r, g, b] = rgb.map(|c| {
+            let c = c as f32 / 255.0;
+            if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        });
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
 impl Markup {
@@ -463,7 +483,9 @@ impl Markup {
         let at = Pos2::new(writing.field.x.clamp(full.left() + 6.0, full.right() - FIELD_WIDTH), writing.field.y.clamp(full.top() + 6.0, full.bottom() - 40.0));
         let mut done = None;
         egui::Area::new(egui::Id::unique("markup-text")).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
-            egui::Frame::new().fill(FIELD_BACK).stroke((1.0, Color32::WHITE)).inner_margin(egui::Margin::symmetric(6, 5)).show(ui, |ui| {
+            // a light field for an ink too dark for the dark one, as the text's box has
+            let back = if text_back(writing.ink) == TEXT_BACK { FIELD_BACK } else { TEXT_BACK_LIGHT };
+            egui::Frame::new().fill(back).stroke((1.0, Color32::WHITE)).inner_margin(egui::Margin::symmetric(6, 5)).show(ui, |ui| {
                 let edit = egui::TextEdit::singleline(&mut writing.text).id(egui::Id::unique("markup-text-edit")).frame(egui::Frame::NONE).margin(egui::Margin::ZERO);
                 let edit = ui.add(edit.font(font(TEXT_FONT, TEXT_SIZE)).text_color(color).hint_text("type, then enter").desired_width(FIELD_WIDTH));
                 if std::mem::take(&mut writing.fresh) {
@@ -536,7 +558,8 @@ impl Markup {
                 Undo => icons::draw(&painter, rect, Icon::Undo, FG),
                 Redo => icons::draw(&painter, rect, Icon::Redo, FG),
                 Clear => icons::draw(&painter, rect, Icon::Close, FG),
-                Ink(n) => swatch(&painter, rect.center(), INKS[*n], *n == self.ink),
+                // with a mark selected, its ink is the one lit
+                Ink(n) => swatch(&painter, rect.center(), INKS[*n], self.selected.as_ref().map_or(*n == self.ink, |(.., mark)| mark.ink == INKS[*n])),
                 Words(text) => {
                     painter.galley(Pos2::new(rect.left() + 8.0, text_top(&painter, font(SANS, 12.0), rect.center().y)), words(text), FG);
                 }
@@ -545,7 +568,18 @@ impl Markup {
             if response.clicked() {
                 match item {
                     Pick(tool, _) => self.tool = *tool,
-                    Ink(n) => self.ink = *n,
+                    Ink(n) => {
+                        self.ink = *n;
+                        // and the mark selected takes it, as its own menu's colors do
+                        if let Some((frame, index, mark)) = self.selected.take() {
+                            let inked = Mark { ink: INKS[*n], ..mark };
+                            actions.push(Action::Change(frame, index, Some(inked.clone())));
+                            self.selected = Some((frame, index, inked));
+                        }
+                        if let Some(writing) = &mut self.writing {
+                            writing.ink = INKS[*n];
+                        }
+                    }
                     // these go the way their keys do
                     Undo => actions.push(Action::Key(Key::Z, keys::CTRL)),
                     Redo => actions.push(Action::Key(Key::Z, keys::CTRL_SHIFT)),
@@ -619,7 +653,7 @@ fn draw_marks<'a>(painter: &egui::Painter, marks: impl Iterator<Item = &'a Mark>
             Shape::Text(at, text, size) => {
                 let at = to(at);
                 let (back, galley) = text_box(painter, at, text, *size, color);
-                painter.rect_filled(back, 0.0, TEXT_BACK);
+                painter.rect_filled(back, 0.0, text_back(mark.ink));
                 painter.galley(Pos2::new(at.x, text_top(painter, font(TEXT_FONT, TEXT_SIZE * size), back.center().y)), galley, color);
             }
         }
@@ -785,6 +819,34 @@ mod tests {
             let to = |x: f32, y: f32| file((336.0 + (x - 336.0) * sx, 216.0 + (y - 216.0) * sy));
             let [Action::Change(0, 1, Some(Mark { shape: Shape::Rectangle(a, b), .. }))] = &scaled[..] else { panic!("shift {shift}: {scaled:?}") };
             assert!(near(*a, to(340.0, 220.0)) && near(*b, to(440.0, 270.0)), "shift {shift}: {a:?} {b:?}, wanted {:?} {:?}", to(340.0, 220.0), to(440.0, 270.0));
+        }
+    }
+
+    /// with a mark selected, an ink in the row of tools recolors it (the owner's word, 2026-11-26), and is the ink of
+    /// the marks drawn next. the row's inks start past its five tools and a rule: 1 + 3 in, 5 × 32, 9 + 2
+    #[test]
+    fn an_ink_in_the_row_recolors_the_mark_selected() {
+        let mut marks = Marks::default();
+        let text = Mark { shape: Shape::Text(file((200.0, 100.0)), "note".into(), 1.0), ink: INKS[0] };
+        marks.add(0, text.clone());
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        ui.markup.tool = Tool::Select;
+        drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &click((210.0, 105.0)));
+        let row = ui.markup.row.expect("the row of tools");
+        let swatch = |n: usize| (row.left() + 4.0 + 5.0 * 32.0 + 11.0 + n as f32 * 20.0 + 9.0, row.top() + 4.0 + 14.0);
+        let inked = drive_with(&mut ui, Model { marks: Some(&marks), ..model() }, &click(swatch(8)));
+        assert_eq!(inked, vec![Action::Change(0, 0, Some(Mark { ink: INKS[8], ..text }))]);
+        assert_eq!(INKS[ui.markup.ink], INKS[8]);
+    }
+
+    /// text sits on a box that every ink reads against at 4.5:1 or better: dark, or light for the inks too dark for it
+    #[test]
+    fn every_ink_reads_on_its_texts_box() {
+        for rgb in INKS {
+            let back = text_back(rgb);
+            let back = [back.r(), back.g(), back.b()].map(|c| (c as f32 / back.a().max(1) as f32 * 255.0).round() as u8);
+            assert!(contrast(rgb, back) >= 4.5, "{rgb:?} on {back:?}: {}", contrast(rgb, back));
         }
     }
 
