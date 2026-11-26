@@ -927,10 +927,11 @@ Assert-Title 'which play then stays in' '^x_roll\.mov . \d / 3 . .* . loop one .
 Send-Key 0x52
 Wait-Title 'and R again is all: nothing about the loop in the title' { param($t) $t -match ' . clip 3 of 4' -and $t -notmatch ' loop ' } 'clip 3 of 4 and no loop mode'
 Stop-Player
-# a folder given to the player at launch plays as a played folder too
+# a folder given to the player at launch plays as a played folder too, with its subfolders' clips, as a drop does:
+# its own four, then the two in shots
 Start-Player $tree
 Start-Sleep -Milliseconds 1500; Send-Key 0x20
-Assert-Title 'a folder given at launch plays as a played folder' ' . clip [123] of 4( . \d+ held at cuts)?$'
+Assert-Title 'a folder given at launch plays as a played folder, with its subfolders' ' . clip [1-5] of 6( . \d+ held at cuts)?$'
 Stop-Player
 # what the section made, file by file, then its folders, each named before it goes. nothing recursive
 foreach ($made in @($copies.Keys) + (Join-Path $tree 'notes.txt'), (Join-Path $tree 'y_broken.mov'), $shots, $tree, $above, $wrap) {
@@ -1205,12 +1206,24 @@ Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: 
 Start-Sleep -Milliseconds 1500; Send-Key 0x20
 Assert-Title 'a folder dropped on the window plays as a played folder' ' . clip \d+ of \d+'
 Send-Key 0xDD; $script:name = 'hapq_64.mov'; Assert-Frame 'in a tab of its own: the clip that was up is still there, on its frame' 2 3
+# a drop cannot ask for a folder's subfolders, so it takes them: a folder with its clips only in a subfolder plays them
+$dropped = Join-Path $env:APPDATA 'dropped'; $within = Join-Path $dropped 'within'
+New-Item -ItemType Directory $dropped, $within | Out-Null
+Copy-Item (Join-Path $media 'hap_64.mov'), (Join-Path $media 'hapq_64.mov') $within
+[void][EyepieceE2e]::PostMessage($script:h, 0x233, [EyepieceDrop]::Files($dropped), [IntPtr]::Zero)
+# it plays at once, and the title follows only a clip that stands still: paused, as above
+Start-Sleep -Milliseconds 1500; Send-Key 0x20
+Assert-Title 'a folder dropped on the window plays the clips of its subfolders' ' . clip \d+ of 2'
 [void][EyepieceE2e]::ShowWindow($script:h, 6); Start-Sleep -Milliseconds 400
 $before = Get-Title
 Start-Again 'a launch with no file exits at once' @{}
 Start-Sleep -Milliseconds 400
 Confirm-That 'and brings the minimized window back, its clip as it was' ((-not [EyepieceE2e]::IsIconic($script:h)) -and (Get-Title) -eq $before) "minimized: $([EyepieceE2e]::IsIconic($script:h)), title '$(Get-Title)', was '$before'"
 Stop-Player
+# the dropped folder's copies, then its two folders, each named before it goes. nothing recursive
+foreach ($made in (Join-Path $within 'hap_64.mov'), (Join-Path $within 'hapq_64.mov'), $within, $dropped) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
 
 # the pictures the browser made, each named before it goes, then the folders made for them. nothing recursive
 if (Test-Path -LiteralPath $previews) {

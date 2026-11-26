@@ -1088,13 +1088,13 @@ impl Tabs {
         (coming.played, coming.play) = (Some(Played::new(title, folder, files.to_vec(), wake, local)), true);
     }
 
-    /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player.
-    /// the clips of one that had to be asked about are kept in `asking` for a few seconds, and play when they are
-    /// asked for again in that time.
-    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asking: &mut Option<(Vec<std::path::PathBuf>, Instant)>) -> Option<String> {
+    /// `play_folder` for a folder asked for by name: in the browser, dropped on the window, or handed to the player,
+    /// which `again` names (`folder::ask`). the clips of one that had to be asked about are kept in `asking` for a
+    /// few seconds, and play when they are asked for again in that time.
+    fn play_folder_or_ask(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asking: &mut Option<(Vec<std::path::PathBuf>, Instant)>, again: &str) -> Option<String> {
         let items = clips.as_ref().map(|clips| clips.items.clone()).unwrap_or_default();
         let asked = folder::answered(asking.take(), &items, Instant::now());
-        let said = self.play_folder(gpu, folder, clips, wake, replace, asked)?;
+        let said = self.play_folder(gpu, folder, clips, wake, replace, asked, again)?;
         *asking = (!asked).then(|| (items, Instant::now() + folder::ASKED_FOR));
         Some(said)
     }
@@ -1103,7 +1103,7 @@ impl Tabs {
     /// first, with the folder's loop mode. on a network volume it first asks, once, with the count of clips it will
     /// open (`asked` says that has just been done); there each clip is opened only when it is played. returns what
     /// there is to say about it.
-    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asked: bool) -> Option<String> {
+    fn play_folder(&mut self, gpu: &Gpu, folder: &Path, clips: Result<folder::Clips, String>, wake: &Sender<Event>, replace: bool, asked: bool, again: &str) -> Option<String> {
         let clips = match clips {
             Ok(clips) => clips,
             Err(why) => return Some(why),
@@ -1111,7 +1111,7 @@ impl Tabs {
         let none = if clips.deep { "no video in this folder or its subfolders" } else { "no video in this folder" };
         let Some(first) = clips.items.first().map(|first| first.to_string_lossy().into_owned()) else { return Some(none.into()) };
         let network = browse::volume_of(folder) == browse::Volume::Network;
-        if let Some(ask) = folder::ask(browse::volume_of(folder), clips.items.len(), clips.deep, asked) {
+        if let Some(ask) = folder::ask(browse::volume_of(folder), clips.items.len(), again, asked) {
             return Some(ask);
         }
         let title = folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
@@ -1600,6 +1600,17 @@ fn cache_bytes(settings: &Settings) -> u64 {
     (settings.cache_limit as f64 * (1u64 << 30) as f64) as u64
 }
 
+/// walks a folder and its subfolders (`folder::walk`) on a thread of its own, and wakes the player when that is done.
+fn walk_off(folder: std::path::PathBuf, wake: &Sender<Event>) -> (std::path::PathBuf, Receiver<Result<folder::Clips, String>>) {
+    let (done, walked) = std::sync::mpsc::channel();
+    let (at, wake) = (folder.clone(), wake.clone());
+    std::thread::spawn(move || {
+        let _ = done.send(folder::walk(&at));
+        let _ = wake.send(Event::Wake);
+    });
+    (folder, walked)
+}
+
 fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Option<(String, Result<Clip, String>)>, settings: &mut Settings) {
     let (w, h) = window::client_size(window);
     // declared before the tabs on purpose: a clip, and with it any decoder writing to this device, goes first
@@ -1659,9 +1670,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     if let Some(path) = to_count {
         tabs.open(&gpu, path, &wake, true);
     }
-    if let Some(said) = folder.and_then(|folder| tabs.play_folder_or_ask(&gpu, &folder, folder::listed(&folder), &wake, true, &mut asked_folder)) {
-        toast = say(said);
-    }
+    // a folder dropped on the window, given at launch or handed over plays with its subfolders' clips (the owner's
+    // word, 2026-11-26): a drop cannot ask for them. the walk is off this thread, as a big tree would hold the window
+    let mut walking = folder.map(|folder| walk_off(folder, &wake));
     // more files given at launch, as an update's restart gives the files that were open: each in a tab of its own
     for path in std::env::args().skip(2) {
         tabs.open(&gpu, path, &wake, false);
@@ -1758,12 +1769,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     ui.pointer_leave();
                 }
                 // a folder dropped on the window or handed over by another launch plays as a played folder, in a tab
-                // of its own as a file gets one (the owner's ask, 2026-11-24)
-                Event::Open(path) if Path::new(&path).is_dir() => {
-                    if let Some(said) = tabs.play_folder_or_ask(&gpu, Path::new(&path), folder::listed(Path::new(&path)), &wake, false, &mut asked_folder) {
-                        toast = say(said);
-                    }
-                }
+                // of its own as a file gets one (the owner's ask, 2026-11-24), once its walk is done
+                Event::Open(path) if Path::new(&path).is_dir() => walking = Some(walk_off(path.into(), &wake)),
                 Event::Open(path) => {
                     tabs.open(&gpu, path, &wake, false);
                 }
@@ -2150,13 +2157,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 Action::PlayFiles(files) => tabs.play_files(&gpu, files, &wake),
                 Action::PlayFolder(folder) => {
-                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, folder::listed(folder), &wake, true, &mut asked_folder) {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, folder::listed(folder), &wake, true, &mut asked_folder, "play folder") {
                         toast = say(said);
                     }
                 }
                 // walked by the browser, off this thread
                 Action::PlayTree(folder, clips) => {
-                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, clips.clone(), &wake, true, &mut asked_folder) {
+                    if let Some(said) = tabs.play_folder_or_ask(&gpu, folder, clips.clone(), &wake, true, &mut asked_folder, "play with subfolders") {
                         toast = say(said);
                     }
                 }
@@ -2272,6 +2279,15 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
             }
             Err(why) => toast = say(why),
+        }
+        // a dropped folder's walk is done: it plays, in a tab of its own
+        if let Some(clips) = walking.as_ref().and_then(|(_, done)| done.try_recv().ok()) {
+            if let Some((folder, _)) = walking.take() {
+                if let Some(said) = tabs.play_folder_or_ask(&gpu, &folder, clips, &wake, false, &mut asked_folder, "drop it") {
+                    toast = say(said);
+                }
+                again = true;
+            }
         }
         tabs.park(&gpu, &wake);
         again |= tabs.settle(window);

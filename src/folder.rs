@@ -96,11 +96,10 @@ pub fn items(entries: &[Entry]) -> (Vec<PathBuf>, usize) {
 
 /// what is asked before a folder is played: on a network volume, once, that it means opening its clips, with how
 /// many (the design: "play folder on a network path asks once, with the count"). None when there is nothing to ask:
-/// any other volume, or a folder that has just been asked about (`asked`). `deep`: it was asked for with its
-/// subfolders.
-pub fn ask(volume: Volume, clips: usize, deep: bool, asked: bool) -> Option<String> {
+/// any other volume, or a folder that has just been asked about (`asked`). `again` is what asked for it, which
+/// asks again to go on: "play folder", "play with subfolders", "drop it".
+pub fn ask(volume: Volume, clips: usize, again: &str, asked: bool) -> Option<String> {
     let opens = if clips == 1 { "its 1 clip, and nothing else".to_string() } else { format!("its {clips} clips, each when it plays") };
-    let again = if deep { "play with subfolders" } else { "play folder" };
     (volume == Volume::Network && !asked).then(|| format!("network folder · playing it opens {opens}. {again} again to go on"))
 }
 
@@ -231,14 +230,14 @@ mod tests {
 
     #[test]
     fn a_folder_on_a_network_volume_is_asked_about_once_with_its_count() {
-        assert_eq!((ask(Volume::Local, 300, false, false), ask(Volume::Removable, 300, true, false)), (None, None));
-        let asks = ask(Volume::Network, 300, false, false).expect("it asks");
+        assert_eq!((ask(Volume::Local, 300, "play folder", false), ask(Volume::Removable, 300, "drop it", false)), (None, None));
+        let asks = ask(Volume::Network, 300, "play folder", false).expect("it asks");
         assert!(asks.contains("300 clips") && asks.contains("network") && asks.ends_with("play folder again to go on"), "{asks}");
         // asked, it plays
-        assert_eq!(ask(Volume::Network, 300, false, true), None);
-        assert!(ask(Volume::Network, 1, false, false).expect("it asks").contains("1 clip,"));
-        // with its subfolders, it names that to ask for again
-        assert!(ask(Volume::Network, 2, true, false).expect("it asks").ends_with("play with subfolders again to go on"));
+        assert_eq!(ask(Volume::Network, 300, "play folder", true), None);
+        assert!(ask(Volume::Network, 1, "play folder", false).expect("it asks").contains("1 clip,"));
+        // dropped, it names the drop to do again
+        assert!(ask(Volume::Network, 2, "drop it", false).expect("it asks").ends_with("drop it again to go on"));
     }
 
     /// an ask is answered by asking again for the very clips it counted, in time: other folders picked in the folder
