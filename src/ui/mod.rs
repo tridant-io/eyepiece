@@ -1622,14 +1622,8 @@ impl Ui {
             actions.push(Action::Step(1));
         }
         self.hint(&next, keys::named(Key::G, keys::NONE));
-        // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
-        let galley = painter.layout_job(readout(model, self.timecode, narrow));
-        let rect = place(8.0, galley.size().x + 2.0 * PAD, TEXT_BUTTON);
-        let switch = text_button(ui, rect, "readout", None, galley, false);
-        if switch.clicked() {
-            self.toggle_timecode();
-        }
-        self.hint(&switch, keys::named(Key::T, keys::NONE));
+        // the readout comes after them, in what the buttons from the right leave it
+        let readout_at = x + 8.0;
 
         // from the right, in the design's order: fullscreen, sound, screenshots, metadata, the view, and the three
         // that say what they are set to: zoom, speed, loop
@@ -1747,6 +1741,15 @@ impl Ui {
                 self.toggle_menu(menu, rect);
             }
             self.hint(&button, tip);
+        }
+        // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
+        if let Some(galley) = fitted_readout(&painter, model, self.timecode, right - readout_at) {
+            let rect = Rect::from_min_size(Pos2::new(readout_at, middle - TEXT_BUTTON / 2.0), Vec2::new(galley.size().x + 2.0 * PAD, TEXT_BUTTON));
+            let switch = text_button(ui, rect, "readout", None, galley, false);
+            if switch.clicked() {
+                self.toggle_timecode();
+            }
+            self.hint(&switch, keys::named(Key::T, keys::NONE));
         }
 
         self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), middle + TEXT_BUTTON / 2.0), bar.max), bar.top(), model, actions);
@@ -2061,12 +2064,18 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, ga
     response
 }
 
-/// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and the total in dim.
-/// on a narrow bar the timecode's total is left out.
-fn readout(model: &Model, timecode: bool, narrow: bool) -> LayoutJob {
+/// the readout as it fits `room`: with its total, without it, or not at all, so it never runs under the bar's
+/// buttons
+fn fitted_readout(painter: &egui::Painter, model: &Model, timecode: bool, room: f32) -> Option<Arc<egui::Galley>> {
+    [true, false].into_iter().map(|total| painter.layout_job(readout(model, timecode, total))).find(|g| g.size().x + 2.0 * PAD <= room)
+}
+
+/// "F 000120 / 000600", or "TC 00:00:02:00 / 00:00:10:00": a small dim label, the place, and with `total`, the total
+/// in dim.
+fn readout(model: &Model, timecode: bool, total: bool) -> LayoutJob {
     let (label, at) = stamp(model.frame, model.first, model.clock, timecode);
     // the total is a count and a length of time: neither starts where the clip's own numbers do
-    let total = Some(stamp(model.frames, 0, model.clock.map(|clock| Timecode { start: 0, ..clock }), timecode).1).filter(|_| label == "F" || !narrow);
+    let total = Some(stamp(model.frames, 0, model.clock.map(|clock| Timecode { start: 0, ..clock }), timecode).1).filter(|_| total);
     let text = |size: f32, color: Color32, spacing: f32| TextFormat { font_id: font(MONO_MEDIUM, size), color, extra_letter_spacing: spacing, ..Default::default() };
     let mut job = LayoutJob::default();
     // the label is smaller than the numbers: set on their foot it sat low, so it is centered on their row
@@ -2126,6 +2135,26 @@ pub(super) mod tests {
         out.textures_delta.clear();
     }
 
+    /// the readout never runs under the bar's buttons (the owner's word, 2026-11-25: at the narrowest window its total
+    /// ran under the loop button): it keeps its total where the room left between the buttons holds it, leaves the
+    /// total out where only the place fits, and is not drawn where not even that does.
+    #[test]
+    fn the_readout_fits_the_room_the_buttons_leave_it() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let model = Model { frame: 30, frames: 150, ..model() };
+            let whole = painter.layout_job(readout(&model, false, true)).size().x + 2.0 * PAD;
+            let place = painter.layout_job(readout(&model, false, false)).size().x + 2.0 * PAD;
+            let text = |room: f32| fitted_readout(painter, &model, false, room).map(|g| g.text().to_string());
+            assert_eq!(text(whole), Some("F000030 / 000150".to_string()));
+            assert_eq!(text(whole - 1.0), Some("F000030".to_string()));
+            assert_eq!(text(place - 1.0), None);
+        });
+        out.textures_delta.clear();
+    }
+
     /// the readout's small label, F or TC, is centered by eye on the numbers after it (the owner's word, 2026-11-25:
     /// it sat low, by 1.5 to 2.5 of the screen's pixels at 150 to 200%): the middles of its capitals and of the
     /// figures are within half a pixel of the screen's, as near as whole pixels allow when the label's ink is an odd
@@ -2138,7 +2167,7 @@ pub(super) mod tests {
             ctx.set_pixels_per_point(scale);
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                 for timecode in [false, true] {
-                    let galley = ui.painter().layout_job(readout(&Model { frame: 30, frames: 60, clock: Some(Timecode::counted(24)), ..model() }, timecode, false));
+                    let galley = ui.painter().layout_job(readout(&Model { frame: 30, frames: 60, clock: Some(Timecode::counted(24)), ..model() }, timecode, true));
                     let glyphs = &galley.rows[0].row.glyphs;
                     let middle = |g: &egui::epaint::text::Glyph| g.pos.y + g.uv_rect.offset.y + g.uv_rect.size.y / 2.0;
                     let (label, figure) = (middle(&glyphs[0]), middle(glyphs.iter().find(|g| g.chr == '0').expect("a figure")));
@@ -2172,7 +2201,7 @@ pub(super) mod tests {
         let own = Timecode::parse("01:00:00;00", 30, 30);
         assert_eq!((stamp(1800, 0, own, true), stamp(0, 1, own, false), stamp(5, 1, None, true)), (("TC", "01:01:00;02".to_string()), ("F", "000001".to_string()), ("F", "000006".to_string())));
         // the readout: where the clip is by its own clock, and how long it is
-        let job = readout(&Model { frame: 30, frames: 60, clock: own, ..model() }, true, false);
+        let job = readout(&Model { frame: 30, frames: 60, clock: own, ..model() }, true, true);
         assert_eq!(job.text, "TC01:00:01;00 / 00:00:02;00");
     }
 
