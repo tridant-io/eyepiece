@@ -379,19 +379,20 @@ Send-Key 0x20; Move-Pointer 320 -5; $during = Get-Bright @picture -Any; Send-Key
 Confirm-That 'while a clip with long groups plays, the timebar shows a picture of its timebar strip' ($before -eq 0 -and $during -gt 2000) "lit pixels: $before before, $during on the timebar"
 
 # ---- the controls themselves, with a pointer: the bar's buttons, the timebar, the strip's close button.
-# places are from the design: the row's buttons are 30 wide, 32 up from the bottom: the pin from 8, then previous
-# frame from 48, play and next frame; the timebar is the bottom edge
+# places are from the design: the row's buttons are 30 wide, 32 up from the bottom: the pin from 8, then first frame
+# from 48 (the owner's word, 2026-11-25), previous frame, play and next frame; the timebar is the bottom edge
 Send-Key 0x24; Assert-Frame 'back to the first frame for the pointer checks' 0 24
-Click-At 127 -32; Assert-Frame 'the next-frame button steps forward' 1 24
-Click-At 127 -32; Assert-Frame 'and again' 2 24
-Click-At 63 -32; Assert-Frame 'the previous-frame button steps back' 1 24
+Click-At 159 -32; Assert-Frame 'the next-frame button steps forward' 1 24
+Click-At 159 -32; Assert-Frame 'and again' 2 24
+Click-At 95 -32; Assert-Frame 'the previous-frame button steps back' 1 24
+Click-At 63 -32; Assert-Frame 'the first-frame button goes to the first frame' 0 24
 # a quarter of the way along 24 frames is frame 6 (5.75, to the nearest frame)
 Click-At ((Get-Width) * 0.25) -3; Assert-Frame 'a click on the timebar goes to that frame' 6 24
 Click-At ((Get-Width) - 1) -3; Assert-Frame 'its right end is the last frame' 23 24
 Click-At 0 -3; Assert-Frame 'its left end is the first' 0 24
 # the play button: the clip is 24 frames and 0.8 s long. a third of a second of play ends inside it, past frame 0,
 # however busy the machine is
-Click-At 95 -32; Start-Sleep -Milliseconds 80; Click-At 95 -32 -Again
+Click-At 127 -32; Start-Sleep -Milliseconds 80; Click-At 127 -32 -Again
 Wait-Title 'the play button plays, and pauses' { param($t) $t -match ' (\d+) / 24 ' -and [int]$Matches[1] -ge 1 } 'a frame past 0'
 # a plain click on the picture plays, and another pauses (the owner's word): two clicks too far apart to be a double
 # click, a third of a second of play between them
@@ -402,7 +403,7 @@ Wait-Title 'a click on the picture plays, and another pauses' { param($t) $t -ma
 Confirm-That 'and two clicks apart are no double click: the window keeps its frame' (Test-Framed) "framed: $(Test-Framed)"
 # the pin at the bar's far left keeps the controls up: the play button's mark is still drawn three seconds after
 # the pointer came to rest on the picture, where without the pin the controls go after 2.4
-$mark = 84, -42, 106, -22
+$mark = 116, -42, 138, -22
 Click-At 23 -32; Move-Pointer $m[0] $m[1]; Start-Sleep -Milliseconds 3200
 Confirm-That 'pinned, the controls stay up while the pointer rests' ((Get-Bright @mark) -gt 0) "bright pixels of the play button: $(Get-Bright @mark)"
 Click-At 23 -32; Move-Pointer $m[0] $m[1]; Start-Sleep -Milliseconds 3200
