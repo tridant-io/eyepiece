@@ -38,7 +38,7 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ### the window
 
 - **the strip** on top holds the tabs, help and settings. drag it to move the window.
-- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar.
+- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen.
 - **chips** stay on the picture while it differs from the file.
 - the window takes the clip's shape, up to 90% of the screen.
 - **one window:** a file opened while eyepiece runs, or dropped on it, gets a tab of its own.

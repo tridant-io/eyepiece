@@ -267,9 +267,10 @@ pub struct Model<'a> {
     /// the picture is larger than the window: a drag on it moves it, not the window
     pub overflows: bool,
     /// the file's pixel under the pointer, and the red, green and blue the screen is sent for it, on the scale of
-    /// the file's bit depth
-    pub pixel: Option<(usize, usize)>,
-    pub value: Option<[u32; 3]>,
+    /// the file's bit depth: the last pair read together, so the chip never shows a pixel without its values
+    pub pixel: Option<((usize, usize), [u32; 3])>,
+    /// bits a sample: the values run up to 2^depth - 1
+    pub depth: u32,
     /// where the picture is in the window, in physical pixels, and its size in video pixels as shown
     pub picture: (f32, f32, f32, f32),
     pub shown_size: (usize, usize),
@@ -989,7 +990,7 @@ impl Ui {
             actions.push(Action::Fullscreen);
         }
         let strip = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP));
-        let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - (1.0 + ROW + TIME)), full.max);
+        let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - bar_height(model)), full.max);
         let over_markup = |p: Pos2| self.markup.on && (self.markup.row.is_some_and(|row| row.contains(p)) || (self.markup.menu.is_some() && self.markup.menu_rect.is_some_and(|menu| menu.contains(p))));
         let over = self.inside && pointer.is_some_and(|p| bar.contains(p) || strip.contains(p) || (self.menu.is_some() && self.menu_rect.contains(p)) || (self.facts_up && self.facts_rect.contains(p)) || (self.card.is_some() && self.card_rect.contains(p)) || over_markup(p));
         let held = ui.input(|i| i.pointer.any_down());
@@ -1098,7 +1099,7 @@ impl Ui {
         }
         // the lower left, 12 up from the bottom and clear of the bar when it is up: the navigator when the picture
         // is zoomed past the window, and over it what a key did
-        let low = full.bottom() - 12.0 - 50.0 * alpha;
+        let low = full.bottom() - 12.0 - (bar.height() - 1.0) * alpha;
         let low = self.navigator(ui, full, low, model, now, actions).map_or(low, |navigator| navigator.top() - 8.0);
         match &self.flash {
             Some((parts, until)) if now < *until => {
@@ -1128,7 +1129,7 @@ impl Ui {
             if opened {
                 self.commands_find.clear();
             }
-            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find);
+            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !timed(model));
             self.commands_rect = drawn;
             if let Some((key, mods)) = chosen {
                 actions.push(Action::Key(key, mods));
@@ -1169,7 +1170,7 @@ impl Ui {
             // what a menu changes about the view is said by the chip
             self.view_changed |= actions.iter().any(|a| matches!(a, Action::Zoom(_)));
         }
-        self.tooltip(ui, full, now);
+        self.tooltip(ui, full, bar.top(), now);
     }
 
     /// the lines over the picture: the grid of tiles, the center lines and circle, one display pixel wide at 100%. the
@@ -1261,16 +1262,7 @@ impl Ui {
         if alpha <= 0.0 || !model.zoomed {
             return;
         }
-        let mut parts = vec![(model.zoom_label.clone(), FG), (if model.exact { " exact" } else { " scaled" }.to_string(), DIM)];
-        if let Some((x, y)) = model.pixel {
-            parts.push((" · ".to_string(), DIM));
-            parts.push((format!("x {x} y {y}"), FG));
-            if let Some([r, g, b]) = model.value {
-                parts.push((" · ".to_string(), DIM));
-                parts.push((format!("{r} {g} {b}"), FG));
-            }
-        }
-        chip(ui, right_top, Align2::RIGHT_TOP, &parts, alpha, MONO_MEDIUM);
+        chip(ui, right_top, Align2::RIGHT_TOP, &zoom_parts(model), alpha, MONO_MEDIUM);
     }
 
     /// the strip along the top: the tabs, and the window's own buttons. it is the title bar: a drag on it moves the
@@ -1301,10 +1293,12 @@ impl Ui {
             let rect = Rect::from_min_size(Pos2::new(x + i as f32 * PLUS, strip.top()), Vec2::new(PLUS, STRIP - 1.0));
             let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
             // lit while pressed, and while its panel is up: the button closes what it opened
-            if response.is_pointer_button_down_on() || open == Some(which) {
+            let lit = response.is_pointer_button_down_on() || open == Some(which);
+            if lit {
                 painter.rect_filled(rect, 0.0, HOVER);
             }
-            icons::draw(&painter, rect, icon, FG);
+            // dim until the pointer comes, as the mark beside them is
+            icons::draw(&painter, rect, icon, if lit || response.hovered() { FG } else { DIM });
             if response.clicked() {
                 self.toggle_panel(which);
             }
@@ -1412,7 +1406,12 @@ impl Ui {
                     actions.push(Action::CloseTab(i));
                 }
                 self.hint(&mark, keys::named(Key::W, keys::CTRL));
-                icons::draw_sized(&clipped, close.center(), 12.0, Icon::Close, Color32::WHITE.gamma_multiply(0.7));
+                // lit under the pointer as the strip's other buttons are, on a square a little past the mark
+                let lit = if mark.is_pointer_button_down_on() { Some(PRESSED) } else { mark.hovered().then_some(HOVER) };
+                if let Some(fill) = lit {
+                    clipped.rect_filled(close.expand(2.0), 3.0, fill);
+                }
+                icons::draw_sized(&clipped, close.center(), 12.0, Icon::Close, if lit.is_some() { Color32::WHITE } else { Color32::WHITE.gamma_multiply(0.7) });
             }
             clipped.rect_filled(Rect::from_min_size(Pos2::new(tab.right() - 1.0, tab.top()), Vec2::new(1.0, tab.height())), 0.0, LINE);
             let (family, color) = if up { (MONO_MEDIUM, Color32::WHITE) } else { (MONO, TAB_OFF) };
@@ -1577,14 +1576,14 @@ impl Ui {
         }
     }
 
-    /// the bar along the bottom: one row of controls over the full-width timebar.
+    /// the bar along the bottom: one row of controls over the full-width timebar, which a still has none of.
     fn bar(&mut self, ui: &mut egui::Ui, bar: Rect, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
         painter.rect_filled(bar, 0.0, BAR);
         painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width(), 1.0)), 0.0, LINE);
         // a press on the bar is not a press on the picture under it
         ui.interact(bar, ui.scope_id().with("bar"), Sense::click_and_drag());
-        let middle = row_middle(bar);
+        let middle = row_middle(bar, timed(model));
         let narrow = bar.width() < NARROW;
 
         // from the left: first frame, previous frame, play, next frame, the readout
@@ -1602,26 +1601,31 @@ impl Ui {
             self.pinned = !self.pinned;
         }
         self.hint(&pin, Some((if self.pinned { "let the controls go" } else { "keep the controls up" }.to_string(), String::new())));
-        let first = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "first", Icon::First, Lit::No);
-        if first.clicked() {
-            actions.push(Action::Key(Key::F, keys::SHIFT));
+        // a still has no time: no steps, no play, no readout, no loop, speed or sound, only what looks at the
+        // picture (the owner's word, 2026-11-26)
+        let timed = timed(model);
+        if timed {
+            let first = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "first", Icon::First, Lit::No);
+            if first.clicked() {
+                actions.push(Action::Key(Key::F, keys::SHIFT));
+            }
+            self.hint(&first, keys::named(Key::F, keys::SHIFT));
+            let prev = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
+            if prev.clicked() {
+                actions.push(Action::Step(-1));
+            }
+            self.hint(&prev, keys::named(Key::F, keys::NONE));
+            let play = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
+            if play.clicked() {
+                actions.push(Action::TogglePlay);
+            }
+            self.hint(&play, keys::named(Key::Space, keys::NONE));
+            let next = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No);
+            if next.clicked() {
+                actions.push(Action::Step(1));
+            }
+            self.hint(&next, keys::named(Key::G, keys::NONE));
         }
-        self.hint(&first, keys::named(Key::F, keys::SHIFT));
-        let prev = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
-        if prev.clicked() {
-            actions.push(Action::Step(-1));
-        }
-        self.hint(&prev, keys::named(Key::F, keys::NONE));
-        let play = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
-        if play.clicked() {
-            actions.push(Action::TogglePlay);
-        }
-        self.hint(&play, keys::named(Key::Space, keys::NONE));
-        let next = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No);
-        if next.clicked() {
-            actions.push(Action::Step(1));
-        }
-        self.hint(&next, keys::named(Key::G, keys::NONE));
         // the readout comes after them, in what the buttons from the right leave it
         let readout_at = x + 8.0;
 
@@ -1641,25 +1645,27 @@ impl Ui {
         self.hint(&full, keys::named(Key::P, keys::NONE));
         // sound: the button mutes, and shows when nothing is to be heard. its slider comes out to its left while
         // the pointer is on either, or holds the slider. plain, like everything on the bar
-        let button = place(ICON_BUTTON.x, ICON_BUTTON.y);
-        let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
-        let mute = icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No);
-        if mute.clicked() {
-            actions.push(Action::Mute);
-        }
-        self.hint(&mute, keys::line(Key::M, keys::NONE));
-        let slider = ui.scope_id().with("volume");
-        let over = ui.ctx().pointer_latest_pos().is_some_and(|p| self.volume_rect.contains(p)) || ui.ctx().is_being_dragged(slider);
-        let out = ui.ctx().animate_bool_with_time(ui.scope_id().with("volume-out"), over, 0.12);
-        self.volume_rect = button;
-        if out > 0.0 {
-            let room = place(68.0 * out, 16.0);
-            if out >= 1.0 {
-                if let Some(to) = widgets::slider(ui, "volume", room.shrink2(Vec2::new(4.0, 0.0)), if model.muted { 0.0 } else { model.volume }, FG) {
-                    actions.push(Action::Volume(to));
-                }
+        if timed {
+            let button = place(ICON_BUTTON.x, ICON_BUTTON.y);
+            let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
+            let mute = icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No);
+            if mute.clicked() {
+                actions.push(Action::Mute);
             }
-            self.volume_rect = self.volume_rect.union(room);
+            self.hint(&mute, keys::line(Key::M, keys::NONE));
+            let slider = ui.scope_id().with("volume");
+            let over = ui.ctx().pointer_latest_pos().is_some_and(|p| self.volume_rect.contains(p)) || ui.ctx().is_being_dragged(slider);
+            let out = ui.ctx().animate_bool_with_time(ui.scope_id().with("volume-out"), over, 0.12);
+            self.volume_rect = button;
+            if out > 0.0 {
+                let room = place(68.0 * out, 16.0);
+                if out >= 1.0 {
+                    if let Some(to) = widgets::slider(ui, "volume", room.shrink2(Vec2::new(4.0, 0.0)), if model.muted { 0.0 } else { model.volume }, FG) {
+                        actions.push(Action::Volume(to));
+                    }
+                }
+                self.volume_rect = self.volume_rect.union(room);
+            }
         }
         let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
         // lit while markup mode is on, which it opens to
@@ -1733,7 +1739,11 @@ impl Ui {
             (Menu::Zoom, "zoom", None, model.zoom_label.clone(), keys::line(Key::Digit0, keys::NONE)),
             (Menu::Speed, "speed", None, speed, keys::line(Key::Minus, keys::SHIFT)),
             (Menu::Loop, "loop", Some(Icon::Loop), looping, keys::named(Key::R, keys::NONE)),
-        ] {
+        ]
+        .into_iter()
+        // a still has the zoom alone
+        .take(if timed { 3 } else { 1 })
+        {
             let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
             let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
             let button = text_button(ui, rect, name, icon, galley, self.menu == Some(menu));
@@ -1743,7 +1753,7 @@ impl Ui {
             self.hint(&button, tip);
         }
         // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two
-        if let Some(galley) = fitted_readout(&painter, model, self.timecode, right - readout_at) {
+        if let Some(galley) = fitted_readout(&painter, model, self.timecode, right - readout_at).filter(|_| timed) {
             let rect = Rect::from_min_size(Pos2::new(readout_at, middle - TEXT_BUTTON / 2.0), Vec2::new(galley.size().x + 2.0 * PAD, TEXT_BUTTON));
             let switch = text_button(ui, rect, "readout", None, galley, false);
             if switch.clicked() {
@@ -1752,7 +1762,11 @@ impl Ui {
             self.hint(&switch, keys::named(Key::T, keys::NONE));
         }
 
-        self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), middle + TEXT_BUTTON / 2.0), bar.max), bar.top(), model, actions);
+        if timed {
+            self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), middle + TEXT_BUTTON / 2.0), bar.max), bar.top(), model, actions);
+        } else {
+            self.time_hover = None;
+        }
     }
 
     /// opens a menu over its button, or closes it when it is the one open.
@@ -1779,7 +1793,7 @@ impl Ui {
     /// the tooltip of the button the pointer rests on: in a chip 7 over the bar or under the strip, as the menus stand,
     /// from the button's edge on the side of the window it is on. it comes a moment after the pointer does, and never
     /// while a menu, the metadata panel, the mark's card or a panel is up, or a button is held.
-    fn tooltip(&mut self, ui: &egui::Ui, full: Rect, now: f64) {
+    fn tooltip(&mut self, ui: &egui::Ui, full: Rect, bar_top: f32, now: f64) {
         let quiet = self.menu.is_some() || self.commands.is_some() || self.panel.is_some() || self.card.is_some() || self.facts_up || ui.input(|i| i.pointer.any_down());
         let Some((id, button, (does, key), family)) = self.hinted.take().filter(|_| !quiet) else {
             self.tip = None;
@@ -1792,7 +1806,7 @@ impl Ui {
             return;
         }
         let (left, low) = (button.center().x < full.center().x, button.center().y > full.center().y);
-        let corner = Pos2::new(if left { button.left() } else { button.right() }, if low { full.bottom() - (1.0 + ROW + TIME) - 7.0 } else { full.top() + STRIP + 7.0 });
+        let corner = Pos2::new(if left { button.left() } else { button.right() }, if low { bar_top - 7.0 } else { full.top() + STRIP + 7.0 });
         let anchor = Align2([if left { egui::Align::Min } else { egui::Align::Max }, if low { egui::Align::Max } else { egui::Align::Min }]);
         // on a mac command does what control does, and a hint names the key held there
         let key = if cfg!(target_os = "macos") { key.replace("ctrl", "cmd") } else { key };
@@ -1969,8 +1983,18 @@ fn message(ui: &egui::Ui, area: Rect, title: &str, why: &str) {
 
 /// the height the bar's row of controls is centered on: the middle of what is seen of the bar, from the line along
 /// its top to the timebar's track at rest.
-fn row_middle(bar: Rect) -> f32 {
-    (bar.top() + 1.0 + bar.bottom() - TRACK_THIN) / 2.0
+fn row_middle(bar: Rect, timed: bool) -> f32 {
+    (bar.top() + 1.0 + bar.bottom() - if timed { TRACK_THIN } else { 0.0 }) / 2.0
+}
+
+/// a clip of more than one frame has time to go through, and a timebar for it; a still has neither
+fn timed(model: &Model) -> bool {
+    model.frames > 1
+}
+
+/// the bar's height: its top line, the row of controls, and the timebar under them when there is one
+fn bar_height(model: &Model) -> f32 {
+    1.0 + ROW + if timed(model) { TIME } else { 0.0 }
 }
 
 /// what the loop analysis chip says, while it is on.
@@ -2009,6 +2033,21 @@ fn carries_sound(model: &Model) -> bool {
         0 => (0.5..=2.0).contains(&model.speed),
         shuttle => shuttle == 1,
     }
+}
+
+/// what the zoom chip says: the zoom, whether it is exact, and the pixel under the pointer with its values.
+fn zoom_parts(model: &Model) -> Vec<(String, Color32)> {
+    let mut parts = vec![(model.zoom_label.clone(), FG), (if model.exact { " exact" } else { " scaled" }.to_string(), DIM)];
+    if let Some(((x, y), [r, g, b])) = model.pixel {
+        // each number as wide as the largest it can be: the chip stands at its right, and a digit more would move it
+        let at = model.shown_size.0.max(model.shown_size.1).saturating_sub(1).to_string().len();
+        let of = ((1u64 << model.depth) - 1).to_string().len();
+        parts.push((" · ".to_string(), DIM));
+        parts.push((format!("x {x:>at$} y {y:>at$}"), FG));
+        parts.push((" · ".to_string(), DIM));
+        parts.push((format!("{r:>of$} {g:>of$} {b:>of$}"), FG));
+    }
+    parts
 }
 
 /// a chip: a few words in a dark box, placed by one of its corners, its first part in `first`'s type and the rest
@@ -2263,7 +2302,7 @@ pub(super) mod tests {
             exact: false,
             overflows: false,
             pixel: None,
-            value: None,
+            depth: 8,
             picture: (140.0, 0.0, 360.0, 360.0),
             shown_size: (64, 64),
             look: Look::default(),
@@ -2592,6 +2631,23 @@ pub(super) mod tests {
         out.textures_delta.clear();
     }
 
+    /// the zoom chip stands at the window's right, so a number that grows a digit would move all of it: from the
+    /// first pixel to the last, and from black to white, it keeps its width
+    #[test]
+    fn the_zoom_chip_keeps_its_width_whatever_the_pixel_says() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let width = |pixel, value| {
+                let model = Model { zoomed: true, exact: true, zoom_label: "100%".to_string(), shown_size: (1920, 1080), pixel: Some((pixel, value)), ..model() };
+                chip(ui, Pos2::ZERO, Align2::LEFT_TOP, &zoom_parts(&model), 1.0, MONO_MEDIUM).width()
+            };
+            assert_eq!(width((0, 0), [0, 0, 0]), width((1919, 1079), [255, 255, 255]));
+            assert_eq!(width((7, 856), [35, 6, 122]), width((640, 85), [3, 255, 22]));
+        });
+        out.textures_delta.clear();
+    }
+
     /// the design's hybrid (fig. 04, plan section 06): in the pass the pointer comes onto the timebar, the picture of
     /// the strip nearest the frame under it shows; the picture read for that frame takes its place once it comes, and
     /// stays the nearest had. the timebar is the bottom 13 of the window; 180 frames run along its 640
@@ -2615,6 +2671,51 @@ pub(super) mod tests {
         // another clip: nothing is had of it
         ui.forget_timebar_picture();
         assert_eq!(shown(&mut ui, 600.0), (Some(168), None));
+    }
+
+    /// a still has no time to go through (the owner's word, 2026-11-26): no timebar, and the bar is its row of
+    /// controls alone, 37 high, so a click 45 up from the foot of the window is on the picture, which plays or pauses
+    #[test]
+    fn a_still_has_no_timebar() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let still = || Model { frames: 1, ..model() };
+        drive_with(&mut ui, still(), &[(600.0, 357.0, None), (600.0, 357.0, None)]);
+        assert_eq!(ui.time_hover, None);
+        assert_eq!(drive_with(&mut ui, still(), &click(600.0, 357.0)), vec![]);
+        assert_eq!(drive_with(&mut ui, still(), &click(320.0, 315.0)), vec![Action::TogglePlay]);
+        // a clip of frames keeps it
+        drive_with(&mut ui, model(), &[(600.0, 357.0, None), (600.0, 357.0, None)]);
+        assert!(ui.time_hover.is_some());
+    }
+
+    /// a still's bar has only what looks at the picture (the owner's word, 2026-11-26): the pin, then from the right
+    /// fullscreen, screenshot, metadata, the view and the zoom. no steps, play, readout, sound, speed or loop. a
+    /// clip's play button is 112 to 142 across, where a still's bar is empty; the still's zoom is where the clip has
+    /// the view's button
+    #[test]
+    fn a_stills_bar_has_only_what_looks_at_the_picture() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let still = || Model { frames: 1, ..model() };
+        assert_eq!(drive(&mut ui, &click(127.0, 333.0)), vec![Action::TogglePlay]);
+        assert_eq!(drive_with(&mut ui, still(), &click(127.0, 342.0)), vec![]);
+        drive_with(&mut ui, still(), &click(480.0, 342.0));
+        assert!(ui.menu == Some(Menu::Zoom));
+    }
+
+    /// the right-click menu leaves out what has to do with time over a still, as the bar does: "frame" finds the
+    /// previous frame over a clip, and over a still the first it finds is copying the frame
+    #[test]
+    fn over_a_still_the_right_click_menu_has_nothing_of_time() {
+        for (frames, wanted) in [(3, Action::Key(Key::F, keys::NONE)), (1, Action::Key(Key::C, keys::CTRL))] {
+            let mut ui = Ui::new((900, 700), 1.0, false, None, None);
+            drive_with(&mut ui, Model { frames, ..model() }, &right_click(100.0, 60.0));
+            for c in "frame".chars() {
+                ui.char(c);
+            }
+            drive_with(&mut ui, Model { frames, ..model() }, &[(5.0, 5.0, None)]);
+            ui.key(Key::Enter, keys::NONE);
+            assert_eq!(drive_with(&mut ui, Model { frames, ..model() }, &[(5.0, 5.0, None)]), vec![wanted]);
+        }
     }
 
     /// a right click and the passes after it, at one place
@@ -2820,7 +2921,11 @@ pub(super) mod tests {
     #[test]
     fn the_bars_controls_are_centered_between_its_top_line_and_the_timebar() {
         let bar = Rect::from_min_size(Pos2::new(0.0, 309.0), Vec2::new(640.0, 1.0 + ROW + TIME));
-        let middle = row_middle(bar);
+        let middle = row_middle(bar, true);
         assert_eq!(middle - (bar.top() + 1.0), (bar.bottom() - TRACK_THIN) - middle);
+        // a still's bar is the row alone, which they are centered in
+        let bar = Rect::from_min_size(Pos2::new(0.0, 323.0), Vec2::new(640.0, 1.0 + ROW));
+        let middle = row_middle(bar, false);
+        assert_eq!(middle - (bar.top() + 1.0), bar.bottom() - middle);
     }
 }

@@ -409,8 +409,10 @@ impl View {
             zoomed: self.framing.zoomed(),
             exact: self.framing.exact(window),
             overflows: self.framing.overflows(window),
-            pixel,
-            value: self.probe.filter(|(_, at, _)| Some(*at) == pixel).map(|(.., value)| value),
+            // the pair read last: the pixel under the pointer is read after this pass is laid out (`probe`), and
+            // showing it before its values came made the chip lose and regain them at every move
+            pixel: pixel.and(self.probe.map(|(_, at, value)| (at, value))),
+            depth: self.depth(),
             picture: self.framing.rect(window),
             shown_size: self.turned().shown(self.size()),
             look: self.look,

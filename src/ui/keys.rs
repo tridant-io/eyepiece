@@ -217,9 +217,9 @@ pub fn line(key: Key, mods: Mods) -> Option<(String, String)> {
 /// the right-click menu: a field that finds a command, then every command with its key beside it, in sections, in two
 /// columns. its corner is at `corner` and it is kept inside `room` by its size when it was `last` drawn; it scrolls
 /// when the room is too short. `opened` starts it at its top with the field empty and taking the keys, so typing at
-/// once finds; `find` is what has been typed. enter runs the first command found. returns where it was drawn, and
-/// the key of the row chosen.
-pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, find: &mut String) -> (Rect, Option<(Key, Mods)>) {
+/// once finds; `find` is what has been typed. enter runs the first command found. over a `still` it leaves out
+/// what has to do with time, as the bar does. returns where it was drawn, and the key of the row chosen.
+pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, find: &mut String, still: bool) -> (Rect, Option<(Key, Mods)>) {
     let at = Pos2::new(corner.x.min(room.right() - last.width()).max(room.left()), corner.y.min(room.bottom() - last.height()).max(room.top()));
     let mut chosen = None;
     let drawn = widgets::menu(ui, "commands", at, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {
@@ -243,8 +243,9 @@ pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, f
         ui.add_space(10.0);
         // what is typed finds a command by what it does or by its key
         let wanted = find.trim().to_lowercase();
-        let found = |c: &Command| c.name.is_some() && c.send.is_some() && (wanted.is_empty() || c.key.to_lowercase().contains(&wanted) || c.name.is_some_and(|n| n.contains(&wanted)));
-        let shown: Vec<(&str, Vec<&Command>)> = SECTIONS.iter().map(|(section, commands)| (*section, commands.iter().filter(|c| found(c)).collect::<Vec<_>>())).filter(|(_, commands)| !commands.is_empty()).collect();
+        let found = |c: &Command| c.name.is_some() && c.send.is_some() && !(still && c.send == Some((Key::T, NONE))) && (wanted.is_empty() || c.key.to_lowercase().contains(&wanted) || c.name.is_some_and(|n| n.contains(&wanted)));
+        let timeless = |section: &str| still && matches!(section, "play" | "loop and speed" | "sound");
+        let shown: Vec<(&str, Vec<&Command>)> = SECTIONS.iter().filter(|(section, _)| !timeless(section)).map(|(section, commands)| (*section, commands.iter().filter(|c| found(c)).collect::<Vec<_>>())).filter(|(_, commands)| !commands.is_empty()).collect();
         if entered {
             chosen = shown.first().and_then(|(_, commands)| commands.first()).and_then(|c| c.send);
         }
