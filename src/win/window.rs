@@ -479,6 +479,7 @@ fn key(vk: u16) -> Option<Key> {
         0x54 => Key::T,
         0x56 => Key::V,
         0x57 => Key::W,
+        0x59 => Key::Y,
         0x5a => Key::Z,
         // the keys that only hold or lock (shift, control, alt, the windows keys, caps, num and scroll lock) are no
         // key pressed by themselves

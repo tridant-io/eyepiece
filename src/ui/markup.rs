@@ -482,24 +482,25 @@ impl Markup {
     }
 
     /// the row of tools at the top middle of the picture while markup mode is on (`.pl-mk`): select and the four tools,
-    /// the inks, undo and clear, then save image and done. `top` is its top edge.
+    /// the inks, undo, redo and clear, then save image and done. `top` is its top edge.
     pub(super) fn tools(&mut self, ui: &mut egui::Ui, middle: f32, top: f32, actions: &mut Vec<Action>) {
         enum Item {
             Pick(Tool, Icon),
             Ink(usize),
             Rule,
             Undo,
+            Redo,
             Clear,
             Words(&'static str),
         }
         use Item::*;
         let tools = [Pick(Tool::Select, Icon::Select), Pick(Tool::Rectangle, Icon::Rectangle), Pick(Tool::Circle, Icon::Circle), Pick(Tool::Pen, Icon::Pen), Pick(Tool::Text, Icon::Text), Rule];
-        let rest = [Rule, Undo, Clear, Rule, Words("save image"), Words("done")];
+        let rest = [Rule, Undo, Redo, Clear, Rule, Words("save image"), Words("done")];
         let items: Vec<Item> = tools.into_iter().chain((0..INKS.len()).map(Ink)).chain(rest).collect();
         let painter = ui.painter().clone();
         let words = |text: &str| painter.layout_no_wrap(text.to_string(), font(SANS, 12.0), FG);
         let wide = |item: &Item| match item {
-            Pick(..) | Undo | Clear => TOOL,
+            Pick(..) | Undo | Redo | Clear => TOOL,
             Ink(_) => SWATCH,
             Rule => RULE,
             Words(text) => words(text).size().x + 16.0,
@@ -529,6 +530,7 @@ impl Markup {
             match item {
                 Pick(_, icon) => icons::draw(&painter, rect, *icon, if chosen { ON_CHOSEN } else { FG }),
                 Undo => icons::draw(&painter, rect, Icon::Undo, FG),
+                Redo => icons::draw(&painter, rect, Icon::Redo, FG),
                 Clear => icons::draw(&painter, rect, Icon::Close, FG),
                 Ink(n) => swatch(&painter, rect.center(), INKS[*n], *n == self.ink),
                 Words(text) => {
@@ -542,6 +544,7 @@ impl Markup {
                     Ink(n) => self.ink = *n,
                     // these go the way their keys do
                     Undo => actions.push(Action::Key(Key::Z, keys::CTRL)),
+                    Redo => actions.push(Action::Key(Key::Z, keys::CTRL_SHIFT)),
                     Words("done") => actions.push(Action::Key(Key::E, keys::NONE)),
                     Clear => actions.push(Action::ClearMarks),
                     Words(_) => actions.push(Action::Shot(Shot::Frame)),
@@ -1072,8 +1075,8 @@ mod tests {
         assert!((row.center().x - 320.0).abs() < 0.01 && row.top() == 42.0, "{row:?}");
     }
 
-    /// a click on the row of tools picks a tool or an ink, or does what undo, clear, save image and done say (their
-    /// keys, or the screenshot), and draws nothing.
+    /// a click on the row of tools picks a tool or an ink, or does what undo, redo, clear, save image and done say
+    /// (their keys, or the screenshot), and draws nothing.
     #[test]
     fn the_row_of_tools_does_what_it_says() {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
@@ -1093,14 +1096,15 @@ mod tests {
             drive(ui, &click((x, row.top() + 4.0 + ITEM_HIGH / 2.0)))
         };
         // inside the line and the padding (4): the tools 32 apart, select first, a rule 11, the ten inks 20 apart, a
-        // rule, undo, clear, a rule, then the words
+        // rule, undo, redo, clear, a rule, then the words
         assert_eq!(press(&mut ui, 4.0 + 15.0), vec![]);
         assert_eq!(ui.markup.tool, Tool::Select);
         assert_eq!(press(&mut ui, 4.0 + 4.0 * 32.0 + 15.0), vec![]);
         assert_eq!(press(&mut ui, 4.0 + 5.0 * 32.0 + 11.0 + 20.0 + 9.0), vec![]);
         assert_eq!(press(&mut ui, 4.0 + 382.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL)]);
-        assert_eq!(press(&mut ui, 4.0 + 382.0 + 32.0 + 15.0), vec![Action::ClearMarks]);
-        assert_eq!(press(&mut ui, 4.0 + 382.0 + 64.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
+        assert_eq!(press(&mut ui, 4.0 + 382.0 + 32.0 + 15.0), vec![Action::Key(Key::Z, keys::CTRL_SHIFT)]);
+        assert_eq!(press(&mut ui, 4.0 + 382.0 + 64.0 + 15.0), vec![Action::ClearMarks]);
+        assert_eq!(press(&mut ui, 4.0 + 382.0 + 96.0 + 11.0 + 20.0), vec![Action::Shot(Shot::Frame)]);
         assert_eq!(press(&mut ui, -14.0), vec![Action::Key(Key::E, keys::NONE)]);
         assert_eq!((ui.markup.tool, ui.markup.ink), (Tool::Text, 1));
     }

@@ -28,13 +28,14 @@ pub enum Icon {
     Cards,
     ListAndCards,
     Sort,
-    // markup's tools, and undo
+    // markup's tools, undo and redo
     Select,
     Rectangle,
     Circle,
     Pen,
     Text,
     Undo,
+    Redo,
     // the strip's right end (fig. 32): help, and settings
     Help,
     Gear,
@@ -210,6 +211,11 @@ pub fn draw_sized(painter: &Painter, middle: Pos2, size: f32, icon: Icon, color:
         Icon::Undo => {
             line(&[(5.5, 4.0), (3.0, 6.5), (5.5, 9.0)]);
             line(&[&[(3.5, 6.5)][..], &arc(9.0, 9.7, 3.2, -90.0, 90.0), &[(6.5, 12.9)]].concat());
+        }
+        // undo turned over, left for right (not in the design, which has no redo)
+        Icon::Redo => {
+            line(&[(10.5, 4.0), (13.0, 6.5), (10.5, 9.0)]);
+            line(&[&[(12.5, 6.5)][..], &arc(7.0, 9.7, 3.2, 270.0, 90.0), &[(9.5, 12.9)]].concat());
         }
         // a question mark: its hook two thirds of a ring round (8, 6.14), from the left over the top, then a curve
         // into its stem; its dot drawn as the info icon's

@@ -651,6 +651,11 @@ Assert-Title 'moved and scaled, it is still the one mark' ' fps . 1 mark . marku
 Send-Key 0x2E; Assert-Title 'delete takes the mark selected off' ' fps . markup$'
 Send-Key 0x5A 1 4; Assert-Title 'control + Z puts it back' ' fps . 1 mark . markup$'
 Send-Key 0x5A 3 4; Assert-Title 'and takes back the scale, the move and the box, one at a time' ' fps . markup$'
+# redo: control + Y and control + shift + Z (5 is shift and control held) bring back what was taken back, a step each
+Send-Key 0x59 1 4; Assert-Title 'control + Y brings the box back' ' fps . 1 mark . markup$'
+Send-Key 0x5A 3 5; Assert-Title 'and control + shift + Z the move, the scale and the delete' ' fps . markup$'
+Send-Key 0x5A 1 4; Assert-Title 'which control + Z takes back again' ' fps . 1 mark . markup$'
+Send-Key 0x5A 3 4; Assert-Title 'back to no mark' ' fps . markup$'
 Click-At ($rectangle - 15) 60
 Confirm-That 'the rectangle tool is chosen again' ([math]::Abs((Get-ChosenTool) - $rectangle) -lt 3) "the lit tool's right end is at $(Get-ChosenTool)"
 Drag-On 200 120 300 200; Assert-Title 'a mark again' ' fps . 1 mark . markup$'

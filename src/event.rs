@@ -53,6 +53,7 @@ pub enum Key {
     T,
     V,
     W,
+    Y,
     Z,
 }
 

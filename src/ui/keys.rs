@@ -9,7 +9,7 @@ pub const NONE: Mods = Mods { shift: false, alt: false, ctrl: false };
 pub const SHIFT: Mods = Mods { shift: true, alt: false, ctrl: false };
 pub const CTRL: Mods = Mods { shift: false, alt: false, ctrl: true };
 const ALT: Mods = Mods { shift: false, alt: true, ctrl: false };
-const CTRL_SHIFT: Mods = Mods { shift: true, alt: false, ctrl: true };
+pub const CTRL_SHIFT: Mods = Mods { shift: true, alt: false, ctrl: true };
 
 /// one entry of the table.
 struct Command {
@@ -130,6 +130,7 @@ const SECTIONS: &[(&str, &[Command])] = &[
             menu_only("copy frame", "ctrl C", Key::C, CTRL),
             both("markup", "markup mode", "E", Key::E, NONE),
             menu_only("take back a change to the marks", "ctrl Z", Key::Z, CTRL),
+            menu_only("bring back a change taken back", "ctrl shift Z", Key::Z, CTRL_SHIFT),
         ],
     ),
     (
@@ -353,7 +354,8 @@ mod tests {
     #[test]
     fn the_menus_rows_send_the_key_they_show() {
         let rows: Vec<_> = commands().filter_map(|c| Some((c.name?, c.key, c.send?))).collect();
-        assert_eq!(rows.len(), 51);
+        assert_eq!(rows.len(), 52);
+        assert_eq!(named(Key::Z, CTRL_SHIFT), Some(("bring back a change taken back".to_string(), "ctrl shift Z".to_string())));
         for (name, key, send) in rows {
             assert_eq!(shown(send), key, "{name}");
             assert_eq!(named(send.0, send.1), Some((name.to_string(), key.to_string())));

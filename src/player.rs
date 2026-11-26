@@ -1809,7 +1809,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                         shoot(v, marks, &gpu, Shot::Copy, settings, scale, &wake);
                     }
                 }
-                // in markup mode control + Z takes back the last change to the marks on the frame on screen
+                // in markup mode control + shift + Z, or control + Y, brings back the last change control + Z took back
+                Event::Key { key, mods } if mods.ctrl && !browsing && ui.markup() && (key == Key::Z && mods.shift || key == Key::Y) => {
+                    if let Some((marks, frame)) = tabs.marking() {
+                        marks.redo(frame);
+                    }
+                }
+                // and control + Z takes back the last change to the marks on the frame on screen
                 Event::Key { key: Key::Z, mods } if mods.ctrl && !browsing && ui.markup() => {
                     if let Some((marks, frame)) = tabs.marking() {
                         marks.undo(frame);

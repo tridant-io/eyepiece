@@ -173,11 +173,13 @@ pub fn smooth(points: &[Point], strength: f32, on_screen: impl Fn(Point) -> (f32
 #[derive(Clone, Debug, Default)]
 pub struct Marks(BTreeMap<usize, Frame>);
 
-/// one frame's marks, and what they were before each change to them, the last change last
+/// one frame's marks, what they were before each change to them, the last change last, and what undo took back, the
+/// last taken last
 #[derive(Clone, Debug, Default)]
 struct Frame {
     marks: Vec<Mark>,
     before: Vec<Vec<Mark>>,
+    after: Vec<Vec<Mark>>,
 }
 
 impl Marks {
@@ -186,11 +188,12 @@ impl Marks {
         self.0.get(&frame).map_or(&[], |f| &f.marks)
     }
 
-    /// a change to a frame's marks, which undo can take back
+    /// a change to a frame's marks, which undo can take back. what undo took back before can no longer be brought back
     fn change_to(&mut self, frame: usize, marks: Vec<Mark>) {
         let f = self.0.entry(frame).or_default();
         if marks != f.marks {
             f.before.push(std::mem::replace(&mut f.marks, marks));
+            f.after.clear();
         }
     }
 
@@ -218,7 +221,15 @@ impl Marks {
     pub fn undo(&mut self, frame: usize) -> bool {
         let Some(f) = self.0.get_mut(&frame) else { return false };
         let Some(was) = f.before.pop() else { return false };
-        f.marks = was;
+        f.after.push(std::mem::replace(&mut f.marks, was));
+        true
+    }
+
+    /// brings back the last change undo took back from a frame's marks. false when there was none.
+    pub fn redo(&mut self, frame: usize) -> bool {
+        let Some(f) = self.0.get_mut(&frame) else { return false };
+        let Some(next) = f.after.pop() else { return false };
+        f.before.push(std::mem::replace(&mut f.marks, next));
         true
     }
 
@@ -310,6 +321,37 @@ mod tests {
                 assert!(apart > 60.0, "{} and {} are {apart:.0} apart", hex(*a), hex(*b));
             }
         }
+    }
+
+    /// redo brings back what undo took back, a step at a time, and a new change ends what could be brought back; one
+    /// frame's steps are its own.
+    #[test]
+    fn redo_brings_back_what_undo_took_and_a_new_change_ends_it() {
+        let mut marks = Marks::default();
+        let mark = |x: f32| Mark::start(Tool::Rectangle, (x, x), RED);
+        let (a, b, c) = (mark(1.0), mark(2.0), mark(3.0));
+        let white = Mark { ink: INKS[7], ..b.clone() };
+        marks.add(0, a.clone());
+        marks.add(0, b.clone());
+        marks.change(0, 1, Some(white.clone()));
+        marks.add(4, c.clone());
+        assert!(!marks.redo(0), "nothing taken back yet");
+        assert!(marks.undo(0) && marks.undo(0));
+        assert_eq!(marks.on(0), [a.clone()]);
+        assert!(marks.redo(0));
+        assert_eq!(marks.on(0), [a.clone(), b.clone()]);
+        assert!(marks.redo(0));
+        assert_eq!(marks.on(0), [a.clone(), white.clone()]);
+        assert!(!marks.redo(0), "all brought back");
+        assert!(marks.undo(0) && marks.undo(0));
+        marks.add(0, c.clone());
+        assert!(!marks.redo(0), "a new change ends what could be brought back");
+        assert_eq!(marks.on(0), [a.clone(), c.clone()]);
+        marks.clear(0);
+        assert!(marks.undo(0) && marks.on(0) == [a.clone(), c.clone()]);
+        assert!(marks.redo(0) && marks.on(0).is_empty(), "a clear is brought back too");
+        assert!(marks.undo(4) && marks.on(4).is_empty() && marks.redo(4));
+        assert_eq!(marks.on(4), [c]);
     }
 
     /// every change to a frame's marks is a step undo takes back, the last first: a mark drawn, changed, taken off,
