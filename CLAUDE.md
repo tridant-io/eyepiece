@@ -6,7 +6,7 @@ use the terms in `GLOSSARY.md` and read the ADRs in `docs/adr/` for the area you
 
 ## rules the code can't show
 
-- **media is read-only.** never write into or beside a media file, never delete, rename or move one. files are opened shared (read, write and delete sharing) so a render can overwrite a clip that is open.
+- **media is read-only unless the user asks.** never write into a media file, never delete or rename one. trim and export write a new file, beside the source by default, never over an existing file. replacing the original is offered only behind a prompt: the new file is written and checked first, then the original goes to the recycle bin or trash, never deleted, so not on a network volume (the owner, 2026-11-26). files are opened shared (read, write and delete sharing) so a render can overwrite a clip that is open.
 - **network volumes are look-only.** on a network path, use the folder listing and nothing else: no open, no stat call that opens, no probe, until the user opens that file or asks. unknown volume types count as network. tests and gates never touch the owner's nas except in a scratch folder they named.
 - **the cache** lives only in the os cache folder, in its own `eyepiece` folder. eviction removes one cache file at a time, never a directory, never recursively, and refuses to run if its root resolves to nothing, a drive root or a home folder.
 - **no number without a measurement.** a speed or size figure in docs or ui copy is either measured (say where) or called a target.
@@ -17,7 +17,7 @@ use the terms in `GLOSSARY.md` and read the ADRs in `docs/adr/` for the area you
 - copy is lowercase, american spelling: color, center.
 - mono (ibm plex mono) only for titles and numbers: headings, values, file names and paths, key caps. every sentence, note, message, tooltip, button and menu word is archivo; a sentence with numbers in it is archivo throughout (the owner's word, 2026-11-24).
 - the owner's keys are fixed: F/G step, shift+F/G first/last, O open, N new tab, [ ] tabs, 0/1/2 fit/1:1/2x, P fullscreen, esc. add aliases, never move these.
-- no accent color on the tab strip or the control bar. the accent (orange) is only for sliders, switches and the focused field inside menus. amber marks a fault in a file and nothing else.
+- no accent color on the tab strip or the control bar, not even for a button that is there only for a moment (trim). the accent (orange) lives only in menus, popups and panels: sliders, switches, the focused field, and the action a popup asks you to confirm (the owner, 2026-11-26). amber marks a fault in a file and nothing else.
 - anything that changes what you see (speed, zoom, mirror, a single channel) leaves a chip on screen.
 
 ## working here
