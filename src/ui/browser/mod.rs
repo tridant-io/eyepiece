@@ -62,6 +62,8 @@ const NAME: f32 = 14.375;
 const SPEC: f32 = 13.125;
 /// a line of the metadata column: 11.5 type at 1.35
 const META_LINE: f32 = 15.525;
+/// the least across the words of a network folder's note are written
+const NOTE_LEAST: f32 = 160.0;
 /// what a notch of the wheel scrolls
 const NOTCH: f32 = 3.0 * ROW;
 /// how long the columns take to slide to where a step along the path puts them, in seconds (the owner's ask,
@@ -946,8 +948,9 @@ impl State {
     /// has it.
     fn edges(&mut self, ui: &egui::Ui, layout: &Layout, area: Rect) {
         let at = ui.ctx().pointer_latest_pos();
-        // with none of a drag's wait to tell it from a click, and only once the pointer has moved: a click moves nothing
-        let moved = ui.input(|i| i.pointer.primary_down() && i.pointer.press_origin() != i.pointer.latest_pos());
+        // with none of a drag's wait to tell it from a click, and only once the pointer has moved: a click moves
+        // nothing. a drag come back to where it began is still one
+        let moved = ui.input(|i| i.pointer.primary_down() && (i.pointer.press_origin() != i.pointer.latest_pos() || !i.pointer.could_any_button_be_click()));
         let grab = |name: usize, edge: Rect| {
             let response = ui.interact(edge, ui.scope_id().with(("brw-edge", name)), Sense::click_and_drag());
             let held = response.is_pointer_button_down_on();
@@ -975,7 +978,11 @@ impl State {
             let (on, to, back) = grab(1 + depth, if in_view { over_rule(rect.right(), *rect) } else { Rect::from_min_max(seen.max, seen.min) });
             (over, reset) = (over | on, reset | back);
             if let Some(x) = to {
-                self.widths.set_column(depth, (x - rect.left()).min(if ends { rect.width() + spare } else { f32::INFINITY }));
+                // a column deeper than those that keep a width of their own shares its width with the ones before
+                // it: each of them moves this edge as it widens, and each on the path moves the path's end
+                let shared = |upto: usize| (0..upto).filter(|d| d.min(&(browse::COLUMNS - 1)) == &depth.min(browse::COLUMNS - 1)).count() as f32;
+                let by = ((x - rect.right()) / shared(depth + 1)).min(if ends { spare / shared(layout.columns.len()) } else { f32::INFINITY });
+                self.widths.set_column(depth, rect.width() + by);
             }
             if back {
                 self.widths.set_column(depth, browse::COLUMN);
@@ -994,12 +1001,33 @@ impl State {
                 self.widths.meta = Widths::default().meta;
             }
         }
+        let columns: Vec<f32> = (0..layout.columns.len()).map(|depth| self.widths.column(depth)).collect();
+        let all: f32 = columns.iter().sum();
+        let share = |widths: Widths| shares(wide, &columns, self.nav.card().is_some(), self.nav.view, widths);
+        // while columns are out of view at the left the main area has an edge of its own, just inside it, where
+        // nothing is pressed (the line itself is the last column's): it sets what the main area keeps, and the
+        // columns keep their place from the path's end, so the ones before come into view or go. it is its drag's
+        // own until the button comes up, and stops where every column is in view
+        let mut own = false;
+        if !list {
+            let inside = layout.main.left() + 7.0;
+            let (on, to, back) = grab(usize::MAX - 1, if self.columns_at > 0.0 { over_rule(inside, layout.main) } else { Rect::from_min_max(seen.max, seen.min) });
+            (over, reset, own) = (over | on, reset | back, to.is_some());
+            if let Some(x) = to {
+                let room = layout.main.right() - layout.side.right();
+                self.widths.main = (layout.main.right() - (x - 7.0)).clamp(least.max(room - all), (room - two).max(least));
+                let end = |widths: Widths| (all - share(widths).0).max(0.0);
+                if self.columns_at != end(was) {
+                    self.columns_at = (self.columns_at + end(self.widths) - end(was)).max(0.0);
+                }
+            }
+            if back {
+                self.widths.main = Widths::default().main;
+            }
+        }
         (self.widths, self.over_edge) = (self.widths.kept(), over);
-        if self.widths != was && !reset && !list {
-            let columns: Vec<f32> = (0..layout.columns.len()).map(|depth| self.widths.column(depth)).collect();
-            let all: f32 = columns.iter().sum();
-            let (_, meta) = shares(wide, &columns, self.nav.card().is_some(), self.nav.view, self.widths);
-            let has = (wide - meta - if ends { all - self.columns_at } else { seen.width() }).max(least);
+        if self.widths != was && !reset && !list && !own {
+            let has = (wide - share(self.widths).1 - if ends { all - self.columns_at } else { seen.width() }).max(least);
             // while some of the path is out of view the main area keeps what it has now; with all of it in view,
             // no more than that
             self.widths.main = if self.columns_at > 0.0 || !ends { has } else { self.widths.main.min(has) };
@@ -1488,28 +1516,35 @@ impl State {
         // on a network volume, a note that nothing is opened without asking, and at its right the button that asks
         // for the folder's previews, saying how many files they read (fig. 29)
         let mut top = line.bottom();
-        if self.nav.volume == Volume::Network {
+        // the words want this much across to be read: in a main area too narrow for it there is no note, and the
+        // cards keep its room (the previews are asked for in the right-click menu too)
+        let words = rect.width() - 28.0 - 3.0 - 24.0;
+        if self.nav.volume == Volume::Network && words >= NOTE_LEAST {
             let asked = self.previews.contains(&folder);
             let reads: usize = self.nav.entries(&folder).iter().filter(|e| nav::makes_pictures(Volume::Network, e, true)).map(nav::files_read).sum();
             let ask = (!asked && reads > 0).then(|| painter.layout_no_wrap(previews_label(reads), font(SANS, 12.0), FG));
             let (head, rest) = network_note(asked, self.asked.iter().any(|f| f.parent() == Some(folder.as_path())));
             let button_size = ask.as_ref().map(|label| Vec2::new(label.size().x + 20.0, 11.5 * 1.5 + 14.0));
+            // the button stands beside the words while that leaves them their least, and under them where it does not
+            let beside = button_size.is_none_or(|s| words - s.x - 14.0 >= NOTE_LEAST);
             let mut job = LayoutJob::default();
-            job.wrap.max_width = rect.width() - 28.0 - 3.0 - 24.0 - button_size.map_or(0.0, |s| s.x + 14.0);
+            job.wrap.max_width = words - button_size.filter(|_| beside).map_or(0.0, |s| s.x + 14.0);
             let format = |family: &str, color| TextFormat { font_id: font(family, 12.0), color, line_height: Some(12.0 * 1.5), ..Default::default() };
             job.append(head, 0.0, format("sans-semibold", FG));
             job.append(&rest, 0.0, format(SANS, DIM));
             let galley = painter.layout_job(job);
-            // the text and the button are centered on each other
-            let inside = galley.size().y.max(button_size.map_or(0.0, |s| s.y));
-            let note = Rect::from_min_size(Pos2::new(rect.left() + 14.0, top + 14.0), Vec2::new(rect.width() - 28.0, inside + 22.0));
+            // beside each other, the text and the button are centered on each other
+            let under = button_size.filter(|_| !beside).map_or(0.0, |s| s.y + 8.0);
+            let inside = if beside { galley.size().y.max(button_size.map_or(0.0, |s| s.y)) } else { galley.size().y };
+            let note = Rect::from_min_size(Pos2::new(rect.left() + 14.0, top + 14.0), Vec2::new(rect.width() - 28.0, inside + under + 22.0));
             let middle = note.top() + 11.0 + inside / 2.0;
             painter.rect_stroke(note, 0.0, (1.0, LINE), StrokeKind::Inside);
             // fig. 29 draws this edge in amber. amber is kept for a fault in a file, and this is none
             painter.rect_filled(Rect::from_min_size(note.min, Vec2::new(2.0, note.height())), 0.0, GRAY);
             painter.galley(Pos2::new(note.left() + 2.0 + 12.0, middle - galley.size().y / 2.0), galley, DIM);
             if let (Some(label), Some(size)) = (ask, button_size) {
-                let at = Rect::from_min_size(Pos2::new(note.right() - 1.0 - 12.0 - size.x, middle - size.y / 2.0), size);
+                let at = if beside { Pos2::new(note.right() - 1.0 - 12.0 - size.x, middle - size.y / 2.0) } else { Pos2::new(note.left() + 2.0 + 12.0, note.bottom() - 11.0 - size.y) };
+                let at = Rect::from_min_size(at, size);
                 if button(ui, &painter, at, "brw-previews", label, false) {
                     clicks.push((Click::Previews(folder.clone()), None));
                 }
@@ -3093,5 +3128,76 @@ mod tests {
         assert_eq!((left_of(&out, "s4"), left_of(&out, "s5")), (Some(before), Some(edge + 100.0 + 31.0)), "the column before stayed, and the edge stays where it was let go");
         let changed: Vec<f32> = deep.browser.state().widths.columns.iter().copied().filter(|&w| w != browse::COLUMN).collect();
         assert_eq!(changed, vec![browse::COLUMN + 100.0], "that column alone is wider");
+
+        // a column deeper than the sixteen that keep a width of their own shares its width with the ones before it:
+        // its edge stays under the pointer all the same. here the last of eighteen, by the main area
+        let mut deep = Deep::new(18, 1240.0);
+        let line = main_left(&deep.rest(), HOLDS);
+        for (pointer, next) in deep.drag(Pos2::new(line, 300.0), Pos2::new(line + 90.0, 300.0), HOLDS) {
+            assert_eq!(next.map(|at| at - 14.0), Some(pointer), "the edge of a column that shares its width is not under the pointer");
+        }
+    }
+
+    /// while some of the path is out of view the main area has an edge of its own, just inside it: dragged right it
+    /// makes the main area narrower and the columns before come into view, with no column made wider (the owner's two
+    /// asks of 2026-11-25 in one drag). a drag keeps to that: once every column is in view it stops, and dragged back
+    /// everything is where it began. a press on a row just left of the line still selects the row.
+    #[test]
+    fn the_main_areas_own_edge_gives_its_room_to_the_columns() {
+        let mut deep = Deep::new(6, 1240.0);
+        let out = deep.rest();
+        let (line, last) = (main_left(&out, HOLDS), left_of(&out, "s5").unwrap());
+        assert_eq!(left_of(&out, "s1"), None, "the second column is out of view at first");
+        let grip = Pos2::new(line + 7.0, 300.0);
+        deep.drag(grip, grip + Vec2::new(200.0, 0.0), HOLDS);
+        let out = deep.pass(Vec::new());
+        assert_eq!(main_left(&out, HOLDS), line + 200.0, "the main area is 200 narrower");
+        assert!(left_of(&out, "s1").is_some_and(|at| at >= 150.0 + 31.0), "and the second column is in view: {:?}", left_of(&out, "s1"));
+        // 78 further and all six columns are in view: there it stops
+        for step in 1..=10 {
+            deep.pass(vec![egui::Event::PointerMoved(grip + Vec2::new(200.0 + 20.0 * step as f32, 0.0))]);
+        }
+        let out = deep.pass(Vec::new());
+        assert_eq!((main_left(&out, HOLDS), left_of(&out, "s0")), (150.0 + 6.0 * browse::COLUMN, Some(150.0 + 31.0)), "every column in view, and no further");
+        for step in (0..10).rev() {
+            deep.pass(vec![egui::Event::PointerMoved(grip + Vec2::new(40.0 * step as f32, 0.0))]);
+        }
+        let out = deep.release(grip);
+        assert_eq!((main_left(&out, HOLDS), left_of(&out, "s5")), (line, Some(last)), "dragged back, all is where it began");
+        assert_eq!(deep.browser.state().widths, Widths::default(), "and no width has changed");
+
+        let row = Pos2::new(line - 6.0, PATH_LINE + 8.0 + ROW / 2.0);
+        deep.press(row, egui::PointerButton::Primary);
+        assert_eq!(deep.browser.state().nav.main().folder, deep.folders[5].join("s5"), "a press on a row by the line selects it");
+    }
+
+    /// a main area made narrow, on a network folder, where it has the most to say: the note keeps inside it, its
+    /// button beside the words while they fit so (fig. 29) and under them when they do not; narrower than the words
+    /// can be read in, there is no note and the cards have its room.
+    #[cfg(windows)]
+    #[test]
+    fn a_narrow_main_area_keeps_its_note_inside_it() {
+        // a share that is never asked for anything: every folder on the path is listed by the test
+        let narrow = |main: f32| {
+            let mut deep = Deep::under(PathBuf::from(r"\\localhost\c$\eyepiece-no-such-share"), 7, 1500.0);
+            assert_eq!(deep.browser.state().nav.volume, Volume::Network);
+            deep.browser.state().widths.main = main;
+            let card = deep.folders[6].join("a.mov");
+            deep.browser.state().click(Click::Card(card));
+            let out = deep.rest();
+            let (left, right) = (main_left(&out, HOLDS), 1500.0 - Widths::default().meta);
+            assert_eq!(right - left, main, "the main area is as wide as it is kept, beside the metadata column");
+            let texts = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t, s.clip_rect)) } else { None });
+            let said: Vec<Rect> = texts.filter(|(t, _)| t.galley.text().starts_with("network folder") || t.galley.text().starts_with("make previews")).map(|(t, clip)| Rect::from_min_size(t.pos, t.galley.size()).intersect(clip)).collect();
+            assert!(said.iter().all(|seen| seen.is_positive() && seen.left() >= left && seen.right() <= right), "the note keeps inside a main area {main} wide, from {left} to {right}: {said:?}");
+            (deep, said)
+        };
+        assert!(narrow(browse::MAIN_LEAST).1.is_empty(), "no room for the note's words: no note");
+        let (_, said) = narrow(500.0);
+        assert!(said.len() == 2 && said[1].left() >= said[0].right(), "the button stands beside the words: {said:?}");
+        let (mut deep, said) = narrow(300.0);
+        assert!(said.len() == 2 && said[1].top() >= said[0].bottom(), "the button stands under the words: {said:?}");
+        deep.press(said[1].center(), egui::PointerButton::Primary);
+        assert!(deep.browser.state().previews.contains(&deep.folders[6]), "the button asks for the previews");
     }
 }
