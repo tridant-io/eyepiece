@@ -285,6 +285,10 @@ impl Markup {
             if let Some(writing) = self.writing.take() {
                 self.keep(writing, actions);
             }
+            // a drawing tool lets go of a mark a right click selected: delete and backspace are theirs again
+            if self.draws() {
+                (self.selected, self.menu) = (None, None);
+            }
         }
         let mut asked = false;
         if picture.secondary_clicked() {
@@ -829,15 +833,35 @@ mod tests {
         assert_eq!(ui.take_selected_mark(), None);
     }
 
+    /// a mark a right click selected with a drawing tool is let go once that tool draws, so delete and backspace are
+    /// theirs again: backspace is 1× speed, not a delete of a mark out of mind.
+    #[test]
+    fn drawing_lets_go_of_the_mark_selected() {
+        let mut marks = Marks::default();
+        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        let pass = |ui: &mut Ui, steps: &[Step]| drive_with(ui, Model { marks: Some(&marks), ..model() }, steps);
+        pass(&mut ui, &right_click((200.0, 130.0)));
+        assert!(ui.mark_selected());
+        // clear of the mark's menu, which stands at the right click
+        let drawn = pass(&mut ui, &drag((150.0, 250.0), (190.0, 290.0)));
+        assert!(matches!(&drawn[..], [Action::Mark(0, _)]), "{drawn:?}");
+        assert!(!ui.mark_selected() && ui.markup.menu.is_none(), "let go");
+    }
+
     /// a right click on a mark, whatever the tool, selects it and opens its menu in place of the player's: delete
     /// takes it off, an ink colors it, and for text "edit text" puts it back in the field, where enter keeps it in its
-    /// place. a right click off every mark opens the player's menu.
+    /// place; a box, a circle and a pen's line have delete alone above the inks. a right click off every mark opens
+    /// the player's menu.
     #[test]
     fn a_right_click_on_a_mark_opens_its_menu_and_each_item_does_what_it_says() {
         let mut marks = Marks::default();
         let text = Mark { shape: Shape::Text(file((300.0, 200.0)), "note".into(), 1.0), ink: INKS[0] };
         marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
         marks.add(0, text.clone());
+        marks.add(0, Mark { shape: Shape::Circle(file((380.0, 150.0)), file((440.0, 210.0))), ink: INKS[0] });
+        marks.add(0, Mark { shape: Shape::Pen(vec![file((380.0, 250.0)), file((420.0, 260.0)), file((460.0, 250.0))]), ink: INKS[0] });
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         let pass = |ui: &mut Ui, steps: &[Step]| drive_with(ui, Model { marks: Some(&marks), ..model() }, steps);
@@ -870,6 +894,22 @@ mod tests {
         ui.key(Key::Enter, Mods::default());
         let kept = pass(&mut ui, &[(310.0, 205.0, None)]);
         assert_eq!(kept, vec![Action::Change(0, 1, Some(Mark { shape: Shape::Text(file((300.0, 200.0)), "note!".into(), 1.0), ink: INKS[0] }))]);
+        // the menu's height says its rows: the box's, the circle's and the pen's are alike, the text's a row taller
+        let height = |ui: &mut Ui, at: (f32, f32)| {
+            drive_with(ui, Model { marks: Some(&marks), ..model() }, &right_click(at));
+            let height = ui.markup.menu_rect.expect("the menu is drawn").height();
+            ui.escape();
+            height
+        };
+        let boxed_height = height(&mut ui, (200.0, 130.0));
+        assert_eq!(height(&mut ui, (310.0, 205.0)), boxed_height + 24.0, "text");
+        assert_eq!(height(&mut ui, (410.0, 150.0)), boxed_height, "a circle");
+        assert_eq!(height(&mut ui, (420.0, 259.0)), boxed_height, "a pen's line");
+        for (at, index) in [((410.0, 150.0), 2), ((420.0, 259.0), 3)] {
+            pass(&mut ui, &right_click(at));
+            let at = row(&ui, 0.0);
+            assert_eq!(pass(&mut ui, &click(at)), vec![Action::Change(0, index, None)], "delete, for mark {index}");
+        }
         // off every mark, the player's own
         pass(&mut ui, &right_click((560.0, 200.0)));
         assert!(ui.markup.menu.is_none() && ui.commands.is_some());
