@@ -323,6 +323,8 @@ struct State {
     /// bar's thumb a drag of it took hold
     columns_at: f32,
     bring: Option<Bring>,
+    /// when the columns are due to slide along and fill the room a press back up the path left
+    fill: Option<f64>,
     laid: Option<Laid>,
     slide: ([f32; 3], f64),
     bar_grab: Option<f32>,
@@ -446,9 +448,12 @@ enum Click {
 enum Bring {
     /// a key, the address, a place: to the path's end, with the column the keys act in in view
     End,
-    /// a press on a row or a card: on as far as shows the path's end and never back, so what was pressed stays
-    /// under the pointer
+    /// a press on a row or a card: on as far as shows the path's end and not back, so what was pressed stays under
+    /// the pointer. room it leaves at the right is filled a moment later, once it cannot be a double click's first
     On,
+    /// a press with shift or control, which picks, or a right click on a file: as `On`, and the columns stay there,
+    /// for the presses to come and under the menu
+    Picked,
     /// a right click on a folder: nowhere, whatever becomes of the path (the owner's word, 2026-11-25)
     Stay,
 }
@@ -594,6 +599,7 @@ impl State {
             wheel: 0,
             columns_at: 0.0,
             bring: Some(Bring::End),
+            fill: None,
             laid: None,
             slide: ([0.0; 3], f64::NEG_INFINITY),
             bar_grab: None,
@@ -848,10 +854,24 @@ impl State {
         let (all, last) = (before(shown), before(shown.saturating_sub(1)));
         let end = (all - room).max(0.0);
         let laid = self.laid.take();
+        let now = ui.input(|i| i.time);
+        // a press puts off the slide a press before it left owing: it may be a double click's second
+        if ui.input(|i| i.pointer.any_pressed()) {
+            self.fill = None;
+        }
         self.columns_at = match self.bring.take() {
             Some(Bring::End) => self.nav.current_column().map_or(end, |current| end.min(before(current))),
             // what was pressed stays where it is, though it be a column cut by the sidebar that is the path's last now
-            Some(Bring::On) => self.columns_at.max(end).min(all),
+            Some(Bring::On) => {
+                let at = self.columns_at.max(end).min(all);
+                // a press back up the path leaves room at the right, with columns out of view at the left: they
+                // slide along to fill it once no second press can make a double click of this one
+                if at > end {
+                    self.fill = Some(now + ui.ctx().options(|options| options.input_options.max_double_click_delay));
+                }
+                at
+            }
+            Some(Bring::Picked) => self.columns_at.max(end).min(all),
             Some(Bring::Stay) => self.columns_at.min(all),
             None if laid.as_ref().is_some_and(|laid| laid.end == self.columns_at) => end,
             // and stands so while the columns are as they were
@@ -860,10 +880,14 @@ impl State {
             None => self.columns_at.min(end.max(last)),
         }
         .max(0.0);
+        match self.fill {
+            Some(due) if now >= due => (self.fill, self.columns_at) = (None, self.columns_at.min(end)),
+            Some(due) => ui.ctx().request_repaint_after(Duration::from_secs_f64(due - now)),
+            None => {}
+        }
         // with the column alone showing the columns have all the room; else the main area begins where they end
         let seen = if self.nav.view == View::List { room } else { room.min(all - self.columns_at) };
         let to = [self.columns_at, seen, meta];
-        let now = ui.input(|i| i.time);
         // how much of a slide begun at `since` is still to go: all of it at first, then less and less
         let left = |since: f64| (1.0 - ((now - since) / SLIDE).clamp(0.0, 1.0)).powi(3) as f32;
         let direct = back || self.bar_grab.is_some();
@@ -887,9 +911,12 @@ impl State {
         }
         match &click {
             Click::Place(_) | Click::Go(_) | Click::Retrace(_) => self.bring = Some(Bring::End),
-            Click::Row(..) | Click::Enter | Click::Card(_) | Click::Pick(..) | Click::PickFolder(..) => self.bring = Some(Bring::On),
+            Click::Row(..) | Click::Enter | Click::Card(_) => self.bring = Some(Bring::On),
+            Click::Pick(..) | Click::PickFolder(..) => self.bring = Some(Bring::Picked),
             // after the press that selected the folder: the columns stay where they are under its menu
             Click::Menu(On::Folder(_), _) => self.bring = Some(Bring::Stay),
+            // and under a file's, once the press that selected it has brought the path's end in
+            Click::Menu(On::File(_), _) if matches!(self.bring, Some(Bring::On)) => self.bring = Some(Bring::Picked),
             _ => {}
         }
         match click {
@@ -3056,6 +3083,8 @@ mod tests {
         folders: Vec<PathBuf>,
         wide: f32,
         time: f64,
+        /// every folder holds a video of its own as well, v0.mov, v1.mov, …
+        videos: bool,
     }
 
     impl Deep {
@@ -3072,7 +3101,7 @@ mod tests {
             browser.state().nav = Nav::new(&folders[depth - 1], std::slice::from_ref(&place));
             let ctx = egui::Context::default();
             ctx.set_fonts(super::super::fonts());
-            let mut deep = Deep { browser, ctx, folders, wide, time: 0.0 };
+            let mut deep = Deep { browser, ctx, folders, wide, time: 0.0, videos: false };
             // the folders pinned in explorer are read off the drawing thread, and the browser looks again until they
             // are in: only then is it at rest
             for _ in 0..400 {
@@ -3091,6 +3120,9 @@ mod tests {
                 match self.folders.get(i + 1) {
                     Some(_) => entries.insert(0, listed_entry(folder, &format!("f{}", i + 1), Kind::Folder)),
                     None => entries.extend([listed_entry(folder, "a.mov", Kind::Clip), listed_entry(folder, "b.mov", Kind::Clip)]),
+                }
+                if self.videos {
+                    entries.push(listed_entry(folder, &format!("v{i}.mov"), Kind::Clip));
                 }
                 let listings = &mut self.browser.state().nav.listings;
                 listings.insert(folder.clone(), Ok(entries));
@@ -3303,6 +3335,70 @@ mod tests {
         let (from, (at, row)) = (left_of(&out, "s4").unwrap(), drawn(&out, "s5")[0]);
         deep.press(Pos2::new(at.x + 5.0, row.center().y), egui::PointerButton::Primary);
         slides(&watch(&mut deep, from), -browse::COLUMN, "a press on a folder");
+    }
+
+    /// a press on a folder back up a path that did not fit leaves the columns where they are under the pointer; then,
+    /// once no second press can make a double click of it (egui's time for one), they slide along to fill the room
+    /// it left, and the columns before come back into view (the owner's word, 2026-11-26). eased, and at rest after.
+    #[test]
+    fn a_press_up_the_path_slides_the_columns_back_once_no_double_click_can_follow() {
+        let mut deep = Deep::new(6, 1240.0);
+        let out = deep.rest();
+        let (before, (at, row)) = (left_of(&out, "s2").unwrap(), drawn(&out, "f3")[0]);
+        assert_eq!(left_of(&out, "s0"), None, "the first column is out of view at first");
+        deep.press(Pos2::new(at.x + 5.0, row.center().y), egui::PointerButton::Primary);
+        assert_eq!(deep.browser.state().nav.main().folder, deep.folders[3], "the folder pressed is shown at once");
+        let passes: Vec<(f32, Duration)> = (0..60).map(|_| deep.pass(Vec::new())).map(|out| (left_of(&out, "s2").unwrap() - before, again(&out))).collect();
+        // the 0.3 s a double click has are 18 passes
+        assert!(passes[..17].iter().all(|(moved, _)| *moved == 0.0), "the columns moved while a second press could still make a double click: {passes:?}");
+        // the four columns left all fit: back all the 278 they were scrolled along
+        assert_eq!(passes[59].0, 278.0, "the columns slide back to fill the room the press left: {passes:?}");
+        let slide: Vec<f32> = passes.iter().map(|(moved, _)| *moved).skip_while(|moved| *moved == 0.0).collect();
+        assert!(slide[0] < 278.0 / 3.0 && slide.windows(2).all(|pair| pair[0] <= pair[1]), "eased, one way: {slide:?}");
+        assert!(passes.iter().all(|(moved, again)| *moved == 278.0 || *again < Duration::from_secs(1)), "woken for the slide and while it lasts: {passes:?}");
+        assert!(passes[59].1 > Duration::from_secs(3600), "at rest the browser asks to be drawn again: {passes:?}");
+        assert_eq!(left_of(&deep.pass(Vec::new()), "s0"), Some(150.0 + 31.0), "the first column is back in view");
+    }
+
+    /// a double click on a folder up the path opens that folder, with the columns where they were from its first
+    /// press to its last. and a second press that comes while one could still follow puts the slide off: held past
+    /// that time it still finds the columns where they were, and they slide once it has come up and its own time
+    /// has passed.
+    #[test]
+    fn a_double_click_up_the_path_opens_the_folder_and_nothing_slides_between_its_presses() {
+        let button = |on: Pos2, pressed: bool| vec![held(on, egui::PointerButton::Primary, pressed)];
+        let mut deep = Deep::new(6, 1240.0);
+        let out = deep.rest();
+        let (before, (at, row)) = (left_of(&out, "s2").unwrap(), drawn(&out, "s2")[0]);
+        let on = Pos2::new(at.x + 5.0, row.center().y);
+        let still = |deep: &mut Deep, events: Vec<egui::Event>, when: &str| assert_eq!(left_of(&deep.pass(events), "s2"), Some(before), "the columns moved {when}");
+        still(&mut deep, vec![egui::Event::PointerMoved(on)], "under the pointer");
+        for (events, when) in [(button(on, true), "at the first press"), (button(on, false), "at its release"), (Vec::new(), "between the presses"), (Vec::new(), "between the presses"), (button(on, true), "at the second press"), (button(on, false), "at its release")] {
+            still(&mut deep, events, when);
+        }
+        let state = deep.browser.state();
+        assert_eq!((state.nav.main().folder.clone(), state.nav.previewing), (deep.folders[2].join("s2"), false), "the folder double clicked is opened");
+
+        let mut deep = Deep::new(6, 1240.0);
+        deep.rest();
+        deep.press(on, egui::PointerButton::Primary);
+        // a quarter of a second on, the button goes down again and stays down for half a second
+        (0..15).for_each(|_| still(&mut deep, Vec::new(), "before a second press"));
+        still(&mut deep, button(on, true), "at the second press");
+        (0..30).for_each(|_| still(&mut deep, Vec::new(), "under a press that is held"));
+        still(&mut deep, button(on, false), "as the press came up");
+        let moved: Vec<f32> = (0..60).map(|_| left_of(&deep.pass(Vec::new()), "s2").unwrap() - before).collect();
+        assert!(moved[..17].iter().all(|moved| *moved == 0.0) && moved[59] == 278.0, "they slide once that press's own time has passed: {moved:?}");
+
+        // a right click on a file up the path opens its menu, and the columns stay under it: no slide follows. here
+        // a video in the fourth column, in a path of folders that each hold one
+        let mut deep = Deep::new(6, 1240.0);
+        deep.videos = true;
+        let (at, row) = drawn(&deep.rest(), "s3")[0];
+        // the video's row is the one under the folder beside the path
+        deep.press(Pos2::new(at.x + 5.0, row.center().y + ROW), egui::PointerButton::Secondary);
+        assert!(matches!(&deep.browser.state().menu, Some((On::File(file), _)) if file.ends_with("v3.mov")), "the menu is on the video: {:?}", deep.browser.state().menu);
+        (0..60).for_each(|_| still(&mut deep, Vec::new(), "under a file's menu"));
     }
 
     /// a column's edge stays under the pointer that drags it, and the columns before it stay where they are: here the
