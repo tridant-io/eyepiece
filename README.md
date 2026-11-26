@@ -43,6 +43,8 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 - the window takes the clip's shape, up to 90% of the screen.
 - **one window:** a file opened while eyepiece runs, or dropped on it, gets a tab of its own.
 
+---
+
 ### playing and stepping
 
 - **J K L** shuttle, each press of J or L doubling the speed up to 8×. **speed** runs from 0.1× to 8×.
@@ -50,49 +52,73 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 - **T** switches frames and timecode. timecode is the file's own, drop-frame included, or counts from zero.
 - **a file that changes on disk**, such as a new render, takes the old one's place on the same frame.
 
+---
+
 ### the timebar
+
+![hovering the timebar shows that frame's picture and number](docs/images/timebar.png)
+*hovering the timebar shows that frame's picture and number*
 
 click or drag to go to a frame. hover for a picture of the frame under the pointer. ticks mark frames with markup, and missing frames of a sequence are amber.
 
-![hovering the timebar shows that frame's picture and number](docs/images/timebar.png)
+---
 
 ### zoom, pan and the navigator
+
+![the picture at 1200% with pixel grid, zoom chip and navigator](docs/images/zoom-navigator.png)
+*the picture at 1200% with pixel grid, zoom chip and navigator*
 
 - **0** fits, **1** is 1:1, **2** is 2×. **-**, **=** and **shift+wheel** zoom about the pointer, up to 6400%.
 - the zoom chip names the pixel under the pointer and its values. from 1000%, a grid marks every pixel.
 - drag or **alt+arrows** to pan. **the navigator** at the lower left shows the whole picture: press in it to go there.
 
-![the picture at 1200% with pixel grid, zoom chip and navigator](docs/images/zoom-navigator.png)
+---
 
 ### guides
 
+![the view menu with grid and center guides drawn](docs/images/guides.png)
+*the view menu with grid and center guides drawn*
+
 **D** shows a grid of tiles and **C** the center lines and circle. they are drawn on the picture, so they stay true zoomed or letterboxed. a screenshot can carry them.
 
-![the view menu with grid and center guides drawn](docs/images/guides.png)
+---
 
 ### looking at the picture
 
 - the view menu shows one channel (r, g, b or alpha) as gray. **H** mirrors, **V** flips, **Q** turns a quarter. each leaves a chip and never changes the file.
 - deep files go to the screen as 16-bit. values above 1.0 stop at white: there is no tone map.
 
+---
+
 ### metadata
+
+![the metadata panel pinned at the top right](docs/images/metadata.png)
+*the metadata panel pinned at the top right*
 
 rest the pointer on the metadata button to read it. click it or press **I** to pin it. it covers the file, codec, size, frames, rate, bit depth, chroma, color, alpha, audio, timecode and key frames. a value the file does not state is dim, with the assumption in use. faults, such as missing frames or a variable rate, are amber.
 
-![the metadata panel pinned at the top right](docs/images/metadata.png)
+---
 
 ### loop analysis
 
+![loop analysis with its seam chip and the loop menu](docs/images/loop-analysis.png)
+*loop analysis with its seam chip and the loop menu*
+
 **A** plays the clip's last seconds into its first, over and over, so the seam is the only cut you see. the chip gives the seam's change, or warns in amber that the last and first frames are the same: the doubled frame that makes a loop stutter.
 
-![loop analysis with its seam chip and the loop menu](docs/images/loop-analysis.png)
+---
 
 ### tabs and comparing versions
 
 - **N** or **+** opens a tab, **[** and **]** go round them, **ctrl+W** closes one and **ctrl+shift+T** brings it back.
 - **compare versions:** open `wall_v011.mov` and `wall_v012.mov` in two tabs and flip with **[** and **]**. clips of one size and length switch on the same frame, zoom and pan.
 
+---
+
 ### played folders
+
+![a played folder's clip list, odd rates and size in amber](docs/images/played-folder.png)
+*a played folder's clip list, odd rates and size in amber*
 
 a folder's clips, played in name order in one tab. press **open folder** in the browser, or drop a folder on the window.
 
@@ -102,9 +128,12 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - nothing jumps at a cut: the window is sized once and the next clip is ready.
 - **play with subfolders** (right-click a folder, or **ctrl+shift+enter**) plays its own clips, then each subfolder's, depth first. the list names each by its path from the folder. it stops at 2000 videos or 10000 folders, and says so.
 
-![a played folder's clip list, odd rates and size in amber](docs/images/played-folder.png)
+---
 
 ### the browser
+
+![the browser: address, folder columns, cards and metadata column](docs/images/browser.png)
+*the browser: address, folder columns, cards and metadata column*
 
 **O** lays the browser over the tab and **esc** goes back.
 
@@ -120,9 +149,15 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **network folders are look-only:** names, sizes and dates, until you open a file or press **make previews**.
 - previews are cached in the system's cache folder, never near your media.
 
-![the browser: address, folder columns, cards and metadata column](docs/images/browser.png)
+---
 
 ### screenshots and markup
+
+![markup on a frame: rectangle, circle, text and the tools](docs/images/markup.png)
+*markup on a frame: rectangle, circle, text and the tools*
+
+![a saved screenshot with its marks and caption](docs/images/saved-frame.png)
+*a saved screenshot with its marks and caption*
 
 - **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
 - the screenshot menu can add a caption, the guides and the markup.
@@ -130,21 +165,23 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **markup:** **E** pauses and shows the tools: select, rectangle, circle, pen, text, and ten inks: red, orange, yellow, green, blue, indigo, violet, white, black and gray. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops. marks stay on their frame until the tab closes.
 - **changing marks:** with select, a click selects a mark, a drag moves it and a drag of a corner handle scales it; **shift** keeps its proportion, and text always keeps its own. **delete** or **backspace** takes the selected mark off. a right click on a mark, with any tool, opens its menu: delete, its color, and edit text for text. **ctrl+Z** takes back the last change, one at a time, and **ctrl+shift+Z** or **ctrl+Y** brings it back, until a new change; the row of tools has both. **esc** lets go of the selected mark.
 
-![markup on a frame: rectangle, circle, text and the tools](docs/images/markup.png)
-
-![a saved screenshot with its marks and caption](docs/images/saved-frame.png)
+---
 
 ### sound
 
 the clip's sound plays with it and keeps the clock. pitch holds from half to double speed. beyond that, in reverse and in loop analysis, sound is off and a chip says so. **M** mutes, **↑** and **↓** set the volume.
 
+---
+
 ### settings, help and about
 
-the gear, or **ctrl+,**, opens settings. a change takes effect at once. the screenshots page also holds markup's pen smoothing. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
-
 ![the settings panel on its general page](docs/images/settings.png)
+*the settings panel on its general page*
 
 ![the about page](docs/images/about.png)
+*the about page*
+
+the gear, or **ctrl+,**, opens settings. a change takes effect at once. the screenshots page also holds markup's pen smoothing. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
 
 ## keys
 
