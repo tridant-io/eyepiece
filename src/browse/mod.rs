@@ -124,12 +124,14 @@ pub fn sort(entries: &mut [Entry], sort: Sort) {
 }
 
 /// how wide the browser's parts are, in the design's px: the sidebar, each folder's column by its place along the
-/// path (the first from the root, then the next), the metadata column. each is dragged by its own edge and kept
-/// between runs; a double click on an edge puts it back.
+/// path (the first from the root, then the next), the main area, the metadata column. each is dragged by its own
+/// edge and kept between runs; a double click on an edge puts it back.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Widths {
     pub side: f32,
     pub columns: [f32; COLUMNS],
+    /// what the main area keeps while some of the columns are out of view: with all of them in view it has the rest
+    pub main: f32,
     pub meta: f32,
 }
 
@@ -137,18 +139,21 @@ pub struct Widths {
 pub const COLUMNS: usize = 16;
 /// a column's width until it is dragged (figs. 27 and 28)
 pub const COLUMN: f32 = 168.0;
+/// the least the main area and the metadata column can be: a card's picture 44 across, and the metadata's facts
+pub const MAIN_LEAST: f32 = 72.0;
+pub const META_LEAST: f32 = 240.0;
 
 impl Default for Widths {
-    /// the design's (figs. 27 and 28)
+    /// the design's (figs. 27 and 28), and for the main area two cards across
     fn default() -> Widths {
-        Widths { side: 150.0, columns: [COLUMN; COLUMNS], meta: 316.0 }
+        Widths { side: 150.0, columns: [COLUMN; COLUMNS], main: 360.0, meta: 316.0 }
     }
 }
 
 impl Widths {
     /// within what keeps every part usable: a sidebar row's name, a column's names, the metadata's facts
     pub fn kept(self) -> Widths {
-        Widths { side: self.side.clamp(110.0, 360.0), columns: self.columns.map(|w| w.clamp(120.0, 480.0)), meta: self.meta.clamp(240.0, 640.0) }
+        Widths { side: self.side.clamp(110.0, 360.0), columns: self.columns.map(|w| w.clamp(120.0, 480.0)), main: self.main.max(MAIN_LEAST), meta: self.meta.clamp(META_LEAST, 640.0) }
     }
 
     /// the width of the column at `depth` along the path

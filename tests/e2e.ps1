@@ -181,6 +181,9 @@ function Stop-Player {
     else { Confirm-That "$($script:name) closes cleanly" $false 'still running after 3 s'; $script:p.Kill() }
 }
 function Get-Cpu { $script:p.Refresh(); $script:p.TotalProcessorTime.TotalSeconds }
+# where the browser's main area begins while its path is deeper than fits: it keeps its 360 (beside the metadata
+# column's 316 with -Meta), and the columns have the rest, which is never less than the path's last two, 168 each
+function Get-MainLeft([switch]$Meta) { [math]::Max(150 + 2 * 168, (Get-Width) - 360 - $(if ($Meta) { 316 } else { 0 })) }
 # true while the window has its frame: false in fullscreen
 function Test-Framed { ([EyepieceE2e]::GetWindowLong($script:h, -16) -band 0x40000) -ne 0 }
 # the middle of the picture area
@@ -720,8 +723,8 @@ Confirm-That 'each card whose file is on the disk gets a poster, and the one mar
 $before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
 Confirm-That 'the browser at rest, its folders listed and its posters made, uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 # a double click opens the card its first click hit, though that click brings in the metadata column and moves the
-# cards along. here the first card, beside as many columns as fit and no metadata column
-$columns = [math]::Floor(((Get-Width) - 150 - 360) / 168); $main = 150 + 168 * $columns; $inner = (Get-Width) - $main - 28
+# cards along. here the first card, with no metadata column
+$main = Get-MainLeft; $inner = (Get-Width) - $main - 28
 $across = [math]::Floor(($inner + 12) / 172); $card = [math]::Floor(($inner - 12 * ($across - 1)) / $across)
 $script:name = 'hap_64.mov'; DoubleClick-At ($main + 14 + $card / 2) (32 + 36 + 36 + 14 + $card * 9 / 32)
 Assert-Frame 'a double click opens the card it was on' 0 3
@@ -742,10 +745,10 @@ Send-Key 0x4F; Start-Sleep -Milliseconds 500; Send-Key 0x50; Send-Key 0x52
 $script:name = 'prores_64.mov'; Send-Key 0x0D; Assert-Frame 'letters typed together select by the first letters of a name' 0 4
 Send-Key 0x4F; Assert-Title 'the browser is over the clip again' ' . browser$'
 # a double click on nothing opens nothing, however recently a clip was clicked: here its row, the fourth of the last
-# column (the metadata column is up, so the columns that fit are fewer), then the empty grid at the bottom
-$columns = [math]::Floor(((Get-Width) - 150 - 316 - 360) / 168)
-Click-At (150 + 168 * $columns - 84) (32 + 36 + 8 + 26.25 * 3.5); Start-Sleep -Milliseconds 1000
-DoubleClick-At (150 + 168 * $columns + 100) ((Get-Height) - 80); Start-Sleep -Milliseconds 1000
+# column (the metadata column is up, so the columns have less room), then the empty grid at the bottom
+$main = Get-MainLeft -Meta
+Click-At ($main - 84) (32 + 36 + 8 + 26.25 * 3.5); Start-Sleep -Milliseconds 1000
+DoubleClick-At ($main + 100) ((Get-Height) - 80); Start-Sleep -Milliseconds 1000
 Assert-Title 'a double click on nothing opens nothing' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape goes back to the clip' 0 4
 # the selected card's actions at the foot of the metadata column (fig. 28, less its "new tab", which the owner had
@@ -948,13 +951,13 @@ Confirm-That 'the tree has a junction back to its top' ((Get-Item -LiteralPath $
 function Get-ClipOf([int]$count) { if ((Get-Title) -match " . clip (\d) of $count") { [int]$Matches[1] } else { 0 } }
 function Go-First([int]$count) { foreach ($i in 1..($count + 1)) { if ((Get-ClipOf $count) -eq 1) { break }; Send-Key 0x27 1 4; Start-Sleep -Milliseconds 500 } }
 # the browser in the tree's top, in a window of known size with nothing selected: no metadata column, and the main
-# area after as many columns as fit, its path line 18 under the address
+# area after the columns, its path line 18 under the address
 function Start-Nest {
     Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $nest", 'mute = on', 'play_on_open = off'
     Start-Player
     [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 1240, 800, 0x0006)
     Start-Sleep -Milliseconds 1000
-    $script:mainLeft = 150 + 168 * [math]::Max(1, [math]::Floor(((Get-Width) - 150 - 360) / 168))
+    $script:mainLeft = Get-MainLeft
 }
 Start-Nest
 Send-Key 0x0D 1 5; Start-Sleep -Milliseconds 1500; Send-Key 0x20
@@ -1032,7 +1035,7 @@ Send-Key 0x25; Send-Key 0x28
 Open-Here 'c2.mov' 3 'left from the first card goes back to the column on it, where down moves on'
 # lit: the row where the keys are, here the second clip in the last column, and not the folder of shots selected in the
 # column before, on the way there. each row's room right of its name holds its fill alone
-$fit = [math]::Max(1, [math]::Floor(((Get-Width) - 150 - 316 - 360) / 168)); $last = 150 + 168 * ($fit - 1)
+$last = (Get-MainLeft -Meta) - 168
 $lit = Get-Bright ($last + 100) (76 + 26.25 + 4) ($last + 168 - 25) (76 + 26.25 * 2 - 4) -Any
 $way = Get-Bright ($last - 168 + 100) (76 + 4) ($last - 25) (76 + 26.25 - 4) -Any
 $room = (168 - 125) * (26.25 - 8) * [math]::Pow([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0, 2)

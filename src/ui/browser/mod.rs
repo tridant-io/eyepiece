@@ -52,8 +52,6 @@ const STRONG: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
 const ON_STRONG: Color32 = Color32::from_rgb(0x11, 0x11, 0x11);
 
 // ---- the design's measurements (fig. 28)
-/// the main area keeps this much before another column is drawn; the metadata column comes before the columns
-const MAIN_MIN: f32 = 360.0;
 /// cards are at least this wide: as many go across as fit
 const CARD_MIN: f32 = 160.0;
 /// a row of the sidebar and the columns: 12.5 type at 1.3, and 5 above and below
@@ -66,6 +64,9 @@ const SPEC: f32 = 13.125;
 const META_LINE: f32 = 15.525;
 /// what a notch of the wheel scrolls
 const NOTCH: f32 = 3.0 * ROW;
+/// how long the columns take to slide to where a step along the path puts them, in seconds (the owner's ask,
+/// 2026-11-25: quick, eased, no jumps)
+const SLIDE: f64 = 0.18;
 /// how long the selection rests on a card before its file is read, in seconds
 const REST: f64 = 0.15;
 /// while an answer is awaited, the browser looks again this often: nothing else wakes the window for it
@@ -166,7 +167,7 @@ impl Browser {
         let state = self.state();
         state.take_answers();
         // the keys act in the columns where the path ends: scrolled back up it, they come back there
-        state.columns_back = 0;
+        state.bring = Some(Bring::End);
         // a key puts the right-click menu and the address's lists away, and esc does nothing more
         if (state.menu.take().is_some() | state.dropdown.take().is_some()) && key == Key::Escape {
             return;
@@ -264,7 +265,7 @@ impl Browser {
     pub fn char(&mut self, c: char) {
         let state = self.state();
         state.take_answers();
-        state.columns_back = 0;
+        state.bring = Some(Bring::End);
         state.nav.char(c, Instant::now());
     }
 
@@ -313,10 +314,14 @@ struct State {
     /// wheel notches not yet applied; how far the sidebar, the grid and the metadata column are scrolled, and how
     /// tall the sidebar's and the metadata column's contents were when last drawn
     wheel: i32,
-    /// columns scrolled back up the path from the deepest that fit (the owner's ask, 2026-11-25), the path's length it
-    /// was for (a new one puts it back), and where on the bar's thumb a drag of it took hold
-    columns_back: usize,
-    columns_for: usize,
+    /// how far along the path the columns are scrolled, in px (the owner's ask, 2026-11-25), and what the last thing
+    /// done asks of that; what the last pass laid out, and the slide to it: how far from it the columns' scroll,
+    /// what is seen of them and the metadata column's width were when it began, and when that was; and where on the
+    /// bar's thumb a drag of it took hold
+    columns_at: f32,
+    bring: Option<Bring>,
+    laid: Option<Laid>,
+    slide: ([f32; 3], f64),
     bar_grab: Option<f32>,
     side_scroll: f32,
     side_height: f32,
@@ -428,85 +433,96 @@ enum Click {
     OpenPicked,
 }
 
-/// where the parts go: the sidebar, the address across the top of the rest, and under it the columns that fit (the
-/// deepest ones), the main area, the metadata column
+/// what the last thing done asks of the columns' scroll. with nothing asked, columns at the path's end stay at it
+#[derive(Clone, Copy)]
+enum Bring {
+    /// a key, the address, a place: to the path's end, with the column the keys act in in view
+    End,
+    /// a press on a row or a card: on as far as shows the path's end and never back, so what was pressed stays
+    /// under the pointer
+    On,
+    /// a right click on a folder: nowhere, whatever becomes of the path (the owner's word, 2026-11-25)
+    Stay,
+}
+
+/// what a pass laid out, for the next to tell what has changed since and how
+struct Laid {
+    area: Rect,
+    widths: Widths,
+    /// the scroll that shows the path's end
+    end: f32,
+    /// where the columns' scroll, what is seen of them and the metadata column's width were headed
+    to: [f32; 3],
+}
+
+/// where the parts go: the sidebar, the address across the top of the rest, and under it the columns, scrolled
+/// along the path, the main area, the metadata column
 struct Layout {
     side: Rect,
     address: Rect,
-    /// the first column on the path that is drawn, and where each drawn one goes
-    first: usize,
+    /// what is seen of the columns, and every column on the path where it stands, in view or not
+    seen: Rect,
     columns: Vec<Rect>,
     main: Rect,
     meta: Option<Rect>,
-    /// the columns on the path, and how many of them before the deepest that fit can be scrolled back to
-    total: usize,
-    back_most: usize,
 }
 
 impl Layout {
-    /// `shown` columns on the path; `card`: one is selected, so the metadata column is wanted.
-    fn new(area: Rect, shown: usize, card: bool, view: View, widths: Widths) -> Layout {
-        Layout::scrolled(area, shown, card, view, widths, 0)
-    }
-
-    /// as `new`, scrolled `back` columns up the path from the deepest that fit: the columns from there that fit
-    fn scrolled(area: Rect, shown: usize, card: bool, view: View, widths: Widths, back: usize) -> Layout {
-        let (side, wide) = (widths.side, widths.meta);
-        // with the column alone showing, the cards keep no room
-        let least = if view == View::List { 0.0 } else { MAIN_MIN };
-        let deepest = widths.column(shown.saturating_sub(1));
-        let meta = card && area.width() - side - deepest - wide >= least;
-        let room = area.width() - side - if meta { wide } else { 0.0 } - least;
-        // the deepest columns that fit, each at its own width, and always the deepest one
-        let mut fit = 0;
-        let mut taken = 0.0;
-        while fit < shown && (fit == 0 || taken + widths.column(shown - fit - 1) <= room) {
-            taken += widths.column(shown - fit - 1);
-            fit += 1;
-        }
-        let back_most = shown - fit;
-        let first = back_most - back.min(back_most);
-        // scrolled back, the columns from there that fit, at least one
-        let mut last = first + 1;
-        let mut taken = widths.column(first);
-        while last < shown && taken + widths.column(last) <= room {
-            taken += widths.column(last);
-            last += 1;
-        }
-        let x = |offset: f32| area.left() + offset;
-        let top = area.top() + PATH_LINE;
+    /// `shown` columns on the path, scrolled `at[0]` along it with `at[1]` across of them in view, beside a metadata
+    /// column `at[2]` wide, 0 for none. in whole px: a slide passes through all the places between.
+    fn new(area: Rect, shown: usize, widths: Widths, at: [f32; 3]) -> Layout {
+        let [scroll, seen, meta] = at.map(f32::round);
+        let (left, top) = (area.left() + widths.side, area.top() + PATH_LINE);
         let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, top), Pos2::new(to.max(from), area.bottom()));
-        let mut left = side;
-        let columns = (first..last.min(shown))
+        let mut x = left - scroll;
+        let columns = (0..shown)
             .map(|depth| {
-                left += widths.column(depth);
-                span(x(left - widths.column(depth)), x(left))
+                x += widths.column(depth);
+                span(x - widths.column(depth), x)
             })
             .collect();
         Layout {
-            side: Rect::from_min_max(area.min, Pos2::new(x(side), area.bottom())),
-            address: Rect::from_min_max(Pos2::new(x(side), area.top()), Pos2::new(area.right(), top)),
-            first,
+            side: Rect::from_min_max(area.min, Pos2::new(left, area.bottom())),
+            address: Rect::from_min_max(Pos2::new(left, area.top()), Pos2::new(area.right(), top)),
+            seen: span(left, left + seen),
             columns,
-            main: span(x(left), if meta { area.right() - wide } else { area.right() }),
-            meta: meta.then(|| span(area.right() - wide, area.right())),
-            total: shown,
-            back_most,
+            main: span(left + seen, area.right() - meta),
+            meta: (meta > 0.0).then(|| span(area.right() - meta, area.right())),
         }
+    }
+
+    /// the first column any of which is in view
+    fn first(&self) -> usize {
+        self.columns.iter().position(|column| column.right() > self.seen.left()).unwrap_or(0)
     }
 }
 
+/// how the columns, the main area and the metadata column share `wide`, what the sidebar leaves of the window: the
+/// most the columns have, and the metadata column's width, 0 with no card selected (`card`) or no room for it.
+/// the metadata column has its own width where that leaves the path's last two columns and the least of a main
+/// area, less where it does not, and is not shown under its own least. the main area keeps its own width and gives
+/// of it for those two columns: a path deeper than fits never shows one column alone (the owner's word, 2026-11-25).
+fn shares(wide: f32, columns: &[f32], card: bool, view: View, widths: Widths) -> (f32, f32) {
+    // with the column alone showing there is no main area
+    let (least, kept) = if view == View::List { (0.0, 0.0) } else { (browse::MAIN_LEAST, widths.main) };
+    let last = columns.last().copied().unwrap_or(0.0);
+    let two: f32 = columns.iter().rev().take(2).sum();
+    let meta = if card && wide - least - last >= browse::META_LEAST { widths.meta.min(wide - least - two).max(browse::META_LEAST) } else { 0.0 };
+    ((wide - meta - kept).max(two).min(wide - meta - least).max(0.0), meta)
+}
+
 /// the bar under the columns while some of the path is out of view, drawn as the design's settings page draws its
-/// scrollbar (docs/design/settings.html): its track along the columns, 3 in from their edges and foot, 4 high, and its
-/// thumb, as much of the track as the columns drawn are of the path, where they are on it
+/// scrollbar (docs/design/settings.html): its track along what is seen of the columns, 3 in from its edges and foot,
+/// 4 high, and its thumb, as much of the track as is seen of the path, where that is on it
 fn column_bar(layout: &Layout) -> Option<(Rect, Rect)> {
-    let (left, right) = (layout.columns.first()?, layout.columns.last()?);
-    if layout.back_most == 0 || layout.total == 0 {
+    let (first, last, seen) = (layout.columns.first()?, layout.columns.last()?, layout.seen);
+    let all = last.right() - first.left();
+    if seen.width() + 0.5 >= all {
         return None;
     }
-    let track = Rect::from_min_max(Pos2::new(left.left() + 3.0, left.bottom() - 3.0 - 4.0), Pos2::new(right.right() - 3.0, left.bottom() - 3.0));
-    let at = |i: usize| track.left() + track.width() * i as f32 / layout.total as f32;
-    Some((track, Rect::from_min_max(Pos2::new(at(layout.first), track.top()), Pos2::new(at(layout.first + layout.columns.len()), track.bottom()))))
+    let track = Rect::from_min_max(Pos2::new(seen.left() + 3.0, seen.bottom() - 3.0 - 4.0), Pos2::new(seen.right() - 3.0, seen.bottom() - 3.0));
+    let at = |x: f32| track.left() + track.width() * (x - first.left()) / all;
+    Some((track, Rect::from_min_max(Pos2::new(at(seen.left()), track.top()), Pos2::new(at(seen.right()), track.bottom()))))
 }
 
 /// a card's pictures: the frame each is of, in order
@@ -567,8 +583,10 @@ impl State {
             cards: HashMap::new(),
             hover: None,
             wheel: 0,
-            columns_back: 0,
-            columns_for: 0,
+            columns_at: 0.0,
+            bring: Some(Bring::End),
+            laid: None,
+            slide: ([0.0; 3], f64::NEG_INFINITY),
             bar_grab: None,
             side_scroll: 0.0,
             side_height: 0.0,
@@ -703,7 +721,8 @@ impl State {
     fn draw(&mut self, ui: &mut egui::Ui, area: Rect) -> Option<Chosen> {
         // away since the last pass (a clip was up): what is on screen may have changed, so it is listed again
         let pass = ui.ctx().cumulative_pass_nr();
-        if pass > self.drawn + 1 {
+        let back = pass > self.drawn + 1;
+        if back {
             self.reread();
         }
         self.drawn = pass;
@@ -716,27 +735,15 @@ impl State {
         if self.picked.first().is_some_and(|picked| picked.parent() != Some(self.nav.main().folder.as_path())) {
             self.picked.clear();
         }
-        let card = self.nav.card().is_some();
-        // a path of another length starts at its deepest columns again
-        let shown = self.nav.drawn();
-        if shown != self.columns_for {
-            (self.columns_back, self.columns_for) = (0, shown);
-        }
-        // the wheel on the bar scrolls the columns, before they are laid out
-        let notches = column_bar(&Layout::scrolled(area, shown, card, self.nav.view, self.widths, self.columns_back)).filter(|(track, _)| ui.ctx().pointer_latest_pos().is_some_and(|p| track.expand2(Vec2::new(0.0, 6.0)).contains(p))).map(|_| std::mem::take(&mut self.wheel));
-        self.columns_back = self.columns_back.saturating_add_signed(notches.unwrap_or(0) as isize);
-        let mut layout = Layout::scrolled(area, shown, card, self.nav.view, self.widths, self.columns_back);
-        self.columns_back = layout.back_most - layout.first;
-        // the column the keys act in is drawn, before the one it shows a folder in
-        if let Some(at) = self.nav.current_column().filter(|at| *at < layout.first) {
-            layout = Layout::new(area, at + 1, card, self.nav.view, self.widths);
-        }
+        let layout = self.lay_out(ui, area, back);
         self.scroll(ui, &layout);
         let mut clicks = Vec::new();
         self.side(ui, layout.side, &mut clicks);
         let hint = self.address_line(ui, layout.address, &mut clicks);
-        for (i, rect) in layout.columns.iter().enumerate() {
-            self.column(ui, layout.first + i, *rect, &mut clicks);
+        for (at, rect) in layout.columns.iter().enumerate() {
+            if rect.right() > layout.seen.left() && rect.left() < layout.seen.right() {
+                self.column(ui, at, *rect, layout.seen, &mut clicks);
+            }
         }
         self.columns_bar(ui, &layout);
         if self.nav.view == View::List {
@@ -748,7 +755,7 @@ impl State {
             self.metadata(ui, rect, &mut clicks);
         }
         // after the parts, so an edge takes the pointer before the rows and cards under it
-        self.edges(ui, &layout);
+        self.edges(ui, &layout, area);
         self.menu(ui, area.shrink(8.0), &mut clicks);
         // over all the parts it may stand on
         self.tooltip(ui, hint, layout.address.bottom());
@@ -777,7 +784,7 @@ impl State {
         if let Some(path) = self.copied.take() {
             ui.ctx().copy_text(path);
         }
-        if let Some(wait) = self.ask(layout.first, ui.input(|i| i.time)) {
+        if let Some(wait) = self.ask(layout.first(), ui.input(|i| i.time)) {
             ui.ctx().request_repaint_after(Duration::from_secs_f64(wait));
         }
         if self.lists.busy() || self.metas.busy() || self.pins.busy() || self.walks.busy() {
@@ -786,10 +793,56 @@ impl State {
         self.chosen.take()
     }
 
+    /// where the parts go in this pass. a step along the path, by key or by press, slides the columns, what is seen
+    /// of them and the metadata column to where it puts them, eased, on the controls' own clock, and asks to be
+    /// drawn again only while they move. the window resized, an edge dragged and the bar's thumb are followed at once.
+    fn lay_out(&mut self, ui: &egui::Ui, area: Rect, back: bool) -> Layout {
+        let shown = self.nav.drawn();
+        let columns: Vec<f32> = (0..shown).map(|depth| self.widths.column(depth)).collect();
+        let before = |depth: usize| columns[..depth.min(shown)].iter().sum::<f32>();
+        let (room, meta) = shares(area.width() - self.widths.side, &columns, self.nav.card().is_some(), self.nav.view, self.widths);
+        let end = (before(shown) - room).max(0.0);
+        let laid = self.laid.take();
+        let at = match self.bring.take() {
+            Some(Bring::End) => self.nav.current_column().map_or(end, |current| end.min(before(current))),
+            Some(Bring::On) => self.columns_at.max(end),
+            Some(Bring::Stay) => self.columns_at,
+            None if laid.as_ref().is_some_and(|laid| laid.end == self.columns_at) => end,
+            None => self.columns_at,
+        };
+        // never past the last column's left, where the path's end shows less than that
+        self.columns_at = at.clamp(0.0, end.max(before(shown.saturating_sub(1))));
+        // with the column alone showing the columns have all the room; else the main area begins where they end
+        let seen = if self.nav.view == View::List { room } else { room.min(before(shown) - self.columns_at) };
+        let to = [self.columns_at, seen, meta];
+        let now = ui.input(|i| i.time);
+        // how much of a slide begun at `since` is still to go: all of it at first, then less and less
+        let left = |since: f64| (1.0 - ((now - since) / SLIDE).clamp(0.0, 1.0)).powi(3) as f32;
+        let direct = back || self.bar_grab.is_some();
+        if let Some(laid) = laid.filter(|laid| !direct && (laid.area, laid.widths) == (area, self.widths) && laid.to != to) {
+            // from where everything is now, at rest or on its way
+            let still = left(self.slide.1);
+            self.slide = (std::array::from_fn(|i| laid.to[i] + self.slide.0[i] * still - to[i]), now);
+        }
+        let still = left(self.slide.1);
+        if still > 0.0 {
+            ui.ctx().request_repaint();
+        }
+        self.laid = Some(Laid { area, widths: self.widths, end, to });
+        Layout::new(area, shown, self.widths, std::array::from_fn(|i| to[i] + self.slide.0[i] * still))
+    }
+
     fn click(&mut self, click: Click) {
         // a plain press on anything that selects or goes somewhere lets go of the videos picked together
         if matches!(click, Click::Place(_) | Click::Row(..) | Click::Enter | Click::Card(_) | Click::Go(_) | Click::Retrace(_)) {
             self.picked.clear();
+        }
+        match &click {
+            Click::Place(_) | Click::Go(_) | Click::Retrace(_) => self.bring = Some(Bring::End),
+            Click::Row(..) | Click::Enter | Click::Card(_) | Click::Pick(..) => self.bring = Some(Bring::On),
+            // after the press that selected the folder: the columns stay where they are under its menu
+            Click::Menu(On::Folder(_), _) => self.bring = Some(Bring::Stay),
+            _ => {}
         }
         match click {
             Click::Place(place) => self.nav.go(&place, &self.roots),
@@ -886,47 +939,71 @@ impl State {
         self.nav.choose_card(self.picked.last().cloned().filter(|_| !self.picked.contains(&card)).unwrap_or(card));
     }
 
-    /// the edges the parts are resized by, each 7 wide over its rule: the sidebar's right, every folder column's right
-    /// (each column its own), the metadata column's left. a double click puts an edge back where the design has it.
-    fn edges(&mut self, ui: &egui::Ui, layout: &Layout) {
+    /// the edges the parts are resized by, each 7 wide over its rule: the sidebar's right, the right of every folder
+    /// column in view (each column its own, by its place on the path, so a drag keeps the edge it took), the metadata
+    /// column's left. an edge follows the pointer from the press on; the columns keep what is seen of them, and the
+    /// main area gives what the edge takes and takes what it gives. a double click puts an edge back where the design
+    /// has it.
+    fn edges(&mut self, ui: &egui::Ui, layout: &Layout, area: Rect) {
         let at = ui.ctx().pointer_latest_pos();
-        let grab = |name: usize, x: f32, rect: Rect| {
-            let edge = Rect::from_min_max(Pos2::new(x - 3.5, rect.top()), Pos2::new(x + 3.5, rect.bottom()));
+        // with none of a drag's wait to tell it from a click, and only once the pointer has moved: a click moves nothing
+        let moved = ui.input(|i| i.pointer.primary_down() && i.pointer.press_origin() != i.pointer.latest_pos());
+        let grab = |name: usize, edge: Rect| {
             let response = ui.interact(edge, ui.scope_id().with(("brw-edge", name)), Sense::click_and_drag());
-            let to = at.filter(|_| response.dragged()).map(|at| at.x);
-            (response.hovered() || response.dragged(), to, response.double_clicked())
+            let held = response.is_pointer_button_down_on();
+            (response.hovered() || held, at.filter(|_| held && moved).map(|at| at.x), response.double_clicked())
         };
-        let start = layout.side.left();
-        let mut over = false;
-        let (on, to, back) = grab(0, layout.side.right(), layout.side);
-        over |= on;
+        let over_rule = |x: f32, rect: Rect| Rect::from_min_max(Pos2::new(x - 3.5, rect.top()), Pos2::new(x + 3.5, rect.bottom()));
+        let (was, seen, list) = (self.widths, layout.seen, self.nav.view == View::List);
+        let least = if list { 0.0 } else { browse::MAIN_LEAST };
+        // the path's end is in view: an edge dragged moves it, and the main area's left with it, as far as leaves
+        // the main area its least
+        let ends = layout.columns.last().is_none_or(|last| last.right() <= seen.right() + 0.5);
+        let spare = if list { f32::INFINITY } else { (layout.main.width() - least).max(0.0) };
+        let (mut over, mut reset) = (false, false);
+        let (on, to, back) = grab(0, over_rule(layout.side.right(), layout.side));
+        (over, reset) = (over | on, reset | back);
         if let Some(x) = to {
-            self.widths.side = x - start;
+            self.widths.side = x - area.left();
         }
         if back {
             self.widths.side = Widths::default().side;
         }
-        for (i, rect) in layout.columns.iter().enumerate() {
-            let (on, to, back) = grab(1 + i, rect.right(), *rect);
-            over |= on;
+        for (depth, rect) in layout.columns.iter().enumerate() {
+            // an edge out of view is nowhere to be pressed, and still its drag's own while that lasts
+            let in_view = rect.right() > seen.left() && rect.right() <= seen.right() + 0.5;
+            let (on, to, back) = grab(1 + depth, if in_view { over_rule(rect.right(), *rect) } else { Rect::from_min_max(seen.max, seen.min) });
+            (over, reset) = (over | on, reset | back);
             if let Some(x) = to {
-                self.widths.set_column(layout.first + i, x - rect.left());
+                self.widths.set_column(depth, (x - rect.left()).min(if ends { rect.width() + spare } else { f32::INFINITY }));
             }
             if back {
-                self.widths.set_column(layout.first + i, browse::COLUMN);
+                self.widths.set_column(depth, browse::COLUMN);
             }
         }
+        let wide = area.width() - self.widths.side;
+        let two: f32 = (0..layout.columns.len()).rev().take(2).map(|depth| self.widths.column(depth)).sum();
         if let Some(rect) = layout.meta {
-            let (on, to, back) = grab(usize::MAX, rect.left(), rect);
-            over |= on;
+            let (on, to, back) = grab(usize::MAX, over_rule(rect.left(), rect));
+            (over, reset) = (over | on, reset | back);
             if let Some(x) = to {
-                self.widths.meta = rect.right() - x;
+                // no wider than leaves the last two columns and the least of a main area
+                self.widths.meta = (rect.right() - x).min(wide - least - two);
             }
             if back {
                 self.widths.meta = Widths::default().meta;
             }
         }
         (self.widths, self.over_edge) = (self.widths.kept(), over);
+        if self.widths != was && !reset && !list {
+            let columns: Vec<f32> = (0..layout.columns.len()).map(|depth| self.widths.column(depth)).collect();
+            let all: f32 = columns.iter().sum();
+            let (_, meta) = shares(wide, &columns, self.nav.card().is_some(), self.nav.view, self.widths);
+            let has = (wide - meta - if ends { all - self.columns_at } else { seen.width() }).max(least);
+            // while some of the path is out of view the main area keeps what it has now; with all of it in view,
+            // no more than that
+            self.widths.main = if self.columns_at > 0.0 || !ends { has } else { self.widths.main.min(has) };
+        }
     }
 
     /// what is listed is listed again: it stays on screen until the new listing comes.
@@ -1208,43 +1285,58 @@ impl State {
         None
     }
 
-    /// the bar under the columns while some of the path is out of view: its thumb dragged, or the track pressed beside
-    /// it, scrolls the columns a column at a time, as a column is the least that can be shown
+    /// the bar under the columns while some of the path is out of view: its thumb dragged scrolls them with it, from
+    /// the press on, and the track pressed beside it a view's worth that way, sliding
     fn columns_bar(&mut self, ui: &egui::Ui, layout: &Layout) {
         let Some((track, thumb)) = column_bar(layout) else {
             self.bar_grab = None;
             return;
         };
         let response = ui.interact(track.expand2(Vec2::new(0.0, 6.0)), ui.scope_id().with("brw-columns-bar"), Sense::click_and_drag());
-        let to = |left: f32| ((left - track.left()) / track.width() * layout.total as f32).round().clamp(0.0, layout.back_most as f32) as usize;
+        let held = response.is_pointer_button_down_on();
         if let Some(p) = response.interact_pointer_pos() {
-            if response.drag_started() {
-                self.bar_grab = Some(if thumb.x_range().contains(p.x) { p.x - thumb.left() } else { thumb.width() / 2.0 });
+            if held && ui.input(|i| i.pointer.primary_pressed()) && thumb.x_range().contains(p.x) {
+                self.bar_grab = Some(p.x - thumb.left());
             }
-            if let Some(grab) = self.bar_grab.filter(|_| response.dragged()) {
-                self.columns_back = layout.back_most - to(p.x - grab);
+            if let Some(grab) = self.bar_grab.filter(|_| held) {
+                // the track is the whole path, as wide as what is seen of it
+                let all = layout.columns.last().map_or(0.0, |last| last.right()) - layout.columns[0].left();
+                self.columns_to(ui, (p.x - grab - track.left()) * all / track.width());
             } else if response.clicked() && !thumb.x_range().contains(p.x) {
-                self.columns_back = if p.x < thumb.left() { self.columns_back + 1 } else { self.columns_back.saturating_sub(1) }.min(layout.back_most);
+                self.columns_to(ui, self.columns_at + layout.seen.width() * if p.x < thumb.left() { -1.0 } else { 1.0 });
             }
         }
-        if !response.dragged() {
+        if !held {
             self.bar_grab = None;
         }
         // as the design's scrollbar: white at 22%, brighter while the pointer is on it or holds it
-        let lit = response.hovered() || response.dragged();
+        let lit = response.hovered() || held;
         ui.painter().rect_filled(thumb, 2.0, Color32::from_white_alpha(if lit { 102 } else { 56 }));
     }
 
-    /// the wheel scrolls what is under the pointer: the sidebar, a column, the grid or the metadata column. each keeps
-    /// itself in range when it is drawn.
+    /// the bar or the wheel scrolls the columns to `to` along the path: no further on than its end, unless they are
+    /// there already
+    fn columns_to(&mut self, ui: &egui::Ui, to: f32) {
+        let end = self.laid.as_ref().map_or(0.0, |laid| laid.end);
+        let to = to.clamp(0.0, end.max(self.columns_at));
+        if to != self.columns_at {
+            self.columns_at = to;
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// the wheel scrolls what is under the pointer: the columns along the path on their bar, the sidebar, a column,
+    /// the grid or the metadata column. each keeps itself in range when it is drawn.
     fn scroll(&mut self, ui: &egui::Ui, layout: &Layout) {
         let notches = std::mem::take(&mut self.wheel);
         let Some(at) = ui.ctx().pointer_latest_pos().filter(|_| notches != 0) else { return };
         let by = -notches as f32 * NOTCH;
-        if layout.side.contains(at) {
+        if column_bar(layout).is_some_and(|(track, _)| track.expand2(Vec2::new(0.0, 6.0)).contains(at)) {
+            self.columns_to(ui, self.columns_at + by);
+        } else if layout.side.contains(at) {
             self.side_scroll += by;
-        } else if let Some(i) = layout.columns.iter().position(|r| r.contains(at)) {
-            self.nav.path[layout.first + i].scroll += by;
+        } else if let Some(i) = layout.columns.iter().position(|r| r.intersect(layout.seen).contains(at)) {
+            self.nav.path[i].scroll += by;
         } else if layout.main.contains(at) {
             self.grid_scroll += by;
         } else if layout.meta.is_some_and(|r| r.contains(at)) {
@@ -1301,9 +1393,9 @@ impl State {
     }
 
     /// one folder on the path as a column: its entries, the selected one lit, brightly where the keys act and dimly
-    /// on the way there.
-    fn column(&mut self, ui: &egui::Ui, at: usize, rect: Rect, clicks: &mut Vec<Press>) {
-        let painter = ui.painter().with_clip_rect(rect);
+    /// on the way there. what of it is in `seen` is drawn, and pressed.
+    fn column(&mut self, ui: &egui::Ui, at: usize, rect: Rect, seen: Rect, clicks: &mut Vec<Press>) {
+        let painter = ui.painter().with_clip_rect(rect.intersect(seen));
         rule(&painter, rect.right() - 1.0, rect);
         let inner = Rect::from_min_max(rect.min, Pos2::new(rect.right() - 1.0, rect.bottom()));
         let current = self.nav.current_column() == Some(at);
@@ -1355,7 +1447,7 @@ impl State {
                 painter.galley(Pos2::new(row.right() - 10.0 - arrow.size().x, top_of(&painter, &arrow, middle)), arrow, GRAY);
             }
             text(&painter, row.left() + 31.0, middle, &entry.name, font(SANS, 12.5), color, room);
-            let response = ui.interact(row.intersect(inner), ui.scope_id().with(("brw-row", at, i)), Sense::click());
+            let response = ui.interact(row.intersect(inner).intersect(seen), ui.scope_id().with(("brw-row", at, i)), Sense::click());
             if response.secondary_clicked() {
                 let on = if folder { On::Folder(entry.path.clone()) } else { On::File(entry.path.clone()) };
                 right_click(ui, &self.picked, Some(Click::Row(at, entry.path.clone(), folder)), on, clicks);
@@ -2078,67 +2170,49 @@ mod tests {
         assert_eq!(holds(&[]), "empty");
     }
 
-    #[test]
-    fn the_columns_give_way_to_the_main_area_and_the_metadata_column() {
-        let area = |w: f32| Rect::from_min_size(Pos2::ZERO, Vec2::new(w, 668.0));
-        // fig. 28's width with a card selected: two columns, the main area, the metadata column
-        let layout = Layout::new(area(1240.0), 5, true, View::Both, Widths::default());
-        assert_eq!((layout.first, layout.columns.len(), layout.meta.is_some()), (3, 2, true));
-        assert_eq!((layout.main.left(), layout.main.width()), { let w = Widths::default(); (w.side + 2.0 * browse::COLUMN, 1240.0 - w.side - 2.0 * browse::COLUMN - w.meta) });
-        // with nothing selected there is no metadata column, and more columns fit
-        assert_eq!(Layout::new(area(1240.0), 5, false, View::Both, Widths::default()).columns.len(), 4);
-        // with the column alone showing, the cards keep no room: the columns have it
-        assert_eq!(Layout::new(area(1240.0), 9, false, View::List, Widths::default()).columns.len(), 6);
-        // wider columns, fewer of them; a wider sidebar moves all after it
-        let wide = Layout::new(area(1240.0), 5, false, View::Both, Widths { side: 200.0, columns: [240.0; browse::COLUMNS], meta: 316.0 });
-        assert_eq!((wide.columns.len(), wide.columns[0].left(), wide.main.left()), (2, 200.0, 680.0));
-        // each column at its own width: the fourth of five 300 wide takes one column's room, so three fit, not four
-        let mut widths = Widths::default();
-        widths.set_column(3, 300.0);
-        let own = Layout::new(area(1240.0), 5, false, View::Both, widths);
-        assert_eq!((own.first, own.columns.iter().map(|c| c.width()).collect::<Vec<_>>()), (2, vec![browse::COLUMN, 300.0, browse::COLUMN]));
-        // narrow: one column, the deepest, and no metadata column
-        let layout = Layout::new(area(700.0), 5, true, View::Both, Widths::default());
-        assert_eq!((layout.first, layout.columns.len(), layout.meta.is_none()), (4, 1, true));
-        // never more columns than the path has
-        assert_eq!(Layout::new(area(2400.0), 1, false, View::Both, Widths::default()).columns.len(), 1);
+    /// how the columns, the main area and the metadata column share a window: the most the columns have, then the
+    /// main area, then the metadata column, for a path of `shown` columns at the path's end
+    fn shared_at(window: f32, shown: usize, card: bool, view: View, widths: Widths) -> (f32, f32, f32) {
+        let columns: Vec<f32> = (0..shown).map(|depth| widths.column(depth)).collect();
+        let (room, meta) = shares(window - widths.side, &columns, card, view, widths);
+        let seen = if view == View::List { room } else { room.min(columns.iter().sum()) };
+        (room, window - widths.side - seen - meta, meta)
     }
 
-    /// the columns that do not fit are a scroll away (the owner's word, 2026-11-25): scrolled back, the columns drawn
-    /// are those before the deepest, as many as fit from there, and never further back than the first. a bar under
-    /// them shows how much of the path is in view, and only while some of it is not; its thumb dragged all the way
-    /// left shows the first column, and the wheel on the bar moves a column a notch.
     #[test]
-    fn the_columns_scroll_back_up_the_path() {
-        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(700.0, 668.0));
-        let at = |back| { let l = Layout::scrolled(area, 5, true, View::Both, Widths::default(), back); (l.first, l.columns.len(), l.back_most) };
-        assert_eq!((at(0), at(2), at(9)), ((4, 1, 4), (2, 1, 4), (0, 1, 4)));
-        assert!(column_bar(&Layout::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(2400.0, 668.0)), 5, false, View::Both, Widths::default())).is_none(), "all in view: no bar");
+    fn the_columns_the_main_area_and_the_metadata_column_share_the_window() {
+        let design = Widths::default();
+        // fig. 28's width with a card selected: the main area keeps its 360 beside the metadata column's 316, and
+        // the columns have the rest, which a path of five overflows
+        assert_eq!(shared_at(1240.0, 5, true, View::Both, design), (414.0, 360.0, 316.0));
+        // with nothing selected there is no metadata column, and the columns have its room
+        assert_eq!(shared_at(1240.0, 5, false, View::Both, design), (730.0, 360.0, 0.0));
+        // a path that fits leaves the main area the rest (fig. 27)
+        assert_eq!(shared_at(1240.0, 2, false, View::Both, design).1, 1240.0 - 150.0 - 2.0 * browse::COLUMN);
+        // with the column alone showing there is no main area: the columns have it all
+        assert_eq!(shared_at(1240.0, 9, false, View::List, design), (1090.0, 0.0, 0.0));
+        // narrower, the main area gives of its own for the path's last two columns to stay in view, down to its least;
+        // then the metadata column does, down to its own
+        assert_eq!(shared_at(1000.0, 5, true, View::Both, design), (2.0 * browse::COLUMN, 198.0, 316.0));
+        assert_eq!(shared_at(840.0, 5, true, View::Both, design), (2.0 * browse::COLUMN, browse::MAIN_LEAST, 282.0));
+        assert_eq!(shared_at(700.0, 5, true, View::Both, design), (238.0, browse::MAIN_LEAST, browse::META_LEAST));
+        // and with no room for it at its least beside the last column, there is no metadata column
+        assert_eq!(shared_at(600.0, 5, true, View::Both, design), (2.0 * browse::COLUMN, 114.0, 0.0));
+        // the owner's widths of 2026-11-25, which left one column: two 315 wide stay beside the widest metadata column
+        let owners = Widths { columns: [315.0; browse::COLUMNS], meta: 640.0, ..design };
+        assert_eq!(shared_at(1734.0, 6, true, View::Both, owners), (630.0, 314.0, 640.0));
+        // a main area dragged narrow leaves the columns its room
+        assert_eq!(shared_at(1240.0, 5, false, View::Both, Widths { main: 100.0, ..design }), (990.0, 250.0, 0.0));
 
-        let folder = std::env::temp_dir().join("eyepiece-no-such-folder").join("deeper");
-        let mut state = State::new(Some(folder), Vec::new(), None);
-        let ctx = egui::Context::default();
-        ctx.set_fonts(super::super::fonts());
-        let mut time = 0.0;
-        let mut pass = |state: &mut State, events: Vec<egui::Event>| {
-            time += 0.05;
-            let mut out = ctx.run_ui(egui::RawInput { time: Some(time), screen_rect: Some(area), events, ..Default::default() }, |ui| {
-                state.draw(ui, ui.max_rect());
-            });
-            out.textures_delta.clear();
-        };
-        pass(&mut state, Vec::new());
-        let layout = Layout::scrolled(area, state.nav.drawn(), false, state.nav.view, state.widths, 0);
-        let (track, thumb) = column_bar(&layout).expect("a bar while columns are out of view");
-        assert_eq!(thumb.right(), track.right(), "at first, the deepest columns are in view");
-        let button = |at: Pos2, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-        for events in [vec![egui::Event::PointerMoved(thumb.center())], vec![button(thumb.center(), true)], vec![egui::Event::PointerMoved(Pos2::new(track.left() - 40.0, thumb.center().y))], vec![button(Pos2::new(track.left() - 40.0, thumb.center().y), false)]] {
-            pass(&mut state, events);
-        }
-        assert_eq!(state.columns_back, layout.back_most, "dragged all the way left: the first column");
-        state.wheel = -1;
-        pass(&mut state, vec![egui::Event::PointerMoved(track.center())]);
-        assert_eq!(state.columns_back, layout.back_most - 1, "a notch toward the user moves a column deeper");
+        // the columns stand one after another from the sidebar, each at its own width, scrolled along the path
+        let mut widths = Widths { side: 200.0, ..design };
+        widths.set_column(1, 300.0);
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 668.0));
+        let layout = Layout::new(area, 3, widths, [200.0, 436.0, 316.0]);
+        assert_eq!(layout.columns.iter().map(|c| (c.left(), c.right())).collect::<Vec<_>>(), [(0.0, 168.0), (168.0, 468.0), (468.0, 636.0)]);
+        assert_eq!((layout.seen.x_range(), layout.main.x_range(), layout.meta.map(|m| m.x_range())), ((200.0..=636.0).into(), (636.0..=924.0).into(), Some((924.0..=1240.0).into())));
+        assert_eq!(layout.first(), 1, "the first column is out of view under the sidebar");
+        assert!(column_bar(&layout).is_some() && column_bar(&Layout::new(area, 3, widths, [0.0, 636.0, 0.0])).is_none(), "a bar only while some of the path is out of view");
     }
 
     /// a sign the fonts do not have is drawn as an empty box
@@ -2298,45 +2372,25 @@ mod tests {
     /// on an edge puts it back. the widths keep within what keeps every part usable.
     #[test]
     fn the_parts_are_resized_by_their_edges() {
-        let folder = std::env::temp_dir().join("eyepiece-no-such-edges");
-        let mut state = State::new(Some(folder.clone()), Vec::new(), None);
-        state.nav.listings.insert(folder.clone(), Ok(Vec::new()));
-        let ctx = egui::Context::default();
-        ctx.set_fonts(super::super::fonts());
-        let mut time = 0.0;
-        let mut pass_with = |state: &mut State, events: Vec<egui::Event>| {
-            let mut raw = egui::RawInput { time: Some(time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1240.0, 700.0))), ..Default::default() };
-            raw.events = events;
-            let mut out = ctx.run_ui(raw, |ui| {
-                state.draw(ui, ui.max_rect());
-            });
-            out.textures_delta.clear();
-            time += 0.05;
+        let mut deep = Deep::new(3, 1240.0);
+        let at = |x: f32| Pos2::new(x, 300.0);
+        let drag = |deep: &mut Deep, from: f32, to: f32| {
+            deep.drag(at(from), at(to), "s0");
+            deep.release(at(to));
         };
-        let press = |x: f32, down: bool| egui::Event::PointerButton { pos: Pos2::new(x, 300.0), button: egui::PointerButton::Primary, pressed: down, modifiers: egui::Modifiers::NONE };
-        let drag = |state: &mut State, pass_with: &mut dyn FnMut(&mut State, Vec<egui::Event>), from: f32, to: f32| {
-            pass_with(state, vec![egui::Event::PointerMoved(Pos2::new(from, 300.0))]);
-            pass_with(state, vec![press(from, true)]);
-            for step in 1..=4 {
-                pass_with(state, vec![egui::Event::PointerMoved(Pos2::new(from + (to - from) * step as f32 / 4.0, 300.0))]);
-            }
-            pass_with(state, vec![press(to, false)]);
-        };
-        drag(&mut state, &mut pass_with, 150.0, 210.0);
-        assert_eq!(state.widths.side, 210.0);
+        drag(&mut deep, 150.0, 210.0);
+        assert_eq!(deep.browser.state().widths.side, 210.0);
         // the second column's right edge, at 210 + 2 x 168, dragged 40 right: that column alone is 40 wider
-        let columns = state.nav.drawn();
-        if columns >= 2 {
-            drag(&mut state, &mut pass_with, 210.0 + 2.0 * 168.0, 210.0 + 2.0 * 168.0 + 40.0);
-            let changed: Vec<f32> = state.widths.columns.iter().copied().filter(|&w| w != browse::COLUMN).collect();
-            assert_eq!(changed, vec![208.0], "the second column alone is wider; the first keeps its width");
-        }
-        drag(&mut state, &mut pass_with, 210.0, 20.0);
-        assert_eq!(state.widths.side, 110.0, "no narrower than a row's name needs");
-        for _ in 0..2 {
-            pass_with(&mut state, vec![egui::Event::PointerMoved(Pos2::new(110.0, 300.0)), press(110.0, true), press(110.0, false)]);
-        }
-        assert_eq!(state.widths.side, 150.0, "a double click puts it back");
+        drag(&mut deep, 210.0 + 2.0 * 168.0, 210.0 + 2.0 * 168.0 + 40.0);
+        let changed: Vec<f32> = deep.browser.state().widths.columns.iter().copied().filter(|&w| w != browse::COLUMN).collect();
+        assert_eq!(changed, vec![208.0], "the second column alone is wider; the first keeps its width");
+        drag(&mut deep, 210.0, 20.0);
+        assert_eq!(deep.browser.state().widths.side, 110.0, "no narrower than a row's name needs");
+        // a press that does not move leaves the edge where it is, though the pointer is not quite on it
+        deep.press(at(112.0), egui::PointerButton::Primary);
+        assert_eq!(deep.browser.state().widths.side, 110.0, "a click moved the edge");
+        deep.press(at(112.0), egui::PointerButton::Primary);
+        assert_eq!(deep.browser.state().widths.side, 150.0, "a double click puts it back");
     }
 
     /// text never runs under the address's buttons (the owner's word, 2026-11-25): a folder whose name is longer than
@@ -2353,7 +2407,7 @@ mod tests {
             state.draw(ui, ui.max_rect());
         });
         out.textures_delta.clear();
-        let (view, sort) = right_buttons(Layout::new(area, state.nav.drawn(), false, state.nav.view, state.widths).address);
+        let (view, sort) = right_buttons(Layout::new(area, state.nav.drawn(), state.widths, [0.0; 3]).address);
         let texts: Vec<(String, Rect)> = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t.galley.text().to_string(), Rect::from_min_size(t.pos, t.galley.size()).intersect(s.clip_rect))) } else { None }).collect();
         let under: Vec<&String> = texts.iter().filter(|(_, r)| r.intersect(view).is_positive() || r.intersect(sort).is_positive()).map(|(t, _)| t).collect();
         assert!(under.is_empty(), "drawn under the buttons: {under:?}");
@@ -2399,7 +2453,7 @@ mod tests {
         };
         let at = |drawn: &[(String, Pos2)], words: &str| drawn.iter().find(|(said, _)| said == words).map(|(_, at)| *at).unwrap_or_else(|| panic!("no {words} drawn"));
 
-        let address = Layout::new(area, state.nav.drawn(), false, state.nav.view, state.widths).address;
+        let address = Layout::new(area, state.nav.drawn(), state.widths, [0.0; 3]).address;
         let (view, sort) = right_buttons(address);
         let mut words = 0.0;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| words = ui.painter().layout_no_wrap("list + gallery".to_string(), font(SANS, 12.0), FG).size().x);
@@ -2456,22 +2510,28 @@ mod tests {
         let listings = || [(place.clone(), vec![entry(&place, "r", Kind::Folder)]), (r.clone(), vec![entry(&r, "shots", Kind::Folder), entry(&r, "a.mov", Kind::Clip)]), (shots.clone(), vec![entry(&shots, "c.mov", Kind::Clip), entry(&shots, "d.mov", Kind::Clip)])];
         let ctx = egui::Context::default();
         ctx.set_fonts(super::super::fonts());
-        // a pass over a window this wide (fig. 28's is 1240), the folders listed as above: the fill of the row each
-        // name is on, the outlines of the selected cards, and whether a column or the grid is outlined (never: the
-        // owner's word, 2026-11-25)
+        // a window this wide (fig. 28's is 1240), the folders listed as above, once what a key moved is at rest: the
+        // fill of the row each name is on where it is in view, the outlines of the selected cards, and whether a
+        // column or the grid is outlined (never: the owner's word, 2026-11-25)
+        let time = std::cell::Cell::new(0.0);
         let seen_at = |state: &mut State, wide: f32| {
-            for (folder, entries) in listings() {
-                state.nav.listings.insert(folder, Ok(entries));
+            let mut out = egui::FullOutput::default();
+            for _ in 0..10 {
+                for (folder, entries) in listings() {
+                    state.nav.listings.insert(folder, Ok(entries));
+                }
+                time.set(time.get() + 0.05);
+                let raw = egui::RawInput { time: Some(time.get()), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(wide, 700.0))), ..Default::default() };
+                out = ctx.run_ui(raw, |ui| {
+                    state.draw(ui, ui.max_rect());
+                });
+                out.textures_delta.clear();
             }
-            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(wide, 700.0))), ..Default::default() };
-            let mut out = ctx.run_ui(raw, |ui| {
-                state.draw(ui, ui.max_rect());
-            });
-            out.textures_delta.clear();
             let rects: Vec<&egui::epaint::RectShape> = out.shapes.iter().filter_map(|s| if let egui::Shape::Rect(r) = &s.shape { Some(r) } else { None }).collect();
             let fill = |name: &str| {
-                let texts = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some(t) } else { None });
-                texts.filter(|t| t.galley.text() == name).find_map(|t| rects.iter().find(|r| r.rect.height() == ROW && r.rect.contains(t.pos + Vec2::new(1.0, t.galley.size().y / 2.0))).map(|r| r.fill))
+                let texts = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t, s.clip_rect)) } else { None });
+                let in_view = texts.filter(|(t, clip)| t.galley.text() == name && Rect::from_min_size(t.pos, t.galley.size()).intersect(*clip).is_positive());
+                in_view.map(|(t, _)| t).find_map(|t| rects.iter().find(|r| r.rect.height() == ROW && r.rect.contains(t.pos + Vec2::new(1.0, t.galley.size().y / 2.0))).map(|r| r.fill))
             };
             let fills = ["r", "shots", "a.mov", "c.mov", "d.mov"].map(fill);
             let cards: Vec<Color32> = rects.iter().filter(|r| r.stroke.width == 2.0).map(|r| r.stroke.color).collect();
@@ -2618,13 +2678,15 @@ mod tests {
             pass(browser, Vec::new());
             said
         };
+        // where the parts are, once whatever the last press moved is at rest
         let layout = |browser: &mut Browser| {
             let state = browser.state();
-            Layout::new(area, state.nav.drawn(), state.nav.card().is_some(), state.nav.view, state.widths)
+            Layout::new(area, state.nav.drawn(), state.widths, state.laid.as_ref().expect("a pass has laid it out").to)
         };
         // the folder shown is the last column: its rows from 8 under the path line
         let row = |layout: &Layout, i: usize| Pos2::new(layout.columns.last().unwrap().center().x, PATH_LINE + 8.0 + ROW * (i as f32 + 0.5));
         let (dome, clip) = (folder.join("dome"), folder.join("a.mov"));
+        pass(&mut browser, Vec::new());
         let at = row(&layout(&mut browser), 1);
         press(&mut browser, &mut pass, at, egui::PointerButton::Secondary);
         assert_eq!(browser.state().nav.card().map(|card| card.path.clone()), Some(clip.clone()), "the row is selected");
@@ -2773,5 +2835,263 @@ mod tests {
         listed(&ctx, &mut state, &shared(&other), &mut time);
         pass(&ctx, &mut state, time, None);
         assert_eq!(wants.try_iter().last().map(|w| w.len()), Some(0));
+    }
+
+    /// a browser on a path of folders none of which is on the disk: a place and the folders f1, f2, … one in another,
+    /// each listed with the next and a folder beside it (s0, s1, …), the last with two videos as well. so s3 is a row
+    /// of the fourth column and of nothing else. drawn 60 times a second in a window `wide` and 700 high.
+    struct Deep {
+        browser: Browser,
+        ctx: egui::Context,
+        folders: Vec<PathBuf>,
+        wide: f32,
+        time: f64,
+    }
+
+    impl Deep {
+        fn new(depth: usize, wide: f32) -> Deep {
+            Deep::under(std::env::temp_dir().join("eyepiece-no-such-deep"), depth, wide)
+        }
+
+        fn under(place: PathBuf, depth: usize, wide: f32) -> Deep {
+            let mut folders = vec![place.clone()];
+            for i in 1..depth {
+                folders.push(folders[i - 1].join(format!("f{i}")));
+            }
+            let mut browser = Browser::new(Some(folders[depth - 1].clone()), None);
+            browser.state().nav = Nav::new(&folders[depth - 1], std::slice::from_ref(&place));
+            let ctx = egui::Context::default();
+            ctx.set_fonts(super::super::fonts());
+            let mut deep = Deep { browser, ctx, folders, wide, time: 0.0 };
+            // the folders pinned in explorer are read off the drawing thread, and the browser looks again until they
+            // are in: only then is it at rest
+            for _ in 0..400 {
+                deep.pass(Vec::new());
+                if !deep.browser.state().pins.busy() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            deep
+        }
+
+        fn pass(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            for (i, folder) in self.folders.iter().enumerate() {
+                let mut entries = vec![listed_entry(folder, &format!("s{i}"), Kind::Folder)];
+                match self.folders.get(i + 1) {
+                    Some(_) => entries.insert(0, listed_entry(folder, &format!("f{}", i + 1), Kind::Folder)),
+                    None => entries.extend([listed_entry(folder, "a.mov", Kind::Clip), listed_entry(folder, "b.mov", Kind::Clip)]),
+                }
+                let listings = &mut self.browser.state().nav.listings;
+                listings.insert(folder.clone(), Ok(entries));
+                listings.insert(folder.join(format!("s{i}")), Ok(Vec::new()));
+            }
+            self.time += 1.0 / 60.0;
+            let raw = egui::RawInput { time: Some(self.time), screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(self.wide, 700.0))), events, ..Default::default() };
+            let browser = &mut self.browser;
+            let mut out = self.ctx.run_ui(raw, |ui| {
+                browser.draw(ui, ui.max_rect(), false);
+            });
+            out.textures_delta.clear();
+            out
+        }
+
+        /// half a second of passes: whatever was moving has come to rest. the last one's picture
+        fn rest(&mut self) -> egui::FullOutput {
+            (0..30).map(|_| self.pass(Vec::new())).last().unwrap()
+        }
+
+        /// the pointer goes there, the button goes down and comes up: a pass each
+        fn press(&mut self, at: Pos2, button: egui::PointerButton) -> egui::FullOutput {
+            self.pass(vec![egui::Event::PointerMoved(at)]);
+            self.pass(vec![held(at, button, true)]);
+            self.pass(vec![held(at, button, false)])
+        }
+
+        /// the button goes down at `from` and the pointer to `to` in ten steps, a pass after each for what it moved
+        /// to be drawn: where `follows` is drawn after every step. the button stays down
+        fn drag(&mut self, from: Pos2, to: Pos2, follows: &str) -> Vec<(f32, Option<f32>)> {
+            self.pass(vec![egui::Event::PointerMoved(from)]);
+            self.pass(vec![held(from, egui::PointerButton::Primary, true)]);
+            (1..=10)
+                .map(|step| {
+                    let at = from + (to - from) * (step as f32 / 10.0);
+                    self.pass(vec![egui::Event::PointerMoved(at)]);
+                    (at.x, left_of(&self.pass(Vec::new()), follows))
+                })
+                .collect()
+        }
+
+        fn release(&mut self, at: Pos2) -> egui::FullOutput {
+            self.pass(vec![held(at, egui::PointerButton::Primary, false)]);
+            self.rest()
+        }
+    }
+
+    fn held(at: Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// the texts drawn under the address that say `words`, where any of each is in view: where each begins, and what
+    /// is seen of it
+    fn drawn(out: &egui::FullOutput, words: &str) -> Vec<(Pos2, Rect)> {
+        let texts = out.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some((t, s.clip_rect)) } else { None });
+        texts.filter(|(t, _)| t.galley.text() == words && t.pos.y > PATH_LINE).map(|(t, clip)| (t.pos, Rect::from_min_size(t.pos, t.galley.size()).intersect(clip))).filter(|(_, seen)| seen.is_positive()).collect()
+    }
+
+    /// where a row's name begins, if any of it is in view: 31 right of its column's left
+    fn left_of(out: &egui::FullOutput, words: &str) -> Option<f32> {
+        drawn(out, words).first().map(|(at, _)| at.x)
+    }
+
+    /// the main area's left edge: its path line says what the folder holds, 14 in
+    fn main_left(out: &egui::FullOutput, holds: &str) -> f32 {
+        left_of(out, holds).unwrap_or_else(|| panic!("no main area that holds {holds}")) - 14.0
+    }
+
+    /// the thumb of the bar under the columns
+    fn thumb(out: &egui::FullOutput) -> Option<Rect> {
+        out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.rect.height() == 4.0 && r.corner_radius == egui::CornerRadius::same(2) => Some(r.rect),
+            _ => None,
+        })
+    }
+
+    fn again(out: &egui::FullOutput) -> Duration {
+        out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+    }
+
+    /// what the last folder of a `Deep` holds, as its path line says it
+    const HOLDS: &str = "1 folder · 2 videos";
+
+    /// a right click on a folder never moves the columns (the owner's word, 2026-11-25): it selects the folder, so the
+    /// video selected before and its metadata column go and the path may get shorter, and every column still there
+    /// stays where it was, in every pass from the click on. here on the folder on the way two columns up, and on one
+    /// beside the path.
+    #[test]
+    fn a_right_click_on_a_folder_leaves_the_columns_where_they_are() {
+        for on in ["f4", "s4"] {
+            let mut deep = Deep::new(6, 1500.0);
+            let card = deep.folders[5].join("a.mov");
+            deep.browser.state().click(Click::Card(card));
+            let out = deep.rest();
+            let before = [left_of(&out, "s3"), left_of(&out, "s4")];
+            assert!(before.iter().all(|at| at.is_some()), "the fourth and fifth columns are in view: {before:?}");
+            let (at, seen) = drawn(&out, on)[0];
+            let mut out = deep.press(Pos2::new(at.x + 20.0, seen.center().y), egui::PointerButton::Secondary);
+            assert!(matches!(&deep.browser.state().menu, Some((On::Folder(folder), _)) if folder.ends_with(on)), "the menu is on {on}");
+            assert!(deep.browser.state().nav.card().is_none(), "the folder is selected, and no video");
+            for pass in 0..40 {
+                assert_eq!([left_of(&out, "s3"), left_of(&out, "s4")], before, "a right click on {on} moved the columns, {pass} passes after it");
+                out = deep.pass(Vec::new());
+            }
+        }
+    }
+
+    /// the main area can be made narrower than a card (the owner's word, 2026-11-25: "very very small"): the line
+    /// between the last column and it, dragged right, takes the room from it, and its cards get as narrow as it needs.
+    #[test]
+    fn the_main_area_shrinks_below_a_card_and_its_cards_fit() {
+        let mut deep = Deep::new(6, 1240.0);
+        let line = main_left(&deep.rest(), HOLDS);
+        deep.drag(Pos2::new(line, 300.0), Pos2::new(line + 300.0, 300.0), HOLDS);
+        let out = deep.release(Pos2::new(line + 300.0, 300.0));
+        let left = main_left(&out, HOLDS);
+        assert!(1240.0 - left < CARD_MIN, "the main area is still {} wide", 1240.0 - left);
+        let cards: Vec<Rect> = out.shapes.iter().filter_map(|s| if let egui::Shape::Rect(r) = &s.shape { Some(r) } else { None }).filter(|r| r.fill == PLAIN).map(|r| r.rect).collect();
+        assert_eq!(cards.len(), 2, "both cards are drawn");
+        assert!(cards.iter().all(|card| card.left() >= left && card.right() <= 1240.0 && card.width() >= 16.0), "the cards fit the main area from {left}: {cards:?}");
+    }
+
+    /// a path deeper than fits keeps more than one folder column in view. the owner's screen of 2026-11-25: columns
+    /// 315 wide, the metadata column at its widest, a video selected, where one column was left. and at the design's
+    /// widths in a window 1000 wide.
+    #[test]
+    fn a_deep_path_keeps_more_than_one_folder_column_in_view() {
+        let wide = Widths { columns: [315.0; browse::COLUMNS], meta: 640.0, ..Widths::default() };
+        for (window, widths) in [(1734.0, wide), (1000.0, Widths::default())] {
+            let mut deep = Deep::new(6, window);
+            deep.browser.state().widths = widths;
+            let card = deep.folders[5].join("a.mov");
+            deep.browser.state().click(Click::Card(card));
+            let out = deep.rest();
+            assert!(left_of(&out, "s5").is_some(), "the last column is in view in a window {window} wide");
+            assert!(left_of(&out, "s4").is_some_and(|at| at >= widths.side + 31.0), "the column before it is in view, whole, in a window {window} wide: {:?}", left_of(&out, "s4"));
+        }
+    }
+
+    /// the bar under the columns scrolls them by pixels, not by columns (the owner's word, 2026-11-25: "smooth, not
+    /// jumping like steps"): its thumb dragged a little moves them a little, at once, and a notch of the wheel on it
+    /// moves them a notch's worth over a few passes.
+    #[test]
+    fn the_bar_scrolls_the_columns_by_pixels() {
+        let mut deep = Deep::new(6, 1240.0);
+        let out = deep.rest();
+        let grip = thumb(&out).expect("a bar while columns are out of view").center();
+        let start = left_of(&out, "s5").unwrap();
+        let moved = deep.drag(grip, grip - Vec2::new(40.0, 0.0), "s5");
+        let steps: Vec<f32> = std::iter::once(start).chain(moved.iter().map(|(_, at)| at.unwrap())).collect::<Vec<_>>().windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(steps.iter().all(|step| (2.0..12.0).contains(step)), "4 of the thumb's travel at a time moved the columns by {steps:?}");
+        let out = deep.release(grip - Vec2::new(40.0, 0.0));
+
+        let from = left_of(&out, "s5").unwrap();
+        deep.browser.wheel(1);
+        deep.pass(vec![egui::Event::PointerMoved(Pos2::new(thumb(&out).unwrap().center().x, grip.y))]);
+        let seen: Vec<f32> = (0..30).map(|_| left_of(&deep.pass(Vec::new()), "s5").unwrap() - from).collect();
+        assert!((seen[29] - NOTCH).abs() <= 1.0, "a notch away from the user moved the columns {} back up the path", seen[29]);
+        assert!(seen[0] < seen[29] / 2.0 && seen.windows(2).all(|pair| pair[0] <= pair[1]), "and not in one jump: {seen:?}");
+    }
+
+    /// a step along the path slides the columns to where it puts them, quickly and eased (the owner's word,
+    /// 2026-11-25 and again 2026-11-26: "no jumps", "smooth interpolation"): up a folder, into one, and a press on a
+    /// folder whose column is out of view. the browser asks to be drawn again at once while they move and no longer:
+    /// at rest, in a folder with no card waiting for its picture, it asks for nothing.
+    #[test]
+    fn a_step_along_the_path_slides_the_columns_and_then_the_browser_rests() {
+        // half a second after a step: how far the fifth column has come from `from`, and when the browser asks to
+        // be drawn again, pass by pass
+        let watch = |deep: &mut Deep, from: f32| (0..30).map(|_| deep.pass(Vec::new())).map(|out| (left_of(&out, "s4").unwrap() - from, again(&out))).collect::<Vec<_>>();
+        let slides = |passes: &[(f32, Duration)], by: f32, step: &str| {
+            let along: Vec<f32> = passes.iter().map(|(moved, _)| moved / by).collect();
+            assert_eq!(along[29], 1.0, "{step}: the columns end {by} along: {passes:?}");
+            assert!(along[0] < 1.0 / 3.0, "{step}: the first pass jumped: {along:?}");
+            assert!(along.windows(2).all(|pair| pair[0] <= pair[1]) && along[17] == 1.0, "{step}: they slide one way and are there within 0.3 s: {along:?}");
+            assert!(passes.iter().all(|(moved, again)| *moved == by || again.is_zero()), "{step}: drawn again at once while they move: {passes:?}");
+        };
+        let mut deep = Deep::new(6, 1240.0);
+        let from = left_of(&deep.rest(), "s4").unwrap();
+        // backspace takes the last column off, and the others come a column along
+        deep.browser.key(Key::Backspace, Mods::default());
+        let up = watch(&mut deep, from);
+        slides(&up, browse::COLUMN, "up a folder");
+        // the slide's 0.18 s are 11 passes
+        assert!(up[12..].iter().all(|(_, again)| *again > Duration::from_secs(3600)), "at rest the browser asks to be drawn again: {up:?}");
+        // right goes back into the folder, onto the folder in it, which is shown in a column of its own: two columns
+        deep.browser.key(Key::Right, Mods::default());
+        slides(&watch(&mut deep, from + browse::COLUMN), -2.0 * browse::COLUMN, "into a folder");
+
+        // a press on a folder in the last column brings the column it is shown in into view
+        let mut deep = Deep::new(6, 1240.0);
+        let out = deep.rest();
+        let (from, (at, row)) = (left_of(&out, "s4").unwrap(), drawn(&out, "s5")[0]);
+        deep.press(Pos2::new(at.x + 5.0, row.center().y), egui::PointerButton::Primary);
+        slides(&watch(&mut deep, from), -browse::COLUMN, "a press on a folder");
+    }
+
+    /// a column's edge stays under the pointer that drags it, and the columns before it stay where they are: here the
+    /// fifth column's, in a path that does not fit, where widening it used to drop a column and hand the drag to
+    /// another one's edge.
+    #[test]
+    fn a_dragged_edge_stays_under_the_pointer() {
+        let mut deep = Deep::new(6, 1240.0);
+        let out = deep.rest();
+        let (before, edge) = (left_of(&out, "s4").unwrap(), left_of(&out, "s5").unwrap() - 31.0);
+        for (pointer, next) in deep.drag(Pos2::new(edge, 300.0), Pos2::new(edge + 100.0, 300.0), "s5") {
+            assert_eq!(next.map(|at| at - 31.0), Some(pointer), "the edge is not under the pointer");
+        }
+        let out = deep.release(Pos2::new(edge + 100.0, 300.0));
+        assert_eq!((left_of(&out, "s4"), left_of(&out, "s5")), (Some(before), Some(edge + 100.0 + 31.0)), "the column before stayed, and the edge stays where it was let go");
+        let changed: Vec<f32> = deep.browser.state().widths.columns.iter().copied().filter(|&w| w != browse::COLUMN).collect();
+        assert_eq!(changed, vec![browse::COLUMN + 100.0], "that column alone is wider");
     }
 }

@@ -109,7 +109,8 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 **O** lays the browser over the tab and **esc** goes back.
 
 - **the sidebar** lists places, volumes and recent folders.
-- **columns** lead to the folder. its videos are **cards**: move the pointer across one to scrub its preview. when not all the columns fit, the bar under them scrolls back up the path.
+- **columns** lead to the folder. its videos are **cards**: move the pointer across one to scrub its preview. a path deeper than fits scrolls: each step along it slides the columns there, and the bar under them, dragged or under the wheel, goes back up the path.
+- drag the edge of the sidebar, of a column or of the metadata column to resize it; a double click puts it back.
 - the keys act in one column or in the cards, as in finder's column view. what is selected there is lit; the folders on the way are dim.
 - **the address** shows the path. press it, or **ctrl+L**, to type one.
 - the two icons at its right **sort** the folder by name, size, date modified or created (and on a mac, date added), either way, folders first; and switch between **list**, **gallery** and both.
