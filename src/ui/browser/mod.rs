@@ -165,6 +165,8 @@ impl Browser {
     pub fn key(&mut self, key: Key, mods: Mods) {
         let state = self.state();
         state.take_answers();
+        // the keys act in the columns where the path ends: scrolled back up it, they come back there
+        state.columns_back = 0;
         // a key puts the right-click menu and the address's lists away, and esc does nothing more
         if (state.menu.take().is_some() | state.dropdown.take().is_some()) && key == Key::Escape {
             return;
@@ -262,6 +264,7 @@ impl Browser {
     pub fn char(&mut self, c: char) {
         let state = self.state();
         state.take_answers();
+        state.columns_back = 0;
         state.nav.char(c, Instant::now());
     }
 
@@ -310,6 +313,11 @@ struct State {
     /// wheel notches not yet applied; how far the sidebar, the grid and the metadata column are scrolled, and how
     /// tall the sidebar's and the metadata column's contents were when last drawn
     wheel: i32,
+    /// columns scrolled back up the path from the deepest that fit (the owner's ask, 2026-11-25), the path's length it
+    /// was for (a new one puts it back), and where on the bar's thumb a drag of it took hold
+    columns_back: usize,
+    columns_for: usize,
+    bar_grab: Option<f32>,
     side_scroll: f32,
     side_height: f32,
     grid_scroll: f32,
@@ -430,11 +438,19 @@ struct Layout {
     columns: Vec<Rect>,
     main: Rect,
     meta: Option<Rect>,
+    /// the columns on the path, and how many of them before the deepest that fit can be scrolled back to
+    total: usize,
+    back_most: usize,
 }
 
 impl Layout {
     /// `shown` columns on the path; `card`: one is selected, so the metadata column is wanted.
     fn new(area: Rect, shown: usize, card: bool, view: View, widths: Widths) -> Layout {
+        Layout::scrolled(area, shown, card, view, widths, 0)
+    }
+
+    /// as `new`, scrolled `back` columns up the path from the deepest that fit: the columns from there that fit
+    fn scrolled(area: Rect, shown: usize, card: bool, view: View, widths: Widths, back: usize) -> Layout {
         let (side, wide) = (widths.side, widths.meta);
         // with the column alone showing, the cards keep no room
         let least = if view == View::List { 0.0 } else { MAIN_MIN };
@@ -448,12 +464,20 @@ impl Layout {
             taken += widths.column(shown - fit - 1);
             fit += 1;
         }
-        let first = shown - fit;
+        let back_most = shown - fit;
+        let first = back_most - back.min(back_most);
+        // scrolled back, the columns from there that fit, at least one
+        let mut last = first + 1;
+        let mut taken = widths.column(first);
+        while last < shown && taken + widths.column(last) <= room {
+            taken += widths.column(last);
+            last += 1;
+        }
         let x = |offset: f32| area.left() + offset;
         let top = area.top() + PATH_LINE;
         let span = |from: f32, to: f32| Rect::from_min_max(Pos2::new(from, top), Pos2::new(to.max(from), area.bottom()));
         let mut left = side;
-        let columns = (first..shown)
+        let columns = (first..last.min(shown))
             .map(|depth| {
                 left += widths.column(depth);
                 span(x(left - widths.column(depth)), x(left))
@@ -466,8 +490,23 @@ impl Layout {
             columns,
             main: span(x(left), if meta { area.right() - wide } else { area.right() }),
             meta: meta.then(|| span(area.right() - wide, area.right())),
+            total: shown,
+            back_most,
         }
     }
+}
+
+/// the bar under the columns while some of the path is out of view, drawn as the design's settings page draws its
+/// scrollbar (docs/design/settings.html): its track along the columns, 3 in from their edges and foot, 4 high, and its
+/// thumb, as much of the track as the columns drawn are of the path, where they are on it
+fn column_bar(layout: &Layout) -> Option<(Rect, Rect)> {
+    let (left, right) = (layout.columns.first()?, layout.columns.last()?);
+    if layout.back_most == 0 || layout.total == 0 {
+        return None;
+    }
+    let track = Rect::from_min_max(Pos2::new(left.left() + 3.0, left.bottom() - 3.0 - 4.0), Pos2::new(right.right() - 3.0, left.bottom() - 3.0));
+    let at = |i: usize| track.left() + track.width() * i as f32 / layout.total as f32;
+    Some((track, Rect::from_min_max(Pos2::new(at(layout.first), track.top()), Pos2::new(at(layout.first + layout.columns.len()), track.bottom()))))
 }
 
 /// a card's pictures: the frame each is of, in order
@@ -528,6 +567,9 @@ impl State {
             cards: HashMap::new(),
             hover: None,
             wheel: 0,
+            columns_back: 0,
+            columns_for: 0,
+            bar_grab: None,
             side_scroll: 0.0,
             side_height: 0.0,
             grid_scroll: 0.0,
@@ -675,7 +717,16 @@ impl State {
             self.picked.clear();
         }
         let card = self.nav.card().is_some();
-        let mut layout = Layout::new(area, self.nav.drawn(), card, self.nav.view, self.widths);
+        // a path of another length starts at its deepest columns again
+        let shown = self.nav.drawn();
+        if shown != self.columns_for {
+            (self.columns_back, self.columns_for) = (0, shown);
+        }
+        // the wheel on the bar scrolls the columns, before they are laid out
+        let notches = column_bar(&Layout::scrolled(area, shown, card, self.nav.view, self.widths, self.columns_back)).filter(|(track, _)| ui.ctx().pointer_latest_pos().is_some_and(|p| track.expand2(Vec2::new(0.0, 6.0)).contains(p))).map(|_| std::mem::take(&mut self.wheel));
+        self.columns_back = self.columns_back.saturating_add_signed(notches.unwrap_or(0) as isize);
+        let mut layout = Layout::scrolled(area, shown, card, self.nav.view, self.widths, self.columns_back);
+        self.columns_back = layout.back_most - layout.first;
         // the column the keys act in is drawn, before the one it shows a folder in
         if let Some(at) = self.nav.current_column().filter(|at| *at < layout.first) {
             layout = Layout::new(area, at + 1, card, self.nav.view, self.widths);
@@ -687,6 +738,7 @@ impl State {
         for (i, rect) in layout.columns.iter().enumerate() {
             self.column(ui, layout.first + i, *rect, &mut clicks);
         }
+        self.columns_bar(ui, &layout);
         if self.nav.view == View::List {
             self.list_pictures(ui.ctx());
         } else {
@@ -1154,6 +1206,33 @@ impl State {
         }
         self.metas.ask(file, read_meta);
         None
+    }
+
+    /// the bar under the columns while some of the path is out of view: its thumb dragged, or the track pressed beside
+    /// it, scrolls the columns a column at a time, as a column is the least that can be shown
+    fn columns_bar(&mut self, ui: &egui::Ui, layout: &Layout) {
+        let Some((track, thumb)) = column_bar(layout) else {
+            self.bar_grab = None;
+            return;
+        };
+        let response = ui.interact(track.expand2(Vec2::new(0.0, 6.0)), ui.scope_id().with("brw-columns-bar"), Sense::click_and_drag());
+        let to = |left: f32| ((left - track.left()) / track.width() * layout.total as f32).round().clamp(0.0, layout.back_most as f32) as usize;
+        if let Some(p) = response.interact_pointer_pos() {
+            if response.drag_started() {
+                self.bar_grab = Some(if thumb.x_range().contains(p.x) { p.x - thumb.left() } else { thumb.width() / 2.0 });
+            }
+            if let Some(grab) = self.bar_grab.filter(|_| response.dragged()) {
+                self.columns_back = layout.back_most - to(p.x - grab);
+            } else if response.clicked() && !thumb.x_range().contains(p.x) {
+                self.columns_back = if p.x < thumb.left() { self.columns_back + 1 } else { self.columns_back.saturating_sub(1) }.min(layout.back_most);
+            }
+        }
+        if !response.dragged() {
+            self.bar_grab = None;
+        }
+        // as the design's scrollbar: white at 22%, brighter while the pointer is on it or holds it
+        let lit = response.hovered() || response.dragged();
+        ui.painter().rect_filled(thumb, 2.0, Color32::from_white_alpha(if lit { 102 } else { 56 }));
     }
 
     /// the wheel scrolls what is under the pointer: the sidebar, a column, the grid or the metadata column. each keeps
@@ -2023,6 +2102,43 @@ mod tests {
         assert_eq!((layout.first, layout.columns.len(), layout.meta.is_none()), (4, 1, true));
         // never more columns than the path has
         assert_eq!(Layout::new(area(2400.0), 1, false, View::Both, Widths::default()).columns.len(), 1);
+    }
+
+    /// the columns that do not fit are a scroll away (the owner's word, 2026-11-25): scrolled back, the columns drawn
+    /// are those before the deepest, as many as fit from there, and never further back than the first. a bar under
+    /// them shows how much of the path is in view, and only while some of it is not; its thumb dragged all the way
+    /// left shows the first column, and the wheel on the bar moves a column a notch.
+    #[test]
+    fn the_columns_scroll_back_up_the_path() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(700.0, 668.0));
+        let at = |back| { let l = Layout::scrolled(area, 5, true, View::Both, Widths::default(), back); (l.first, l.columns.len(), l.back_most) };
+        assert_eq!((at(0), at(2), at(9)), ((4, 1, 4), (2, 1, 4), (0, 1, 4)));
+        assert!(column_bar(&Layout::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(2400.0, 668.0)), 5, false, View::Both, Widths::default())).is_none(), "all in view: no bar");
+
+        let folder = std::env::temp_dir().join("eyepiece-no-such-folder").join("deeper");
+        let mut state = State::new(Some(folder), Vec::new(), None);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(super::super::fonts());
+        let mut time = 0.0;
+        let mut pass = |state: &mut State, events: Vec<egui::Event>| {
+            time += 0.05;
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(time), screen_rect: Some(area), events, ..Default::default() }, |ui| {
+                state.draw(ui, ui.max_rect());
+            });
+            out.textures_delta.clear();
+        };
+        pass(&mut state, Vec::new());
+        let layout = Layout::scrolled(area, state.nav.drawn(), false, state.nav.view, state.widths, 0);
+        let (track, thumb) = column_bar(&layout).expect("a bar while columns are out of view");
+        assert_eq!(thumb.right(), track.right(), "at first, the deepest columns are in view");
+        let button = |at: Pos2, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        for events in [vec![egui::Event::PointerMoved(thumb.center())], vec![button(thumb.center(), true)], vec![egui::Event::PointerMoved(Pos2::new(track.left() - 40.0, thumb.center().y))], vec![button(Pos2::new(track.left() - 40.0, thumb.center().y), false)]] {
+            pass(&mut state, events);
+        }
+        assert_eq!(state.columns_back, layout.back_most, "dragged all the way left: the first column");
+        state.wheel = -1;
+        pass(&mut state, vec![egui::Event::PointerMoved(track.center())]);
+        assert_eq!(state.columns_back, layout.back_most - 1, "a notch toward the user moves a column deeper");
     }
 
     /// a sign the fonts do not have is drawn as an empty box
