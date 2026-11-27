@@ -265,7 +265,7 @@ on a Mac, command does what control does.
 |---|---|---|
 | **play** | space | play / pause |
 | | F · G, or ← · → | previous / next frame |
-| | shift+F · shift+G, or home · end | first / last frame |
+| | shift+F · shift+G, or home · end | first / last frame (with a trim set, first is its in frame) |
 | | shift+← · shift+→ | ten frames back / forward |
 | | J · K · L | reverse · stop · forward (J and L double the speed each press) |
 | | wheel | scrub, one frame a notch |

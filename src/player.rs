@@ -462,7 +462,8 @@ impl View {
             (Key::Right, false) => self.transport.step(1),
             (Key::Left, true) => self.transport.step(-10),
             (Key::Right, true) => self.transport.step(10),
-            (Key::F, true) | (Key::Home, _) => self.transport.go(0),
+            // with a trim, its in frame (the owner's word, 2026-11-27)
+            (Key::F, true) | (Key::Home, _) => self.transport.go(self.transport.trim().0.unwrap_or(0) as i64),
             (Key::G, true) | (Key::End, _) => self.transport.go(last),
             (Key::J, _) => self.transport.shuttle(-1),
             (Key::K, _) => self.transport.shuttle_stop(),
@@ -3135,6 +3136,22 @@ mod tests {
             let (_gpu, mut next) = view("hap_64.mov");
             seed(&mut next, why, None, Some(&old));
             assert_eq!(next.transport.frame(), frame, "{}", match why { Why::Stepped => "stepped", Why::Ran => "ran", _ => "changed" });
+        }
+    }
+
+    /// with a trim set, the first frame is the trim's in frame (the owner's word, 2026-11-27): shift F, home and the
+    /// first-frame button go there. a trim with an out point alone starts at the clip's first frame, as with none
+    #[test]
+    fn with_a_trim_the_first_frame_is_its_in_frame() {
+        let (window, shift) = ((64.0, 64.0), Mods { shift: true, ..Mods::default() });
+        let (_gpu, mut clip) = view("h264_320.mp4");
+        for (trim, first) in [((Some(8), Some(11)), 8), ((Some(8), None), 8), ((None, Some(11)), 0), ((None, None), 0)] {
+            clip.transport.set_trim(trim.0, trim.1);
+            for (key, mods) in [(Key::F, shift), (Key::Home, Mods::default())] {
+                clip.transport.go(15);
+                clip.key(key, mods, None, window);
+                assert_eq!(clip.transport.frame(), first, "{key:?} with the trim {trim:?}");
+            }
         }
     }
 
