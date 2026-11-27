@@ -213,8 +213,10 @@ impl<T> Drop for Source<T> {
 }
 
 /// of `ready`, the frame nearest `to`, if it is nearer than `shown`: never one further from where the pointer asks.
+/// of two as near, the one nearer `shown`: the one past `to` would be no nearer the frame asked for after it, and the
+/// picture would stand still a refresh
 fn nearer(ready: impl Iterator<Item = usize>, to: usize, shown: Option<usize>) -> Option<usize> {
-    let best = ready.min_by_key(|r| r.abs_diff(to))?;
+    let best = ready.min_by_key(|r| (r.abs_diff(to), shown.map_or(0, |s| r.abs_diff(s))))?;
     shown.is_none_or(|s| best.abs_diff(to) < s.abs_diff(to)).then_some(best)
 }
 
@@ -285,6 +287,8 @@ mod tests {
         assert_eq!(nearer(ready(), 30, Some(30)), None);
         assert_eq!(nearer(ready(), 5, None), Some(10));
         assert_eq!(nearer(std::iter::empty(), 5, Some(1)), None);
+        // two as near: the one on the side of the frame on screen, whichever way the scrub goes
+        assert_eq!((nearer(ready(), 12, Some(9)), nearer(ready(), 12, Some(17))), (Some(10), Some(14)));
     }
 
     /// the machine says how much memory it has: a quarter of it is what decoded frames may take.

@@ -22,7 +22,7 @@ use crate::settings::{self, Settings};
 use crate::shot;
 use crate::ui::{self, Action, Extras, Facts, FolderList, ListItem, Model, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -64,6 +64,64 @@ pub(crate) struct View {
     before_toggle: Option<(bool, usize)>,
     /// a still that a played folder holds for a time while play runs: its one frame has no end for play to run to
     hold: Option<folder::Hold>,
+    /// how fast a scrub moves through the frames
+    pace: Pace,
+}
+
+/// how far back a scrub's pace is measured: a few refreshes, as a pace between whole frames lands on them unevenly
+/// (4.4 a refresh moves 4, 4, 5, 4, 5)
+const PACED: Duration = Duration::from_millis(100);
+/// the most frames `along` lists ahead, as many as a reader is ever asked for (`play::Transport::ahead`)
+const ALONG: usize = 32;
+
+/// the frames the transport stood on in the last `PACED`, and when it came to each
+struct Pace {
+    refresh: f64,
+    moves: VecDeque<(Instant, usize)>,
+}
+
+impl Pace {
+    fn new(hz: f64) -> Pace {
+        Pace { refresh: 1.0 / hz, moves: VecDeque::new() }
+    }
+
+    /// notes the frame the transport is on now. the frames a refresh it has moved over the last `PACED`, negative
+    /// going back, and 0 once it has stood that long. moves less than a refresh and a half apart are taken as that far
+    /// apart: two passes can be a few milliseconds apart, and a click and the first move after it would read as a
+    /// scrub hundreds of frames fast
+    fn note(&mut self, frame: usize, now: Instant) -> f64 {
+        if self.moves.back().is_none_or(|m| m.1 != frame) {
+            self.moves.push_back((now, frame));
+        }
+        while self.moves.front().is_some_and(|m| now - m.0 > PACED) {
+            self.moves.pop_front();
+        }
+        match (self.moves.front(), self.moves.back()) {
+            (Some(a), Some(b)) => (b.1 as f64 - a.1 as f64) / (b.0 - a.0).as_secs_f64().max(1.5 * self.refresh) * self.refresh,
+            _ => 0.0,
+        }
+    }
+}
+
+/// the frames to keep ready in a scrub moving `pace` frames a refresh (negative going back) on `frame` of `frames`:
+/// that frame, then frames ahead on a lattice spaced by the largest power of two the pace reaches, with the one just
+/// behind it third. a lattice frame stays wanted from the first refresh that asks for it until the pointer is past
+/// it, whichever frames the pointer lands on, so a reader that keeps only what it is asked for still has it to show.
+/// None under two frames a refresh, where the frames next to it are the ones the pointer comes to (`ahead`).
+fn along(frame: usize, pace: f64, frames: usize) -> Option<Vec<usize>> {
+    if pace.abs() < 2.0 {
+        return None;
+    }
+    let stride = 1usize << (pace.abs() as usize).ilog2();
+    // the lattice frames either side of `frame`
+    let (below, above) = (frame.checked_sub(1).map(|f| f / stride * stride), frame / stride * stride + stride);
+    let (first, behind) = if pace > 0.0 { (Some(above), below) } else { (below, Some(above)) };
+    let mut ahead = std::iter::successors(first, |&f| if pace > 0.0 { f.checked_add(stride) } else { f.checked_sub(stride) }).take_while(|&f| f < frames).take(ALONG);
+    let mut list = vec![frame];
+    list.extend(ahead.next());
+    list.extend(behind.filter(|&f| f < frames));
+    list.extend(ahead);
+    Some(list)
 }
 
 impl View {
@@ -75,7 +133,7 @@ impl View {
         // a sequence opened by one of its files opens on that file's frame
         transport.go(clip.first_frame as i64);
         let framing = Framing::new(clip.upright());
-        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None, hold: None })
+        Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None, hold: None, pace: Pace::new(hz) })
     }
 
     /// whether play runs: through the clip's frames, or through a held still's hold.
@@ -152,9 +210,21 @@ impl View {
     }
 
     /// puts the transport's frame into the painter, waiting up to `patience` for it, with the frames play or a
-    /// step would show next read ahead. true when the picture changed.
+    /// step would show next read ahead, or those on a fast scrub's way (`along`). true when the picture changed.
     fn load(&mut self, gpu: &Gpu, patience: Duration) -> bool {
-        let want = self.transport.ahead();
+        let t = &self.transport;
+        // hap's reader keeps only the frames it is asked for: going forward faster than two frames a refresh, the
+        // pointer leaves `ahead`'s frames behind before they are read, and what was read is let go at once. video
+        // decodes on from key frames and stills keep what they read: neither has been measured with `along`
+        let scrub = if !t.playing() && t.seam().is_none() && matches!(self.clip.lane, Lane::Hap(_)) {
+            along(t.frame(), self.pace.note(t.frame(), Instant::now()), self.clip.timeline.frames())
+        } else {
+            None
+        };
+        // the frame asked for is read first, in about 5 ms (a 4k hap q frame on the dev machine): a scrub waits up to
+        // half a refresh for it, so what is shown is that frame and not a lattice frame beside it
+        let patience = if scrub.is_some() { patience.max(Duration::from_secs_f64(self.pace.refresh / 2.0)) } else { patience };
+        let want = scrub.unwrap_or_else(|| self.transport.ahead());
         self.load_wanting(gpu, patience, &want)
     }
 
@@ -2496,6 +2566,65 @@ mod tests {
     use super::*;
     use crate::media::color;
     use crate::media::source::Frame;
+
+    /// a fast scrub lands on frames unevenly (4.36 a refresh lands on 11, 15, 20, 24), sooner than they are read. the
+    /// lattice frames either side of the one asked for were asked for a refresh before too, within the five a hap
+    /// reader takes, so they are read in time and still there to show. the frame asked for comes first
+    #[test]
+    fn a_fast_scrub_keeps_asking_for_the_frames_on_its_way() {
+        for pace in [4.36f64, -4.36, 2.18, -2.18, 9.0, -9.0] {
+            let stride = if pace.abs() > 8.0 { 8 } else if pace.abs() > 4.0 { 4 } else { 2 };
+            let (from, to) = if pace > 0.0 { (11.0, 168.0) } else { (168.0, 11.0) };
+            let steps = ((to - from) / pace) as usize;
+            let lists: Vec<(usize, Vec<usize>)> = (0..=steps).map(|n| (from + n as f64 * pace).round() as usize).map(|f| (f, along(f, pace, 180).unwrap())).collect();
+            for pair in lists.windows(2) {
+                let ((_, before), (frame, now)) = (&pair[0], &pair[1]);
+                assert_eq!(now[0], *frame);
+                let near: Vec<usize> = if frame % stride == 0 { vec![*frame] } else { vec![frame / stride * stride, frame / stride * stride + stride] };
+                let five = |list: &[usize], f: usize| list.iter().take(5).any(|&g| g == f);
+                for f in near {
+                    assert!(five(before, f) && five(now, f), "pace {pace}, frame {frame}: {f} in {before:?} and {now:?}");
+                }
+            }
+        }
+    }
+
+    /// slower than two frames a refresh the frames next to the pointer are the ones it comes to: the reader is told
+    /// what standing still tells it. at the clip's ends the lattice stops
+    #[test]
+    fn a_slow_scrub_asks_as_standing_still_does_and_a_fast_one_stops_at_the_ends() {
+        assert_eq!((along(50, 1.9, 180), along(50, -1.3, 180), along(50, 0.0, 180)), (None, None, None));
+        assert_eq!(along(50, 4.4, 180).unwrap()[..5], [50, 52, 48, 56, 60]);
+        assert_eq!(along(177, 4.4, 180), Some(vec![177, 176]));
+        assert_eq!(along(2, -4.4, 180), Some(vec![2, 0, 4]));
+        assert_eq!(along(0, -4.4, 180), Some(vec![0, 4]));
+    }
+
+    /// the pace is the frames a refresh over the last few refreshes, held through passes with no move, and nothing
+    /// once the frame has stood for `PACED`. moves closer together than a refresh and a half count as that far apart
+    #[test]
+    fn a_scrubs_pace_is_measured_over_a_few_refreshes() {
+        let mut pace = Pace::new(60.0);
+        let start = Instant::now();
+        let at = |n: f64| start + Duration::from_secs_f64(n / 60.0);
+        assert_eq!(pace.note(100, at(0.0)), 0.0);
+        // a click, and the first move a few milliseconds after it: not 16 frames a refresh
+        assert!((pace.note(104, at(0.25)) - 4.0 / 1.5).abs() < 1e-9);
+        assert!((pace.note(104, at(1.0)) - 4.0 / 1.5).abs() < 1e-9);
+        // landing unevenly, 4 or 5 frames a refresh, and looked at again halfway through each refresh
+        for n in 2..=12 {
+            let frame = 100 + (n as f64 * 4.36).round() as usize;
+            pace.note(frame, at(n as f64));
+            assert!((pace.note(frame, at(n as f64 + 0.5)) - 4.36).abs() < 0.4, "refresh {n}");
+        }
+        assert!((pace.note(152, at(13.0)) - 4.36).abs() < 0.4);
+        assert_eq!(pace.note(152, at(13.0 + 7.0)), 0.0);
+        // and going back
+        for n in 1..=6 {
+            pace.note(152 - 3 * n, at(20.0 + n as f64));
+        }
+        assert!((pace.note(134, at(27.0)) + 3.0).abs() < 0.01);
+    }
 
     /// chroma smaller than the picture is brought up to it by blending the four samples round each pixel, placed
     /// where the file sites them; on request the nearest sample is taken instead. every pixel is checked against the
