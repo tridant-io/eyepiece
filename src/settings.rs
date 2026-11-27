@@ -98,6 +98,9 @@ pub struct Settings {
     /// its videos and sequences alone
     pub folder_stills: bool,
     pub still_seconds: f32,
+    /// the rate an image sequence whose files state none opens at, as a ratio (the owner's word, 2026-11-26). one
+    /// chosen on the bar is that sequence's alone
+    pub sequence_rate: (i64, i64),
 }
 
 impl Default for Settings {
@@ -143,6 +146,7 @@ impl Default for Settings {
             screenshot_folder: None,
             folder_stills: false,
             still_seconds: 5.0,
+            sequence_rate: (24, 1),
         }
     }
 }
@@ -199,7 +203,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 40] {
+    fn pairs(&self) -> [(&'static str, String); 41] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -212,6 +216,10 @@ impl Settings {
             ("loop_analysis_seconds", self.loop_analysis_seconds.to_string()),
             ("folder_stills", word(&SWITCH, self.folder_stills)),
             ("still_seconds", self.still_seconds.to_string()),
+            ("sequence_rate", match self.sequence_rate {
+                (n, 1) => n.to_string(),
+                (n, d) => format!("{n}/{d}"),
+            }),
             ("volume", self.volume.to_string()),
             ("mute", word(&SWITCH, self.mute)),
             ("pin_controls", word(&SWITCH, self.pin_controls)),
@@ -263,6 +271,7 @@ impl Settings {
             "loop_analysis_seconds" => self.loop_analysis_seconds = number(v, 0.5, 10.0)?,
             "folder_stills" => self.folder_stills = pick(&SWITCH, v)?,
             "still_seconds" => self.still_seconds = number(v, 0.5, 60.0)?,
+            "sequence_rate" => self.sequence_rate = crate::media::clip::typed_rate(v).ok()?,
             "volume" => self.volume = number(v, 0.0, 1.0)?,
             "mute" => self.mute = pick(&SWITCH, v)?,
             "pin_controls" => self.pin_controls = pick(&SWITCH, v)?,
@@ -447,6 +456,7 @@ mod tests {
             screenshot_folder: Some(PathBuf::from(r"\\nas\review = notes")),
             folder_stills: true,
             still_seconds: 2.5,
+            sequence_rate: (30000, 1001),
         };
         saved.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file), saved);
@@ -459,11 +469,16 @@ mod tests {
         let dir = scratch("odd");
         let file = dir.join("settings.txt");
         fs::create_dir_all(&dir).unwrap();
-        let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\nbrowser_sort = date added descending\r\nstill_seconds = 90\r\n";
+        let by_hand = "\u{feff}volume = 0.5\r\nfrom_a_newer_build = 42\r\nthis line is broken\r\nmute = maybe\r\ntile = 0x32\r\nguide_color=#FF8800\r\nbrowser_sort = date added descending\r\nstill_seconds = 90\r\nsequence_rate = 500\r\n";
         fs::write(&file, by_hand).unwrap();
         let loaded = Settings::load_from(&file);
         let defaults = Settings::default();
         assert_eq!((loaded.volume, loaded.guide_color), (0.5, [0xff, 0x88, 0x00]));
+        // a rate for sequences is 1 to 240 frames a second, 24 when none reads
+        assert_eq!((loaded.sequence_rate, defaults.sequence_rate), ((24, 1), (24, 1)));
+        fs::write(&file, "sequence_rate = 29.97\n").unwrap();
+        assert_eq!(Settings::load_from(&file).sequence_rate, (30000, 1001));
+        fs::write(&file, by_hand).unwrap();
         assert_eq!((loaded.mute, loaded.tile), (defaults.mute, defaults.tile));
         // a still is held half a second to a minute: 90 does not read
         assert_eq!((loaded.still_seconds, defaults.still_seconds, defaults.folder_stills), (5.0, 5.0, false));

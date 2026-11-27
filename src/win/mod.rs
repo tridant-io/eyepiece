@@ -35,6 +35,8 @@ pub fn run(first: Option<String>) -> Result<(), String> {
         return Ok(());
     }
     Gpu::early();
+    // before the first file: a sequence in it opens at the settings' rate
+    crate::media::clip::set_sequence_rate(settings.sequence_rate);
     // the header is read before the window exists, so the window has the clip's shape from the start and never
     // jumps. that takes a few milliseconds; the graphics device, which is being made meanwhile, takes far longer,
     // and the first frame is already being read

@@ -230,7 +230,8 @@ fn still_facts(path: &str) -> Result<Meta, String> {
         }
         picture.push(match image.rate {
             Some((n, d)) => row("frame rate", format!("{n}/{d} · {}", decimal(n as f64 / d as f64, 3)), Tone::Plain),
-            None => row("frame rate", "none in file. shown at 24", Tone::Assumed),
+            // the rate it plays at is the player's to say (the metadata panel's "plays at"): the setting's, or one set
+            None => row("frame rate", "none in file", Tone::Assumed),
         });
     }
     picture.push(row(

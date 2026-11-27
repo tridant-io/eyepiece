@@ -520,7 +520,12 @@ Start-Player (Join-Path $media 'seq.0004.png')
 Assert-Title 'one file of a numbered run opens the whole run, on its own frame' '^seq\.\[0001-0005\]\.png . 3 / 5 . 16 . 16 . png . 24 fps assumed$'
 Send-Key 0x46; Assert-Title 'the frame with no file says so' ' . this frame cannot be shown: this frame.s file is missing$'
 Send-Key 0x46; Assert-Title 'and the frames around it show' '^seq\.\[0001-0005\]\.png . 1 / 5 . .* . 1 could not be shown$'
+# its rate (the owner's ask, 2026-11-26): the button left of the speed, narrow here ("24 fps"); its menu's 25 is the
+# third of the first row of four, 204 up
+Click-At -309 -32; Click-At -380 -204; Assert-Title 'a rate chosen on the bar is set for the sequence' '^seq\.\[0001-0005\]\.png . 1 / 5 . 16 . 16 . png . 25 fps set( . |$)'
 Stop-Player
+# and is that sequence's alone: the default for sequences stays as it was (the owner's word, 2026-11-26)
+Confirm-That 'the default for sequences stays 24' ((Get-Content -LiteralPath $settings) -contains 'sequence_rate = 24') "settings: $((Get-Content -LiteralPath $settings | Select-String 'sequence_rate') -join ', ')"
 Start-Player (Join-Path $media 'still_10bit.dpx')
 $mid = Get-Middle
 Move-Pointer $mid[0] $mid[1]; Send-Key 0x31

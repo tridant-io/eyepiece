@@ -1,8 +1,9 @@
 //! the menus that open over the bar, laid out as the design has them.
 
 use super::widgets::{self, ROW};
-use super::{cut_middle, font, text_top, Action, Extras, Facts, FolderList, Menu, Model, Shot, ACCENT, AMBER, DIM, FG, HOVER, MONO, MONO_MEDIUM};
+use super::{cut_middle, font, text_top, Action, Extras, Facts, FolderList, Menu, Model, Shot, ACCENT, AMBER, DIM, FG, HOVER, MONO, MONO_MEDIUM, SANS};
 use crate::event::{Key, Mods};
+use crate::media::clip::{self, RateFrom};
 use crate::save::BIN;
 use crate::settings::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
@@ -77,11 +78,12 @@ pub fn show(ui: &mut egui::Ui, menu: Menu, corner: Pos2, alpha: f32, model: &Mod
         Menu::Zoom => ("zoom-menu", WIDTH),
         Menu::View => ("view-menu", WIDTH),
         Menu::Shot => ("shot-menu", SHOT_WIDTH),
-        // the trim's keeps its switch and its prompt between passes: `trim` draws it
-        Menu::Trim => return Rect::NOTHING,
+        // the trim's keeps its switch and its prompt between passes, and the rate's what it refused: `trim` and `rate`
+        // draw them
+        Menu::Trim | Menu::Rate => return Rect::NOTHING,
     };
     widgets::menu(ui, name, corner, Align2::RIGHT_BOTTOM, width, alpha, |ui| match menu {
-        Menu::List | Menu::Trim => {}
+        Menu::List | Menu::Trim | Menu::Rate => {}
         Menu::Loop => looping(ui, model, actions),
         Menu::Speed => speed(ui, model, actions),
         Menu::Zoom => zoom(ui, model, actions),
@@ -110,6 +112,12 @@ pub fn facts(ui: &mut egui::Ui, corner: Pos2, pivot: Align2, alpha: f32, room: f
                     // what the file cannot say of itself: how this player decodes it and brings its chroma up
                     use crate::media::meta::{Row, Tone};
                     let mut ours = Vec::new();
+                    // a sequence at a rate its files do not state: the setting's, or one chosen for it
+                    if let Some((n, d)) = model.rate.filter(|_| model.sequence && model.rate_from != RateFrom::File) {
+                        let exact = if d == 1 { n.to_string() } else { format!("{n}/{d} · {}", clip::rate_name((n, d))) };
+                        let (from, tone) = if model.rate_from == RateFrom::Set { ("set", Tone::Plain) } else { ("assumed", Tone::Assumed) };
+                        ours.push(Row { label: "plays at", value: format!("{exact} fps {from}"), tone });
+                    }
                     if !model.decoded.is_empty() {
                         ours.push(Row { label: "decode", value: model.decoded.to_string(), tone: Tone::Plain });
                     }
@@ -216,6 +224,49 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
         }
         if let Some(why) = model.no_replace {
             widgets::note(ui, &format!("replace original is not offered: {why}."));
+        }
+    })
+}
+
+/// an image sequence's frame rate (the owner's ask, 2026-11-26), standing over its button: for files that state a rate
+/// of their own, that one first; the usual rates, the one in use lit; then a field for any other, a number or a ratio,
+/// and why the last one typed was refused, which `refused` keeps between passes. what is chosen is this sequence's
+/// alone. returns where it was drawn.
+pub fn rate(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, refused: &mut Option<String>, actions: &mut Vec<Action>) -> Rect {
+    widgets::menu(ui, "rate-menu", corner, Align2::RIGHT_BOTTOM, WIDTH, alpha, |ui| {
+        let rate = model.rate.unwrap_or((24, 1));
+        let said: String = super::rate_button(model, false).into_iter().map(|(words, _)| words).collect();
+        widgets::heading_note(ui, "frame rate", &said);
+        let mut chose = None;
+        if let Some(own) = model.own_rate {
+            if widgets::buttons(ui, "rate-own", &[(&format!("file's own · {}", clip::rate_name(own)), "", model.rate_from == RateFrom::File)]).is_some() {
+                chose = Some(None);
+            }
+        }
+        // lit by value, however it is written; the file's own is lit above while it is in use
+        let lit = clip::RATES.iter().position(|(_, (n, d))| n * rate.1 == d * rate.0).filter(|_| model.rate_from != RateFrom::File);
+        for (row, rates) in clip::RATES.chunks(4).enumerate() {
+            let names: Vec<&str> = rates.iter().map(|(name, _)| *name).collect();
+            if let Some(i) = widgets::segments(ui, &format!("rates-{row}"), &names, lit.filter(|at| at / 4 == row).map(|at| at % 4)) {
+                chose = Some(Some(rates[i].1));
+            }
+        }
+        // over the field, which the menu stands on: what it says can grow without moving the field under the pointer
+        widgets::note(ui, refused.as_deref().unwrap_or("for this sequence alone. any other rate: a number or a ratio, 1 to 240."));
+        let row = widgets::row(ui, ROW);
+        let shown = clip::rate_name(rate);
+        let (_, typed) = widgets::field_with(ui, "rate-typed", row.right_center(), &shown, "fps", (7.0, 76.0), |c| c.is_ascii_digit() || c == '.' || c == '/');
+        let words = ui.painter().layout_no_wrap("another rate".to_string(), font(SANS, 12.0), FG);
+        ui.painter().galley(Pos2::new(row.left(), text_top(ui.painter(), font(SANS, 12.0), row.center().y)), words, FG);
+        // the field left as it was asks for nothing: clicking into it and out would make the rate set
+        match typed.filter(|typed| *typed != shown).map(|typed| clip::typed_rate(&typed)) {
+            Some(Ok(rate)) => chose = Some(Some(rate)),
+            Some(Err(why)) => *refused = Some(why),
+            None => {}
+        }
+        if let Some(rate) = chose {
+            *refused = None;
+            actions.push(Action::Rate(rate));
         }
     })
 }

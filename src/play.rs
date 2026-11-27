@@ -137,6 +137,16 @@ impl Transport {
         self
     }
 
+    /// a new rate for the clip, as an image sequence is given one: the frame stays, and play goes on, counted at the
+    /// new rate from the frame it is on. loop analysis starts its round again, as it does for new seconds.
+    pub fn set_fps(&mut self, fps: f64) {
+        self.fps = fps;
+        match self.seam {
+            Some(_) => self.set_seam(self.seam),
+            None => self.anchor(),
+        }
+    }
+
     /// the trim's in frame and its out frame, each set or not.
     pub fn trim(&self) -> (Option<usize>, Option<usize>) {
         self.trim
@@ -667,6 +677,26 @@ mod tests {
         assert_eq!(seen(&mut t, 3), frames(&[0, 1, 2]));
         t.set_speed(0.5);
         assert_eq!(seen(&mut t, 4), frames(&[3, 3, 4, 4]));
+    }
+
+    /// a sequence given another rate (the owner's ask, 2026-11-26) stays on its frame, and play goes on at the new rate
+    /// from the frame it is on. loop analysis counts its seconds in frames of the new rate
+    #[test]
+    fn a_new_rate_keeps_the_frame_and_plays_on_at_it() {
+        let mut t = Transport::new(100, 24.0, 60.0);
+        t.go(10);
+        t.set_fps(30.0);
+        assert_eq!((t.frame(), t.playing()), (10, false));
+        t.set_playing(true);
+        assert_eq!(seen(&mut t, 4), frames(&[10, 10, 11, 11]));
+        t.set_fps(60.0);
+        assert!(t.playing());
+        assert_eq!(seen(&mut t, 3), frames(&[12, 13, 14]));
+        let mut t = Transport::new(200, 24.0, 60.0);
+        t.set_seam(Some(0.5));
+        assert_eq!(t.seam_place(), Some((0, 24)));
+        t.set_fps(60.0);
+        assert_eq!(t.seam_place(), Some((0, 60)));
     }
 
     #[test]

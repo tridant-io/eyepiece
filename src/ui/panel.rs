@@ -6,6 +6,7 @@ use super::brand::{self, Art};
 use super::icons::{self, Icon};
 use super::widgets::{self, CHOSEN, ON_CHOSEN};
 use super::{dotted, font, keys, text_top, Action, Screen, Ui, ACCENT, DIM, FG, FILL, HOVER, LINE, MONO, MONO_MEDIUM, SANS, SOLID, STRIP, TRACK};
+use crate::media::clip;
 use crate::settings::{Chroma, Loop, Opens, Settings};
 use egui::text::{CCursor, LayoutJob, TextFormat};
 use egui::{Align, Align2, Color32, FontId, Galley, Pos2, Rect, Sense, Vec2};
@@ -280,7 +281,7 @@ impl Ui {
             }
             2 => {
                 (s.loop_file, s.loop_folder, s.loop_analysis_seconds, s.timecode) = (d.loop_file, d.loop_folder, d.loop_analysis_seconds, d.timecode);
-                (s.first_frame, s.volume, s.mute, s.folder_stills, s.still_seconds) = (d.first_frame, d.volume, d.mute, d.folder_stills, d.still_seconds);
+                (s.first_frame, s.volume, s.mute, s.folder_stills, s.still_seconds, s.sequence_rate) = (d.first_frame, d.volume, d.mute, d.folder_stills, d.still_seconds, d.sequence_rate);
             }
             3 => {
                 (s.background, s.chroma, s.grid, s.tile, s.center, s.guide_color) = (d.background, d.chroma, d.grid, d.tile, d.center, d.guide_color);
@@ -428,6 +429,20 @@ fn playback(ui: &mut egui::Ui, s: &mut Settings) {
     toggle(rows.row(ui, "folder-stills", "play stills in a played folder", words("off: a folder plays its videos and sequences alone"), &[Part::Switch(s.folder_stills)]), &mut s.folder_stills);
     if let Some(to) = typed(rows.row(ui, "still-seconds", "hold a still for", words("seconds before play goes on, 0.5 to 60"), &[Part::Field(format!("{:.1}", s.still_seconds), "s", 46.0, number)])) {
         s.still_seconds = to.clamp(0.5, 60.0);
+    }
+    // the default for sequences (the owner's word, 2026-11-26): the bar's rate button sets one sequence's alone
+    rows.group(ui, "image sequences");
+    let (n, d) = s.sequence_rate;
+    let shown = clip::rate_name(s.sequence_rate);
+    let rates = clip::RATES.map(|(name, _)| name);
+    let on = clip::RATES.iter().position(|(_, (rn, rd))| rn * d == rd * n);
+    if let Some((_, Got::Chose(i))) = rows.row(ui, "sequence-rate", "play at", words("when their files state no rate"), &[Part::Choices(&rates, on)]) {
+        s.sequence_rate = clip::RATES[i].1;
+    }
+    // left as it was, the field asks for nothing: 2997/100 is shown as 29.97, which reads as 30000/1001
+    match rows.row(ui, "sequence-rate-typed", "or another rate", words("a number or a ratio, 1 to 240. the rate button on the bar sets one sequence's alone"), &[Part::Field(shown.clone(), "fps", 76.0, ratio)]) {
+        Some((_, Got::Typed(to))) if to != shown => s.sequence_rate = clip::typed_rate(&to).unwrap_or(s.sequence_rate),
+        _ => {}
     }
     rows.group(ui, "readout");
     if let Some((_, Got::Chose(i))) = rows.row(ui, "count", "count in", words("T, or a click on the readout, switches it in a tab"), &[Part::Choices(&["frames", "timecode"], Some(s.timecode as usize))]) {
@@ -1127,6 +1142,11 @@ fn typed(got: Option<(usize, Got)>) -> Option<f32> {
 
 fn number(c: char) -> bool {
     c.is_ascii_digit() || c == '.'
+}
+
+/// a number or a ratio, as a rate is typed
+fn ratio(c: char) -> bool {
+    number(c) || c == '/'
 }
 
 fn hex(c: char) -> bool {

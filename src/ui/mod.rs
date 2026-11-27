@@ -17,6 +17,7 @@ pub use update::{Applying, Updates};
 
 use crate::event::{Key, Mods};
 use crate::markup::{Mark, Marks};
+use crate::media::clip::{self, RateFrom};
 use crate::media::copy::Cut;
 use crate::media::meta::Meta;
 use crate::settings::{Loop, Settings};
@@ -269,8 +270,11 @@ pub struct Model<'a> {
     pub trim: (Option<usize>, Option<usize>),
     /// how a copy of the trim is cut, once that has been read, or why there is none. None while it is read
     pub cut: Option<Result<&'a Cut, &'a str>>,
-    /// a numbered run of stills: there is no copy of one to make yet
+    /// a numbered run of stills: there is no copy of one to make yet, and its rate can be chosen
     pub sequence: bool,
+    /// where the clip's rate comes from, and a sequence's rate as its files state it, when they do
+    pub rate_from: RateFrom,
+    pub own_rate: Option<(i64, i64)>,
     /// why a copy cannot take the file's place, where it cannot: its original could not go to a bin (a network
     /// volume has none)
     pub no_replace: Option<&'a str>,
@@ -336,6 +340,8 @@ pub enum Action {
     /// loop analysis on, with this many seconds each side of the seam, or off
     Seam(Option<f64>),
     Speed(f64),
+    /// an image sequence at this rate, chosen for it, or (None) at its files' own
+    Rate(Option<(i64, i64)>),
     /// fit (None), or this many display pixels for one video pixel, about the middle of the window
     Zoom(Option<f32>),
     /// the picture, dragged by this many physical pixels
@@ -440,6 +446,8 @@ enum Menu {
     List,
     Loop,
     Speed,
+    /// an image sequence's frame rate
+    Rate,
     Zoom,
     View,
     Shot,
@@ -480,6 +488,8 @@ pub struct Ui {
     /// the trim menu's switch, keep sound, while the window is open; and its prompt to replace the original is up
     trim_sound: bool,
     trim_confirm: bool,
+    /// why the rate last typed into a sequence's rate menu was refused, until the menu closes or a rate is taken
+    rate_refused: Option<String>,
     /// the metadata panel: pinned open; or up while the pointer is on its button or on it. when the pointer came
     /// onto the button, when it left button and panel, and where the two were drawn
     facts_pinned: bool,
@@ -572,6 +582,7 @@ impl Ui {
             menu_button: Rect::NOTHING,
             trim_sound: true,
             trim_confirm: false,
+            rate_refused: None,
             facts_pinned: false,
             facts_up: false,
             facts_since: None,
@@ -1245,6 +1256,7 @@ impl Ui {
                     Rect::NOTHING
                 }
                 (Menu::Trim, _) => menus::trim(ui, corner, alpha, model, self.timecode, (&mut self.trim_sound, &mut self.trim_confirm), actions),
+                (Menu::Rate, _) => menus::rate(ui, corner, alpha, model, &mut self.rate_refused, actions),
                 _ => menus::show(ui, menu, corner, alpha, model, actions),
             };
             // what a menu changes about the view is said by the chip
@@ -1824,25 +1836,35 @@ impl Ui {
             (None, Loop::One) => (if narrow { "one" } else { "loop one" }).to_string(),
             (None, Loop::All) => (if narrow { "all" } else { "loop all" }).to_string(),
         };
+        let plain = |words: String| vec![(words, FG)];
         for (menu, name, icon, label, tip) in [
-            (Menu::Zoom, "zoom", None, model.zoom_label.clone(), keys::line(Key::Digit0, keys::NONE)),
-            (Menu::Speed, "speed", None, speed, keys::line(Key::Minus, keys::SHIFT)),
-            (Menu::Loop, "loop", Some(Icon::Loop), looping, keys::named(Key::R, keys::NONE)),
+            (Menu::Zoom, "zoom", None, plain(model.zoom_label.clone()), keys::line(Key::Digit0, keys::NONE)),
+            (Menu::Speed, "speed", None, plain(speed), keys::line(Key::Minus, keys::SHIFT)),
+            (Menu::Rate, "rate", None, rate_button(model, narrow), Some(("this sequence's frame rate".to_string(), String::new()))),
+            (Menu::Loop, "loop", Some(Icon::Loop), plain(looping), keys::named(Key::R, keys::NONE)),
         ]
         .into_iter()
-        // a still has the zoom alone, and a held one the loop too
+        // a still has the zoom alone, and a held one the loop too. the rate is an image sequence's alone
         .filter(|(menu, ..)| match menu {
             Menu::Speed => framed,
+            Menu::Rate => model.sequence,
             Menu::Loop => timed,
             _ => true,
         }) {
-            let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
+            let mut job = LayoutJob::default();
+            for (words, color) in label {
+                job.append(&words, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color, ..Default::default() });
+            }
+            let galley = painter.layout_job(job);
             let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
             let button = text_button(ui, rect, name, icon, galley, if self.menu == Some(menu) { Lit::Open } else { Lit::No });
             if button.clicked() {
                 self.toggle_menu(menu, rect);
             }
             self.hint(&button, tip);
+        }
+        if !model.sequence && self.menu == Some(Menu::Rate) {
+            self.menu = None;
         }
         // the trim's, while a clip of frames has one set, left of the loop: lit as a button whose setting is on, never
         // in the accent, which the bar never carries (the owner's word, 2026-11-26). its menu saves the trim
@@ -1884,6 +1906,7 @@ impl Ui {
     fn toggle_menu(&mut self, menu: Menu, button: Rect) {
         self.menu = (self.menu != Some(menu)).then_some(menu);
         self.menu_button = button;
+        self.rate_refused = None;
     }
 
     /// notes the button of the strip or the bar the pointer is on, with what its tooltip says: what it does, and its
@@ -2228,6 +2251,18 @@ fn outside(model: &Model, frame: usize) -> bool {
     trimmed(model).is_some_and(|(first, kept)| !(first..first + kept).contains(&frame))
 }
 
+/// what a sequence's rate button says: the rate, and where it comes from, dim, but where the bar is narrow.
+fn rate_button(model: &Model, narrow: bool) -> Vec<(String, Color32)> {
+    let mut words = vec![(format!("{} fps", model.rate.map_or_else(String::new, clip::rate_name)), FG)];
+    let from = match model.rate_from {
+        RateFrom::File => None,
+        RateFrom::Assumed => Some(" assumed"),
+        RateFrom::Set => Some(" set"),
+    };
+    words.extend(from.filter(|_| !narrow).map(|from| (from.to_string(), DIM)));
+    words
+}
+
 /// what the speed chip says, when the clip is not running at its own rate: "2× speed", "−4× reverse".
 fn speed_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
     let number = |rate: f64| format!("{}× ", (rate * 100.0).round() / 100.0);
@@ -2528,6 +2563,8 @@ pub(super) mod tests {
             trim: (None, None),
             cut: None,
             sequence: false,
+            rate_from: RateFrom::File,
+            own_rate: None,
             no_replace: None,
             saving: None,
             copy_notes: true,
@@ -2939,6 +2976,96 @@ pub(super) mod tests {
         assert!(ui.menu == Some(Menu::Zoom));
     }
 
+    /// five frames of a numbered run, at the 24 fps assumed for a run whose files state none
+    fn sequence() -> Model<'static> {
+        Model { frames: 5, sequence: true, rate: Some((24, 1)), clock: Some(Timecode::counted(24)), rate_from: RateFrom::Assumed, ..model() }
+    }
+
+    /// where along the bar's row, `y` down a window `width` wide, a click opens which menu
+    fn menus_along(width: u32, y: f32, model: &dyn Fn() -> Model<'static>) -> Vec<(f32, Menu)> {
+        let mut ui = Ui::new((width, 360), 1.0, false, None, None);
+        (200..width).step_by(4).filter_map(|x| {
+            drive_with(&mut ui, model(), &click(x as f32, y));
+            ui.menu.take().map(|menu| (x as f32, menu))
+        }).collect()
+    }
+
+    /// an image sequence's rate on the bar (the owner's ask, 2026-11-26): a button between the loop and the speed, for a
+    /// numbered run of more than one frame and for nothing else: not a video, a still alone or a still a played folder
+    /// holds
+    #[test]
+    fn the_rate_button_is_a_sequences_alone() {
+        let along = menus_along(900, 333.0, &sequence);
+        let at = |menu: Menu| along.iter().filter(|(_, m)| *m == menu).map(|(x, _)| *x).collect::<Vec<_>>();
+        let (rate, speed, looping) = (at(Menu::Rate), at(Menu::Speed), at(Menu::Loop));
+        assert!(!rate.is_empty(), "{:?}", along.iter().map(|(x, _)| x).collect::<Vec<_>>());
+        assert!(rate.iter().all(|x| looping.iter().all(|l| l < x) && speed.iter().all(|s| x < s)), "rate {rate:?}, speed {speed:?}, loop {looping:?}");
+        let others: [(&str, f32, &dyn Fn() -> Model<'static>); 3] = [("a video", 333.0, &|| Model { frames: 24, ..model() }), ("a still alone", 342.0, &|| Model { frames: 1, rate: None, ..model() }), ("a held still", 333.0, &|| Model { frames: 1, rate: None, held: Some((1.0, 5.0)), ..model() })];
+        for (what, y, model) in others {
+            assert!(menus_along(900, y, model).iter().all(|(_, menu)| *menu != Menu::Rate), "{what} has the rate button");
+        }
+        // it says the rate and where it came from, plain on the bar; narrow, the rate alone
+        let words = |model: Model, narrow| rate_button(&model, narrow).into_iter().map(|(words, color)| (words, color == DIM)).collect::<Vec<_>>();
+        let said = |rate: &str, from: Option<&str>| [Some((rate.to_string(), false)), from.map(|from| (format!(" {from}"), true))].into_iter().flatten().collect::<Vec<_>>();
+        assert_eq!(words(sequence(), false), said("24 fps", Some("assumed")));
+        assert_eq!(words(Model { rate: Some((25, 1)), rate_from: RateFrom::Set, ..sequence() }, false), said("25 fps", Some("set")));
+        assert_eq!(words(Model { rate: Some((24000, 1001)), rate_from: RateFrom::Set, ..sequence() }, false), said("23.976 fps", Some("set")));
+        assert_eq!(words(Model { rate: Some((30000, 1001)), rate_from: RateFrom::File, own_rate: Some((30000, 1001)), ..sequence() }, false), said("29.97 fps", None));
+        assert_eq!(words(sequence(), true), said("24 fps", None));
+    }
+
+    /// the rate's menu: the usual rates, the current one lit, and first, for files that state their own, that one; a
+    /// field takes any other, as a number or a ratio, and says why it refuses one. clicking into the field and out
+    /// asks for nothing
+    #[test]
+    fn the_rate_menu_takes_a_usual_rate_or_one_typed() {
+        let mut ui = Ui::new((1240, 700), 1.0, false, None, None);
+        let along: Vec<f32> = (600..1240).step_by(4).map(|x| x as f32).filter(|&x| {
+            drive_with(&mut ui, sequence(), &click(x, 673.0));
+            ui.menu.take() == Some(Menu::Rate)
+        }).collect();
+        let button = (along[0] + along[along.len() - 1]) / 2.0;
+        let open = |ui: &mut Ui, model: &dyn Fn() -> Model<'static>| {
+            ui.menu = None;
+            drive_with(ui, model(), &click(button, 673.0));
+            drive_with(ui, model(), &[(button, 673.0, None)]);
+            assert!(ui.menu == Some(Menu::Rate));
+            let menu = ui.menu_rect;
+            (menu.left() + 13.0, menu.top() + 13.0, menu.right() - 13.0, menu.bottom() - 13.0)
+        };
+        // the cells, four to a row, 60 wide, the second row under the first; the field is the menu's last row
+        let cell = |(left, top, ..): (f32, f32, f32, f32), i: usize, own: f32| (left + 1.0 + 60.0 * ((i % 4) as f32 + 0.5), top + own + 41.0 + 39.0 * (i / 4) as f32);
+        let at = open(&mut ui, &sequence);
+        let (x, y) = cell(at, 2, 0.0);
+        assert_eq!(drive_with(&mut ui, sequence(), &click(x, y)), vec![Action::Rate(Some((25, 1)))]);
+        assert!(ui.menu == Some(Menu::Rate), "the menu stays");
+        let (x, y) = cell(at, 6, 0.0);
+        assert_eq!(drive_with(&mut ui, sequence(), &click(x, y)), vec![Action::Rate(Some((60000, 1001)))]);
+        // the field: into it and out again asks nothing; a ratio or a number typed is taken; out of range is refused
+        let field = (at.2 - 60.0, at.3 - 13.0);
+        let typed = |ui: &mut Ui, text: &str| {
+            drive_with(ui, sequence(), &click(field.0, field.1));
+            ui.key(Key::A, keys::CTRL);
+            text.chars().for_each(|c| ui.char(c));
+            ui.key(Key::Enter, keys::NONE);
+            drive_with(ui, sequence(), &[(field.0, field.1, None), (field.0, field.1, None)])
+        };
+        drive_with(&mut ui, sequence(), &click(field.0, field.1));
+        assert_eq!(drive_with(&mut ui, sequence(), &click(at.0 + 20.0, at.1 + 8.0)), vec![]);
+        assert_eq!(typed(&mut ui, "47.952"), vec![Action::Rate(Some((48000, 1001)))]);
+        assert_eq!(typed(&mut ui, "30000/1001"), vec![Action::Rate(Some((30000, 1001)))]);
+        assert_eq!(typed(&mut ui, "500"), vec![]);
+        assert!(ui.rate_refused.as_deref().is_some_and(|why| why.contains("1 to 240")), "{:?}", ui.rate_refused);
+        assert_eq!(typed(&mut ui, "12"), vec![Action::Rate(Some((12, 1)))]);
+        assert_eq!(ui.rate_refused, None);
+        // files with a rate of their own: that one first, lit while it is the one in use
+        let own = || Model { rate: Some((30000, 1001)), rate_from: RateFrom::File, own_rate: Some((30000, 1001)), ..sequence() };
+        let at = open(&mut ui, &own);
+        assert_eq!(drive_with(&mut ui, own(), &click(at.0 + 30.0, at.1 + 42.0)), vec![Action::Rate(None)]);
+        let (x, y) = cell(at, 1, 41.0);
+        assert_eq!(drive_with(&mut ui, own(), &click(x, y)), vec![Action::Rate(Some((24, 1)))]);
+    }
+
     /// the trim's button (the owner's, 2026-11-26) stands on the bar while a clip of frames has a trim, and only then:
     /// lit as a button whose setting is on, never in the accent, which the bar never carries. its menu says how the
     /// copy is cut and saves it beside the clip, or, behind a prompt whose action is the accent, in its place; never in
@@ -3042,9 +3169,14 @@ pub(super) mod tests {
         }
         // (the switch is clicked on the way too, so the sound goes either way)
         assert!(asked.iter().any(|a| matches!(a, Action::Save { trim: true, replace: false, .. })) && asked.iter().all(|a| !matches!(a, Action::Save { replace: true, .. })), "{asked:?}");
-        // a sequence has the button, and its menu saves nothing yet
-        let sequence = || Model { sequence: true, ..trimmed(None) };
+        // a sequence has the button, left of its rate's, and its menu saves nothing yet
+        let sequence = || Model { sequence: true, rate_from: RateFrom::Assumed, ..trimmed(None) };
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let on: Vec<f32> = (200..640).step_by(4).map(|x| x as f32).filter(|&x| {
+            drive_with(&mut ui, sequence(), &click(x, 333.0));
+            ui.menu.take() == Some(Menu::Trim)
+        }).collect();
+        let button = (on[0] + on[on.len() - 1]) / 2.0;
         drive_with(&mut ui, sequence(), &click(button, 333.0));
         drive_with(&mut ui, sequence(), &[(button, 333.0, None)]);
         assert!(ui.menu == Some(Menu::Trim));

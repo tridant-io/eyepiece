@@ -11,7 +11,7 @@ use crate::browse;
 use crate::event::{Event, Key, Mods};
 use crate::folder;
 use crate::markup::{self, Marks, Placing};
-use crate::media::clip::{Clip, Lane};
+use crate::media::clip::{self, Clip, Lane, RateFrom};
 use crate::media::copy::{self, Cut};
 use crate::media::hap::Tex;
 use crate::media::meta::Meta;
@@ -137,6 +137,12 @@ impl View {
         transport.go(clip.first_frame as i64);
         let framing = Framing::new(clip.upright());
         Ok(View { clip, transport, paint, shown: None, fault: None, late: 0, unshowable: 0, framing, look: Look::default(), probe: None, sound: None, sounding: None, resynced: 0, before_toggle: None, seam_asked: false, seam_change: None, hold: None, pace: Pace::new(hz) })
+    }
+
+    /// an image sequence at another rate: the clip's timeline and clock and play's pace together, the frame kept.
+    fn set_rate(&mut self, rate: (i64, i64), from: RateFrom) {
+        self.clip.set_rate(rate, from);
+        self.transport.set_fps(self.clip.timeline.fps());
     }
 
     /// whether play runs: through the clip's frames, or through a held still's hold.
@@ -524,6 +530,8 @@ impl View {
             saving: None,
             copy_notes: settings.copy_notes,
             sequence: matches!(self.clip.lane, Lane::Stills(_)) && self.clip.timeline.frames() > 1,
+            rate_from: self.clip.rate_from,
+            own_rate: self.clip.own_rate,
             speed: self.transport.speed(),
             shuttle: self.transport.shuttle_rate(),
             zoom_label: self.framing.label(window),
@@ -578,6 +586,13 @@ impl View {
                 }
             }
             Action::Speed(speed) => self.transport.set_speed(*speed),
+            // this sequence's alone: the rate for sequences is the settings' to say (the owner, 2026-11-26)
+            Action::Rate(Some(rate)) => self.set_rate(*rate, RateFrom::Set),
+            Action::Rate(None) => {
+                if let Some(own) = self.clip.own_rate {
+                    self.set_rate(own, RateFrom::File);
+                }
+            }
             Action::Zoom(zoom) => self.framing.set_zoom(*zoom, None, window),
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
@@ -906,6 +921,10 @@ impl Coming {
 /// analysis are the tab's and stay through a folder's cuts; a trim is its clip's and does not. two tabs, not a
 /// folder, are how versions flip on the same frame.
 fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: Option<&View>) {
+    // a sequence kept ready before the rate for sequences changed comes up at the new one
+    if view.clip.rate_from == RateFrom::Assumed && why != Why::Changed {
+        view.set_rate(clip::sequence_rate(), RateFrom::Assumed);
+    }
     match (why, old) {
         (Why::Opened, _) => {
             if let Some((frame, framing, look)) = place {
@@ -918,6 +937,10 @@ fn seed(view: &mut View, why: Why, place: Option<(usize, Framing, Look)>, old: O
             view.set_look(old.look);
             let same = (view.clip.upright() == old.clip.upright(), view.clip.timeline.frames() == old.clip.timeline.frames());
             if why == Why::Changed {
+                // a sequence keeps the rate it had, set or assumed, as it keeps its trim
+                if let Some(rate) = old.clip.timeline.rate().filter(|_| old.clip.rate_from != RateFrom::File) {
+                    view.set_rate(rate, old.clip.rate_from);
+                }
                 view.transport.go(old.transport.frame() as i64);
                 let (mark_in, mark_out) = old.transport.trim();
                 view.transport.set_trim(mark_in, mark_out);
@@ -2421,6 +2444,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     tabs.play_on_open = settings.play_on_open;
                     loudness(&mut speaker, settings);
                     crate::preview::set_limit(cache_bytes(settings));
+                    // for sequences opened from now on: one open keeps the rate it has
+                    clip::set_sequence_rate(settings.sequence_rate);
                     shots_label = shots_to(&shots_folder(settings));
                     // a loop mode set here is the tab's that is up, when it is a tab of that kind
                     let tab = tabs.tab();

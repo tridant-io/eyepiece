@@ -38,7 +38,7 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ### the window
 
 - **the strip** on top holds the tabs, help and settings. drag it to move the window.
-- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar, and the trim's button while a trim is set. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen; a still that a played folder holds for a time adds play, the loop, and a timebar and readout in seconds.
+- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar, and the trim's button while a trim is set. an image sequence adds its frame rate, beside the speed. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen; a still that a played folder holds for a time adds play, the loop, and a timebar and readout in seconds.
 - **chips** stay on the picture while it differs from the file.
 - the window takes the clip's shape, up to 90% of the screen.
 - **one window:** a file opened while eyepiece runs, or dropped on it, gets a tab of its own.
@@ -51,6 +51,8 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 - **R** turns looping off and on. a file loops by default.
 - **T** switches frames and timecode. timecode is the file's own, drop-frame included, or counts from zero.
 - **a file that changes on disk**, such as a new render, takes the old one's place on the same frame.
+- **an image sequence's rate:** a numbered run of stills plays at its files' own rate when they state one (exr), else at the default for sequences: 24, or what settings > playback > image sequences > **play at** says. the rate button beside the speed reads the rate and where it comes from: `24 fps assumed` for the default, `25 fps set` for one chosen for this sequence, the rate alone for the files' own (a narrow window shows the rate alone). its menu has 23.976, 24, 25, 29.97, 30, 50, 59.94 and 60, the files' own first when they state one, and a field for any other: a number (12, 47.952) or a ratio (30000/1001), 1 to 240. 23.976, 29.97 and 59.94, chosen or typed, are exactly 24000/1001, 30000/1001 and 60000/1001.
+- a rate chosen on the bar is that sequence's alone, and holds at once: the frame stays and play goes on. its timecode counts at the new rate; its frames, trim, markers and notes stay where they are. the speed multiplies whatever the rate is. the title and the metadata panel's **plays at** say the rate and where it comes from too.
 
 ---
 
@@ -250,7 +252,7 @@ the clip's sound plays with it and keeps the clock. pitch holds from half to dou
 ![the about page](docs/images/about.png)
 *the about page*
 
-the gear, or **ctrl+,**, opens settings. a change takes effect at once. the screenshots page also holds markup's pen smoothing, how long a new group of marks lasts, and whether notes are saved beside the clip. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
+the gear, or **ctrl+,**, opens settings. a change takes effect at once. the playback page holds the rate image sequences open at when their files state none, for sequences opened after it changes. the screenshots page also holds markup's pen smoothing, how long a new group of marks lasts, and whether notes are saved beside the clip. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
 
 ## keys
 

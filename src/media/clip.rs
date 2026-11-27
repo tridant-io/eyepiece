@@ -29,14 +29,79 @@ pub struct Clip {
     pub first_frame: usize,
     /// a sequence's frames that have no file, in order
     pub missing: Vec<usize>,
-    /// true when the file states no rate and the timeline runs at the assumed one (a sequence: 24)
-    pub rate_assumed: bool,
+    /// where the rate the timeline runs at comes from
+    pub rate_from: RateFrom,
+    /// a sequence's rate as its files state it (exr), when they do
+    pub own_rate: Option<(i64, i64)>,
     /// what the frames are called by the clock: the file's own timecode, else counted from 00:00:00:00. none for a
     /// clip with no one rate to count by
     pub clock: Option<Timecode>,
     /// how the file asks the picture to be turned for the screen, as a phone held upright tags the picture it stores
     /// on its side. what the user turns comes on top of it (`Look::then`)
     pub turn: Look,
+}
+
+/// where a clip's frame rate comes from, as the bar, the title and the metadata panel say it
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RateFrom {
+    /// the file's own
+    File,
+    /// a sequence whose files state none: the setting's, never chosen for it
+    Assumed,
+    /// chosen for this sequence on the bar
+    Set,
+}
+
+/// the rate a sequence whose files state none opens at: the setting's (`set_sequence_rate`), 24 until it is read
+static SEQUENCE_RATE: Mutex<(i64, i64)> = Mutex::new((24, 1));
+
+/// the rate for sequences whose files state none, from the settings.
+pub fn set_sequence_rate(rate: (i64, i64)) {
+    *SEQUENCE_RATE.lock().unwrap_or_else(|e| e.into_inner()) = rate;
+}
+
+pub fn sequence_rate() -> (i64, i64) {
+    *SEQUENCE_RATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// the rates offered for a sequence, as the bar's menu and the settings name them
+pub const RATES: [(&str, (i64, i64)); 8] = [("23.976", (24000, 1001)), ("24", (24, 1)), ("25", (25, 1)), ("29.97", (30000, 1001)), ("30", (30, 1)), ("50", (50, 1)), ("59.94", (60000, 1001)), ("60", (60, 1))];
+
+/// a rate typed for a sequence: a number, decimals allowed (12, 47.952), or a ratio (30000/1001), 1 to 240 frames a
+/// second. a decimal that rounds a rate of the /1001 kind (23.976, 29.97, 59.94, 47.952) is that exact ratio.
+pub fn typed_rate(text: &str) -> Result<(i64, i64), String> {
+    let text = text.trim();
+    let unread = || "not a rate: type a number, such as 12 or 47.952, or a ratio, such as 30000/1001.".to_string();
+    let whole = |digits: &str| Some(digits).filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())).and_then(|d| d.parse::<i64>().ok());
+    let (n, d) = match text.split_once('/') {
+        Some((n, d)) => (whole(n).ok_or_else(unread)?, whole(d).filter(|d| *d > 0).ok_or_else(unread)?),
+        None => {
+            let (int, frac) = text.split_once('.').unwrap_or((text, ""));
+            let scale = 10i64.checked_pow(frac.len() as u32).ok_or_else(unread)?;
+            let n = whole(&format!("{int}{frac}")).filter(|_| !int.is_empty() || !frac.is_empty()).ok_or_else(unread)?;
+            // 29.97 is how 30000/1001 is written: a decimal of two places or more that rounds a whole rate over 1.001
+            let ntsc = (n as f64 / scale as f64 * 1.001).round() as i64;
+            if frac.len() >= 2 && n % scale != 0 && (ntsc as f64 * 1000.0 / 1001.0 * scale as f64).round() as i64 == n {
+                (ntsc.checked_mul(1000).ok_or_else(unread)?, 1001)
+            } else {
+                (n, scale)
+            }
+        }
+    };
+    if !(d as i128..=240 * d as i128).contains(&(n as i128)) {
+        return Err(format!("{text} fps is outside 1 to 240."));
+    }
+    let common = gcd(n, d);
+    Ok((n / common, d / common))
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// a rate as its decimal, to three places at most: 24, 23.976, 12.5.
+pub fn rate_name((n, d): (i64, i64)) -> String {
+    meta::decimal(n as f64 / d as f64, 3)
 }
 
 /// how a stream asks to be turned, when that is a quarter turn; otherwise it is shown as stored
@@ -254,7 +319,7 @@ impl Clip {
 
     fn open_with(path: &str, count: &Count) -> Result<Clip, String> {
         if still::is_still(path) {
-            return Clip::open_stills(path);
+            return Clip::open_stills(path, sequence_rate());
         }
         let input = Input::open(path)?;
         let video = input.first_video().ok_or_else(|| format!("{path}: no picture in this file"))?;
@@ -290,23 +355,34 @@ impl Clip {
             }
         };
         let clock = clock(&timeline, meta::timecode_tag(&input, video.index).map(|text| (text, input.timecode_base())));
-        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_assumed: false, clock, turn: turn(&input, &video) })
+        Ok(Clip { name, width: video.width, height: video.height, codec, timeline, lane, first_frame: 0, missing: Vec::new(), rate_from: RateFrom::File, own_rate: None, clock, turn: turn(&input, &video) })
     }
 
     /// a still, or the numbered run of stills it is a frame of, opened on its frame. the file's own picture gives the
-    /// size and codec, and is the first frame shown.
-    fn open_stills(path: &str) -> Result<Clip, String> {
+    /// size and codec, and is the first frame shown. a run runs at its files' own rate when they state one (exr), else
+    /// at `assumed`.
+    fn open_stills(path: &str, assumed: (i64, i64)) -> Result<Clip, String> {
         let image = Arc::new(still::decode(path)?);
         let (width, height, codec, rate) = (image.width, image.height, image.codec, image.rate);
         let alone = path.to_string();
         let run = run_of(Path::new(path)).unwrap_or_else(|| Run { name: file_name(path), frames: 1, at: 0, missing: Vec::new(), path_of: Box::new(move |_| alone.clone()) });
-        // the file's own rate when it states one (exr), else the design's assumption until the user types another
-        let rate_assumed = rate.is_none() && run.frames > 1;
-        let (num, den) = rate.unwrap_or((24, 1));
+        let rate_from = if rate.is_none() && run.frames > 1 { RateFrom::Assumed } else { RateFrom::File };
+        let (num, den) = rate.unwrap_or(assumed);
         let timeline = Timeline::even((den, num), run.frames, 1);
         let lane = SeqLane::open(run.missing.clone(), (run.at, image), run.path_of)?;
         let clock = clock(&timeline, None);
-        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_assumed, clock, turn: Look::default() })
+        Ok(Clip { name: run.name, width, height, codec, timeline, lane: Lane::Stills(lane), first_frame: run.at, missing: run.missing, rate_from, own_rate: rate, clock, turn: Look::default() })
+    }
+
+    /// an image sequence at another rate, which `from` says where it came from: its frames stay as they are, and its
+    /// clock counts at the new rate. a video, or a still alone, keeps its own.
+    pub fn set_rate(&mut self, (num, den): (i64, i64), from: RateFrom) {
+        if !matches!(self.lane, Lane::Stills(_)) || self.timeline.frames() < 2 {
+            return;
+        }
+        self.timeline = Timeline::even((den, num), self.timeline.frames(), 1);
+        self.clock = clock(&self.timeline, None);
+        self.rate_from = from;
     }
 
     /// the picture's size upright, as the file asks it shown
@@ -333,14 +409,14 @@ impl Clip {
         }
     }
 
-    /// the frame rate as text: the file's own ratio, one derived from rounded times, the one assumed, or that it has
-    /// none.
+    /// the frame rate as text: the file's own ratio, one derived from rounded times, one assumed or set for a sequence,
+    /// or that it has none.
     pub fn rate_text(&self) -> String {
-        rate_words(&self.timeline, self.rate_assumed)
+        rate_words(&self.timeline, self.rate_from)
     }
 }
 
-fn rate_words(timeline: &Timeline, assumed: bool) -> String {
+fn rate_words(timeline: &Timeline, from: RateFrom) -> String {
     let text = match (timeline.rate(), timeline.derived()) {
         (Some((n, 1)), _) => format!("{n} fps"),
         (Some((n, d)), _) => format!("{n}/{d} fps"),
@@ -348,7 +424,11 @@ fn rate_words(timeline: &Timeline, assumed: bool) -> String {
         (None, None) if timeline.frames() < 2 => "still".to_string(),
         (None, None) => "variable rate".to_string(),
     };
-    if assumed { format!("{text} assumed") } else { text }
+    match from {
+        RateFrom::File => text,
+        RateFrom::Assumed => format!("{text} assumed"),
+        RateFrom::Set => format!("{text} set"),
+    }
 }
 
 /// what a played folder's list says of one of its clips: its size upright, and its frames and rate, which a file that
@@ -382,8 +462,8 @@ pub fn facts(path: &str) -> Result<Facts, String> {
     if still::is_still(path) {
         let image = still::decode(path)?;
         let frames = run_of(Path::new(path)).map_or(1, |run| run.frames);
-        let (num, den) = image.rate.unwrap_or((24, 1));
-        let rate = rate_words(&Timeline::even((den, num), frames, 1), image.rate.is_none() && frames > 1);
+        let (num, den) = image.rate.unwrap_or_else(sequence_rate);
+        let rate = rate_words(&Timeline::even((den, num), frames, 1), if image.rate.is_none() && frames > 1 { RateFrom::Assumed } else { RateFrom::File });
         return Ok(Facts { width: image.width, height: image.height, frames: Some(frames), rate: Some(rate), fps: (frames > 1).then(|| num as f64 / den as f64) });
     }
     let input = Input::open(path)?;
@@ -391,7 +471,7 @@ pub fn facts(path: &str) -> Result<Facts, String> {
     let timeline = stored(path, &input, &video, &Count::Known).ok().map(|(samples, shown)| frames(&video, samples, shown).1);
     let fps = timeline.as_ref().filter(|t| t.frames() > 1).map(Timeline::fps);
     let (width, height) = turn(&input, &video).shown((video.width, video.height));
-    Ok(Facts { width, height, frames: timeline.as_ref().map(Timeline::frames), rate: timeline.as_ref().map(|t| rate_words(t, false)), fps })
+    Ok(Facts { width, height, frames: timeline.as_ref().map(Timeline::frames), rate: timeline.as_ref().map(|t| rate_words(t, RateFrom::File)), fps })
 }
 
 #[cfg(test)]
@@ -695,13 +775,66 @@ mod tests {
         for file in &files {
             std::fs::copy(media("still_float.exr"), file).unwrap();
         }
-        let c = Clip::open(files[1].to_str().unwrap()).expect("open");
+        let mut c = Clip::open(files[1].to_str().unwrap()).expect("open");
         assert_eq!((c.name.as_str(), c.timeline.frames(), c.first_frame, c.rate_text().as_str()), ("shot.[0001-0002].exr", 2, 1, "30000/1001 fps"));
+        // whatever the rate for sequences is, and set to another and back to its own
+        assert_eq!(Clip::open_stills(files[0].to_str().unwrap(), (25, 1)).expect("open").rate_text(), "30000/1001 fps");
+        assert_eq!((c.rate_from, c.own_rate), (RateFrom::File, Some((30000, 1001))));
+        c.set_rate((25, 1), RateFrom::Set);
+        assert_eq!(c.rate_text(), "25 fps set");
+        c.set_rate((30000, 1001), RateFrom::File);
+        assert_eq!(c.rate_text(), "30000/1001 fps");
         drop(c);
         for file in &files {
             std::fs::remove_file(file).unwrap();
         }
         std::fs::remove_dir(&dir).unwrap();
+    }
+
+    /// a sequence plays at another rate when one is chosen for it (the owner's ask, 2026-11-26): its frames stay, its
+    /// clock counts at the new rate, and its rate says where it came from: the file's own says nothing more, the
+    /// setting's is assumed, one chosen is set. a video and a still alone keep their own
+    #[test]
+    fn a_sequence_takes_another_rate_and_says_where_it_came_from() {
+        let mut c = Clip::open_stills(&media("seq.0001.png"), (24, 1)).expect("open");
+        assert_eq!((c.rate_from, c.own_rate, c.rate_text().as_str()), (RateFrom::Assumed, None, "24 fps assumed"));
+        // opened while the rate for sequences is another
+        assert_eq!(Clip::open_stills(&media("seq.0002.png"), (25, 1)).expect("open").rate_text(), "25 fps assumed");
+        c.set_rate((30000, 1001), RateFrom::Set);
+        assert_eq!((c.timeline.frames(), c.missing.as_slice(), c.rate_text().as_str()), (5, [2].as_slice(), "30000/1001 fps set"));
+        assert_eq!(c.clock, Some(Timecode::counted(30)));
+        c.set_rate((25, 1), RateFrom::Set);
+        assert_eq!((c.timeline.rate(), c.timeline.fps(), c.rate_text().as_str()), (Some((25, 1)), 25.0, "25 fps set"));
+        assert_eq!(c.clock.map(|clock| clock.at(4)), Some("00:00:00:04".to_string()));
+        let mut video = Clip::open(&media("hapq_64.mov")).expect("open");
+        video.set_rate((25, 1), RateFrom::Set);
+        assert_eq!(video.rate_text(), "60000/1001 fps");
+        let mut still = Clip::open(&media("still_8bit.png")).expect("open");
+        still.set_rate((25, 1), RateFrom::Set);
+        assert_eq!(still.rate_text(), "still");
+    }
+
+    /// a rate typed for a sequence: a number, decimals allowed, or a ratio, from 1 to 240 frames a second. a decimal
+    /// that rounds a rate of the /1001 kind is that exact ratio. anything else is refused, in words
+    #[test]
+    fn a_typed_rate_is_a_number_or_a_ratio() {
+        let typed = [("24", (24, 1)), ("12", (12, 1)), ("15", (15, 1)), ("120", (120, 1)), ("1", (1, 1)), ("240", (240, 1)), (" 25 ", (25, 1)), ("25.000", (25, 1)), ("12.5", (25, 2)), ("29.9", (299, 10))];
+        let ratios = [("30000/1001", (30000, 1001)), ("24000/1001", (24000, 1001)), ("60/2", (30, 1)), ("2997/100", (2997, 100))];
+        let ntsc = [("23.976", (24000, 1001)), ("23.98", (24000, 1001)), ("29.97", (30000, 1001)), ("59.94", (60000, 1001)), ("47.952", (48000, 1001)), ("119.88", (120000, 1001))];
+        for (text, rate) in typed.into_iter().chain(ratios).chain(ntsc) {
+            assert_eq!(typed_rate(text), Ok(rate), "{text}");
+        }
+        for text in ["", "fast", ".", "1.2.3", "24/", "/1001", "30/0", "-24", "99999999999999999999"] {
+            assert!(typed_rate(text).is_err_and(|why| why.contains("ratio")), "{text}");
+        }
+        for text in ["0", "0.5", "0.999", "241", "1000", "480/1"] {
+            assert!(typed_rate(text).is_err_and(|why| why.contains("1 to 240")), "{text}");
+        }
+        // the rates offered are what they are called
+        for (name, rate) in RATES {
+            assert_eq!((typed_rate(name), rate_name(rate)), (Ok(rate), name.to_string()));
+        }
+        assert_eq!([(25, 2), (48000, 1001), (2997, 100), (120, 1)].map(rate_name), ["12.5", "47.952", "29.97", "120"].map(String::from));
     }
 
     #[test]
