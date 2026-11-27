@@ -1680,205 +1680,167 @@ impl Ui {
         // a press on the bar is not a press on the picture under it
         ui.interact(bar, ui.scope_id().with("bar"), Sense::click_and_drag());
         let middle = row_middle(bar, timed(model));
-        let narrow = bar.width() < NARROW;
-
-        // from the left: first frame, previous frame, play, next frame, the readout
-        let mut x = bar.left() + PAD;
-        // the next item in the row, `lead` further along than the usual gap
-        let mut place = |lead: f32, w: f32, h: f32| {
-            let r = Rect::from_min_size(Pos2::new(x + lead, middle - h / 2.0), Vec2::new(w, h));
-            x += lead + w + GAP;
-            r
-        };
-        // the pin, first and a little apart: while it is on the controls stay up, wherever the pointer goes or rests
-        // (the owner's word, 2026-11-24). it has no key
-        let pin = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "pin", Icon::Pin, if self.pinned { Lit::Active } else { Lit::No });
-        if pin.clicked() {
-            self.pinned = !self.pinned;
-        }
-        self.hint(&pin, Some((if self.pinned { "let the controls go" } else { "keep the controls up" }.to_string(), String::new())));
-        // a still has no time: no steps, no play, no readout, no loop, speed or sound, only what looks at the
-        // picture (the owner's word, 2026-11-26). one a played folder holds for a time has play, its seconds and the
-        // loop back, and still no frames to step through
         let (framed, timed) = (framed(model), timed(model));
-        if framed {
-            let first = icon_button(ui, place(8.0, ICON_BUTTON.x, ICON_BUTTON.y), "first", Icon::First, Lit::No);
-            if first.clicked() {
-                actions.push(Action::Key(Key::F, keys::SHIFT));
-            }
-            self.hint(&first, keys::named(Key::F, keys::SHIFT));
-            let prev = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "prev", Icon::Prev, Lit::No);
-            if prev.clicked() {
-                actions.push(Action::Step(-1));
-            }
-            self.hint(&prev, keys::named(Key::F, keys::NONE));
+        // the volume slider is out to the mute button's left while the pointer is on either, or holds the slider
+        let over = ui.ctx().pointer_latest_pos().is_some_and(|p| self.volume_rect.contains(p)) || ui.ctx().is_being_dragged(ui.scope_id().with("volume"));
+        let out = ui.ctx().animate_bool_with_time(ui.scope_id().with("volume-out"), over, 0.12);
+        let (slots, readout_at, right) = bar_row(&painter, bar, model, out);
+        // a menu whose button has given way, or is not for this clip, goes with it
+        let on_row = |menu: Menu| slots.iter().any(|(slot, _)| matches!(slot, Slot::Text(on, _) if *on == menu));
+        if self.menu.is_some_and(|menu| matches!(menu, Menu::Zoom | Menu::Speed | Menu::Rate | Menu::Loop | Menu::Trim) && !on_row(menu)) {
+            self.menu = None;
         }
-        if timed {
-            let play = icon_button(ui, place(if framed { 0.0 } else { 8.0 }, ICON_BUTTON.x, ICON_BUTTON.y), "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
-            if play.clicked() {
-                actions.push(Action::TogglePlay);
-            }
-            self.hint(&play, keys::named(Key::Space, keys::NONE));
-        }
-        if framed {
-            let next = icon_button(ui, place(0.0, ICON_BUTTON.x, ICON_BUTTON.y), "next", Icon::Next, Lit::No);
-            if next.clicked() {
-                actions.push(Action::Step(1));
-            }
-            self.hint(&next, keys::named(Key::G, keys::NONE));
-        }
-        // the readout comes after them, in what the buttons from the right leave it
-        let readout_at = x + 8.0;
-
-        // from the right, in the design's order: fullscreen, sound, screenshots, metadata, the view, and the three
-        // that say what they are set to: zoom, speed, loop
-        let mut right = bar.right() - PAD;
-        let mut place = |w: f32, h: f32| {
-            right -= w;
-            let r = Rect::from_min_size(Pos2::new(right, middle - h / 2.0), Vec2::new(w, h));
-            right -= GAP;
-            r
-        };
-        let full = icon_button(ui, place(ICON_BUTTON.x, ICON_BUTTON.y), "full", Icon::Full, Lit::No);
-        if full.clicked() {
-            actions.push(Action::Fullscreen);
-        }
-        self.hint(&full, keys::named(Key::P, keys::NONE));
-        // sound: the button mutes, and shows when nothing is to be heard. its slider comes out to its left while
-        // the pointer is on either, or holds the slider. plain, like everything on the bar
-        if framed {
-            let button = place(ICON_BUTTON.x, ICON_BUTTON.y);
-            let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
-            let mute = icon_button(ui, button, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No);
-            if mute.clicked() {
-                actions.push(Action::Mute);
-            }
-            self.hint(&mute, keys::line(Key::M, keys::NONE));
-            let slider = ui.scope_id().with("volume");
-            let over = ui.ctx().pointer_latest_pos().is_some_and(|p| self.volume_rect.contains(p)) || ui.ctx().is_being_dragged(slider);
-            let out = ui.ctx().animate_bool_with_time(ui.scope_id().with("volume-out"), over, 0.12);
-            self.volume_rect = button;
-            if out > 0.0 {
-                let room = place(68.0 * out, 16.0);
-                if out >= 1.0 {
-                    if let Some(to) = widgets::slider(ui, "volume", room.shrink2(Vec2::new(4.0, 0.0)), if model.muted { 0.0 } else { model.volume }, FG) {
-                        actions.push(Action::Volume(to));
+        for (slot, rect) in slots {
+            match slot {
+                // the pin, first and a little apart: while it is on the controls stay up, wherever the pointer goes
+                // or rests (the owner's word, 2026-11-24). it has no key
+                Slot::Pin => {
+                    let pin = icon_button(ui, rect, "pin", Icon::Pin, if self.pinned { Lit::Active } else { Lit::No });
+                    if pin.clicked() {
+                        self.pinned = !self.pinned;
+                    }
+                    self.hint(&pin, Some((if self.pinned { "let the controls go" } else { "keep the controls up" }.to_string(), String::new())));
+                }
+                Slot::First => {
+                    let first = icon_button(ui, rect, "first", Icon::First, Lit::No);
+                    if first.clicked() {
+                        actions.push(Action::Key(Key::F, keys::SHIFT));
+                    }
+                    self.hint(&first, keys::named(Key::F, keys::SHIFT));
+                }
+                Slot::Prev => {
+                    let prev = icon_button(ui, rect, "prev", Icon::Prev, Lit::No);
+                    if prev.clicked() {
+                        actions.push(Action::Step(-1));
+                    }
+                    self.hint(&prev, keys::named(Key::F, keys::NONE));
+                }
+                Slot::Play => {
+                    let play = icon_button(ui, rect, "play", if model.playing { Icon::Pause } else { Icon::Play }, Lit::No);
+                    if play.clicked() {
+                        actions.push(Action::TogglePlay);
+                    }
+                    self.hint(&play, keys::named(Key::Space, keys::NONE));
+                }
+                Slot::Next => {
+                    let next = icon_button(ui, rect, "next", Icon::Next, Lit::No);
+                    if next.clicked() {
+                        actions.push(Action::Step(1));
+                    }
+                    self.hint(&next, keys::named(Key::G, keys::NONE));
+                }
+                Slot::Full => {
+                    let full = icon_button(ui, rect, "full", Icon::Full, Lit::No);
+                    if full.clicked() {
+                        actions.push(Action::Fullscreen);
+                    }
+                    self.hint(&full, keys::named(Key::P, keys::NONE));
+                }
+                // sound: the button mutes, and shows when nothing is to be heard. plain, like everything on the bar
+                Slot::Mute => {
+                    let silent = model.muted || model.volume <= 0.0 || !carries_sound(model);
+                    let mute = icon_button(ui, rect, "mute", if silent { Icon::Mute } else { Icon::Sound }, Lit::No);
+                    if mute.clicked() {
+                        actions.push(Action::Mute);
+                    }
+                    self.hint(&mute, keys::line(Key::M, keys::NONE));
+                    self.volume_rect = rect;
+                }
+                Slot::Volume => {
+                    if out >= 1.0 {
+                        if let Some(to) = widgets::slider(ui, "volume", rect.shrink2(Vec2::new(4.0, 0.0)), if model.muted { 0.0 } else { model.volume }, FG) {
+                            actions.push(Action::Volume(to));
+                        }
+                    }
+                    self.volume_rect = self.volume_rect.union(rect);
+                }
+                Slot::Shot => {
+                    // lit while markup mode is on, which it opens to
+                    let lit = if self.markup.on {
+                        Lit::Active
+                    } else if self.menu == Some(Menu::Shot) {
+                        Lit::Open
+                    } else {
+                        Lit::No
+                    };
+                    let shot = icon_button(ui, rect, "shot", Icon::Shot, lit);
+                    if shot.clicked() {
+                        self.toggle_menu(Menu::Shot, rect);
+                    }
+                    self.hint(&shot, keys::line(Key::S, keys::NONE));
+                }
+                // metadata: a click pins the panel; resting the pointer on the button brings it up for as long as the
+                // pointer stays on the button or the panel. a fault in the file puts an amber dot on the button
+                Slot::Info => {
+                    let lit = if self.facts_pinned {
+                        Lit::Active
+                    } else if self.facts_up {
+                        Lit::Open
+                    } else {
+                        Lit::No
+                    };
+                    let info = icon_button(ui, rect, "info", Icon::Info, lit);
+                    if matches!(&model.facts, Facts::Ready(meta) if meta.faults() > 0) {
+                        painter.circle_filled(Pos2::new(rect.right() - 7.5, rect.top() + 7.5), 2.5, AMBER);
+                    }
+                    if info.clicked() {
+                        self.toggle_facts();
+                    }
+                    self.hint(&info, keys::named(Key::I, keys::NONE));
+                    self.facts_button = rect;
+                    let on = info.hovered() || (self.facts_up && ui.ctx().pointer_latest_pos().is_some_and(|p| self.facts_rect.contains(p)));
+                    let (since, wait) = if on {
+                        self.facts_left = None;
+                        (*self.facts_since.get_or_insert(now), FACTS_IN)
+                    } else {
+                        self.facts_since = None;
+                        (*self.facts_left.get_or_insert(now), FACTS_OUT)
+                    };
+                    if now - since >= wait {
+                        self.facts_up = on;
+                    } else if on != self.facts_up {
+                        ui.ctx().request_repaint_after(Duration::from_secs_f64(wait - (now - since)));
                     }
                 }
-                self.volume_rect = self.volume_rect.union(room);
+                Slot::View => {
+                    let turned = model.look != Look::default() || model.guides.grid || model.guides.center;
+                    let lit = if self.menu == Some(Menu::View) {
+                        Lit::Open
+                    } else if turned {
+                        Lit::Active
+                    } else {
+                        Lit::No
+                    };
+                    let view = icon_button(ui, rect, "view", Icon::Guides, lit);
+                    if view.clicked() {
+                        self.toggle_menu(Menu::View, rect);
+                    }
+                    self.hint(&view, keys::line(Key::H, keys::NONE));
+                }
+                // the trim's is lit as a button whose setting is on, never in the accent, which the bar never carries
+                // (the owner's word, 2026-11-26). its menu saves the trim
+                Slot::Text(Menu::Trim, galley) => {
+                    let button = text_button(ui, rect, "trim", None, galley, Lit::Active);
+                    if button.clicked() {
+                        self.toggle_menu(Menu::Trim, rect);
+                        self.trim_confirm = false;
+                    }
+                    self.hint(&button, Some(("save the trim".to_string(), String::new())));
+                }
+                Slot::Text(menu, galley) => {
+                    let (name, icon, tip) = match menu {
+                        Menu::Zoom => ("zoom", None, keys::line(Key::Digit0, keys::NONE)),
+                        Menu::Speed => ("speed", None, keys::line(Key::Minus, keys::SHIFT)),
+                        Menu::Rate => ("rate", None, Some(("this sequence's frame rate".to_string(), String::new()))),
+                        _ => ("loop", Some(Icon::Loop), keys::named(Key::R, keys::NONE)),
+                    };
+                    let button = text_button(ui, rect, name, icon, galley, if self.menu == Some(menu) { Lit::Open } else { Lit::No });
+                    if button.clicked() {
+                        self.toggle_menu(menu, rect);
+                    }
+                    self.hint(&button, tip);
+                }
             }
-        }
-        let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
-        // lit while markup mode is on, which it opens to
-        let lit = if self.markup.on {
-            Lit::Active
-        } else if self.menu == Some(Menu::Shot) {
-            Lit::Open
-        } else {
-            Lit::No
-        };
-        let shot = icon_button(ui, rect, "shot", Icon::Shot, lit);
-        if shot.clicked() {
-            self.toggle_menu(Menu::Shot, rect);
-        }
-        self.hint(&shot, keys::line(Key::S, keys::NONE));
-        // metadata: a click pins the panel; resting the pointer on the button brings it up for as long as the
-        // pointer stays on the button or the panel. a fault in the file puts an amber dot on the button
-        let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
-        let lit = if self.facts_pinned {
-            Lit::Active
-        } else if self.facts_up {
-            Lit::Open
-        } else {
-            Lit::No
-        };
-        let info = icon_button(ui, rect, "info", Icon::Info, lit);
-        if matches!(&model.facts, Facts::Ready(meta) if meta.faults() > 0) {
-            painter.circle_filled(Pos2::new(rect.right() - 7.5, rect.top() + 7.5), 2.5, AMBER);
-        }
-        if info.clicked() {
-            self.toggle_facts();
-        }
-        self.hint(&info, keys::named(Key::I, keys::NONE));
-        self.facts_button = rect;
-        let on = info.hovered() || (self.facts_up && ui.ctx().pointer_latest_pos().is_some_and(|p| self.facts_rect.contains(p)));
-        let (since, wait) = if on {
-            self.facts_left = None;
-            (*self.facts_since.get_or_insert(now), FACTS_IN)
-        } else {
-            self.facts_since = None;
-            (*self.facts_left.get_or_insert(now), FACTS_OUT)
-        };
-        if now - since >= wait {
-            self.facts_up = on;
-        } else if on != self.facts_up {
-            ui.ctx().request_repaint_after(Duration::from_secs_f64(wait - (now - since)));
-        }
-        let turned = model.look != Look::default() || model.guides.grid || model.guides.center;
-        let rect = place(ICON_BUTTON.x, ICON_BUTTON.y);
-        let lit = if self.menu == Some(Menu::View) {
-            Lit::Open
-        } else if turned {
-            Lit::Active
-        } else {
-            Lit::No
-        };
-        let view = icon_button(ui, rect, "view", Icon::Guides, lit);
-        if view.clicked() {
-            self.toggle_menu(Menu::View, rect);
-        }
-        self.hint(&view, keys::line(Key::H, keys::NONE));
-        let speed = format!("{}×", (model.speed * 100.0).round() / 100.0);
-        let looping = match (model.seam, model.looping) {
-            (Some(_), _) if narrow => "analysis".to_string(),
-            (Some(_), _) => format!("analysis {:.1}s", model.seam_seconds),
-            (None, Loop::Off) => (if narrow { "off" } else { "loop off" }).to_string(),
-            (None, Loop::One) => (if narrow { "one" } else { "loop one" }).to_string(),
-            (None, Loop::All) => (if narrow { "all" } else { "loop all" }).to_string(),
-        };
-        let plain = |words: String| vec![(words, FG)];
-        for (menu, name, icon, label, tip) in [
-            (Menu::Zoom, "zoom", None, plain(model.zoom_label.clone()), keys::line(Key::Digit0, keys::NONE)),
-            (Menu::Speed, "speed", None, plain(speed), keys::line(Key::Minus, keys::SHIFT)),
-            (Menu::Rate, "rate", None, rate_button(model, narrow), Some(("this sequence's frame rate".to_string(), String::new()))),
-            (Menu::Loop, "loop", Some(Icon::Loop), plain(looping), keys::named(Key::R, keys::NONE)),
-        ]
-        .into_iter()
-        // a still has the zoom alone, and a held one the loop too. the rate is an image sequence's alone
-        .filter(|(menu, ..)| match menu {
-            Menu::Speed => framed,
-            Menu::Rate => model.sequence,
-            Menu::Loop => timed,
-            _ => true,
-        }) {
-            let mut job = LayoutJob::default();
-            for (words, color) in label {
-                job.append(&words, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color, ..Default::default() });
-            }
-            let galley = painter.layout_job(job);
-            let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
-            let button = text_button(ui, rect, name, icon, galley, if self.menu == Some(menu) { Lit::Open } else { Lit::No });
-            if button.clicked() {
-                self.toggle_menu(menu, rect);
-            }
-            self.hint(&button, tip);
-        }
-        if !model.sequence && self.menu == Some(Menu::Rate) {
-            self.menu = None;
-        }
-        // the trim's, while a clip of frames has one set, left of the loop: lit as a button whose setting is on, never
-        // in the accent, which the bar never carries (the owner's word, 2026-11-26). its menu saves the trim
-        if framed && trimmed(model).is_some() {
-            let galley = painter.layout_no_wrap("trim".to_string(), font(MONO_MEDIUM, 11.5), FG);
-            let rect = place(galley.size().x + 2.0 * PAD, TEXT_BUTTON);
-            let button = text_button(ui, rect, "trim", None, galley, Lit::Active);
-            if button.clicked() {
-                self.toggle_menu(Menu::Trim, rect);
-                self.trim_confirm = false;
-            }
-            self.hint(&button, Some(("save the trim".to_string(), String::new())));
-        } else if self.menu == Some(Menu::Trim) {
-            self.menu = None;
         }
         // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two. a
         // held still's is in seconds, with nothing to switch to
@@ -2177,6 +2139,109 @@ fn message(ui: &egui::Ui, area: Rect, title: &str, why: &str) {
 /// its top to the timebar's track at rest.
 fn row_middle(bar: Rect, timed: bool) -> f32 {
     (bar.top() + 1.0 + bar.bottom() - if timed { TRACK_THIN } else { 0.0 }) / 2.0
+}
+
+/// what stands on the bar's row
+enum Slot {
+    Pin,
+    First,
+    Prev,
+    Play,
+    Next,
+    Full,
+    Mute,
+    /// the volume slider, out of the mute button
+    Volume,
+    Shot,
+    Info,
+    View,
+    /// a button that says what it is set to (zoom, speed, an image sequence's rate, loop), or the trim's
+    Text(Menu, Arc<egui::Galley>),
+}
+
+/// the bar's row: where each of its buttons stands, where the readout may start, and where the buttons from the right
+/// leave off. from the left, the pin, the steps and play; from the right, fullscreen, sound with its slider out `out`
+/// (0 to 1), screenshot, metadata and the view, then the buttons that say what they are set to and the trim's. nothing
+/// runs into anything (the lead's rule, 2026-11-26): as far as the room asks, the readout goes, the loop shows its icon
+/// alone, the rate its number, the speed goes while it is 1× and the zoom shows its number; then the speed, the zoom
+/// and the loop go, in that order. the pin, the steps, the icons, the rate and the trim's button always stay.
+fn bar_row(painter: &egui::Painter, bar: Rect, model: &Model, out: f32) -> (Vec<(Slot, Rect)>, f32, f32) {
+    let middle = row_middle(bar, timed(model));
+    let narrow = bar.width() < NARROW;
+    let (framed, timed) = (framed(model), timed(model));
+    let at = |x: f32, (w, h): (f32, f32)| Rect::from_min_size(Pos2::new(x, middle - h / 2.0), Vec2::new(w, h));
+    let icon = (ICON_BUTTON.x, ICON_BUTTON.y);
+    let mut slots = Vec::new();
+    // from the left, each `lead` further along than the usual gap. a still has no time: no steps, no play, no readout,
+    // no loop, speed or sound, only what looks at the picture (the owner's word, 2026-11-26). one a played folder holds
+    // for a time has play, its seconds and the loop back, and still no frames to step through
+    let mut x = bar.left() + PAD;
+    for (slot, lead, on) in [(Slot::Pin, 0.0, true), (Slot::First, 8.0, framed), (Slot::Prev, 0.0, framed), (Slot::Play, if framed { 0.0 } else { 8.0 }, timed), (Slot::Next, 0.0, framed)] {
+        if on {
+            slots.push((slot, at(x + lead, icon)));
+            x += lead + ICON_BUTTON.x + GAP;
+        }
+    }
+    // the readout comes after them, in what the buttons from the right leave it; nothing from the right comes nearer
+    let readout_at = x + 8.0;
+    let mut fixed = vec![(Slot::Full, icon)];
+    if framed {
+        fixed.push((Slot::Mute, icon));
+        if out > 0.0 {
+            fixed.push((Slot::Volume, (68.0 * out, 16.0)));
+        }
+    }
+    fixed.extend([(Slot::Shot, icon), (Slot::Info, icon), (Slot::View, icon)]);
+    let text = |words: Vec<(String, Color32)>| {
+        let mut job = LayoutJob::default();
+        for (words, color) in words {
+            job.append(&words, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.5), color, ..Default::default() });
+        }
+        painter.layout_job(job)
+    };
+    let plain = |words: &str| vec![(words.to_string(), FG)];
+    // the loop's has its icon before its words, when it has words
+    let wide = |menu: Menu, galley: &egui::Galley| galley.size().x + 2.0 * PAD + if menu != Menu::Loop { 0.0 } else if galley.size().x > 0.0 { 16.0 + 6.0 } else { 16.0 };
+    let speed = format!("{}×", (model.speed * 100.0).round() / 100.0);
+    let looping = match (model.seam, model.looping) {
+        (Some(_), _) if narrow => "analysis".to_string(),
+        (Some(_), _) => format!("analysis {:.1}s", model.seam_seconds),
+        (None, Loop::Off) => (if narrow { "off" } else { "loop off" }).to_string(),
+        (None, Loop::One) => (if narrow { "one" } else { "loop one" }).to_string(),
+        (None, Loop::All) => (if narrow { "all" } else { "loop all" }).to_string(),
+    };
+    // what the buttons that say what they are set to say at each step of giving way, without those that have gone.
+    // a still has the zoom alone, and a held one the loop too; the rate is an image sequence's alone
+    let step = |step: usize| {
+        let mut texts = Vec::new();
+        if step < 6 {
+            texts.push((Menu::Zoom, text(plain(if step >= 4 { model.zoom_label.trim_start_matches("fit ") } else { model.zoom_label.as_str() }))));
+        }
+        if framed && step < 5 && !(step >= 3 && model.speed == 1.0) {
+            texts.push((Menu::Speed, text(plain(&speed))));
+        }
+        if model.sequence {
+            texts.push((Menu::Rate, text(rate_button(model, narrow || step >= 2))));
+        }
+        if timed && step < 7 {
+            texts.push((Menu::Loop, text(if step >= 1 { Vec::new() } else { plain(&looping) })));
+        }
+        if framed && trimmed(model).is_some() {
+            texts.push((Menu::Trim, text(plain("trim"))));
+        }
+        texts
+    };
+    let fixed_wide: f32 = fixed.iter().map(|(_, (w, _))| w + GAP).sum();
+    let fits = |texts: &Vec<(Menu, Arc<egui::Galley>)>| bar.right() - PAD - fixed_wide - texts.iter().map(|(menu, galley)| wide(*menu, galley) + GAP).sum::<f32>() + GAP >= readout_at;
+    let texts = (0..8).map(&step).find(fits).unwrap_or_else(|| step(7));
+    let mut right = bar.right() - PAD;
+    let texts = texts.into_iter().map(|(menu, galley)| ((wide(menu, &galley), TEXT_BUTTON), Slot::Text(menu, galley)));
+    for ((w, h), slot) in fixed.into_iter().map(|(slot, size)| (size, slot)).chain(texts) {
+        right -= w;
+        slots.push((slot, at(right, (w, h))));
+        right -= GAP;
+    }
+    (slots, readout_at, right)
 }
 
 /// a clip of more than one frame has frames to step through; a still has one
@@ -3012,6 +3077,43 @@ pub(super) mod tests {
         assert_eq!(words(Model { rate: Some((24000, 1001)), rate_from: RateFrom::Set, ..sequence() }, false), said("23.976 fps", Some("set")));
         assert_eq!(words(Model { rate: Some((30000, 1001)), rate_from: RateFrom::File, own_rate: Some((30000, 1001)), ..sequence() }, false), said("29.97 fps", None));
         assert_eq!(words(sequence(), true), said("24 fps", None));
+    }
+
+    /// the bar never runs into itself (the lead's rule, 2026-11-26). with everything on (a sequence at 23.976 set, a
+    /// trim, loop analysis, 2×, sound with its slider out or in), at the smallest window, 640, and narrower, no two of
+    /// its buttons meet, each is on the bar, and none comes nearer the steps than where the readout starts. the pin,
+    /// the steps, the icons, the rate and the trim's button stay. at 640 the loop gives way to its icon and no more; in
+    /// a wide window nothing gives way
+    #[test]
+    fn the_bar_never_runs_into_itself() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let model = Model { rate: Some((24000, 1001)), rate_from: RateFrom::Set, trim: (Some(1), Some(3)), seam: Some((0, 4)), speed: 2.0, sound: true, muted: false, zoom_label: "fit 2250%".to_string(), ..sequence() };
+            let row = |width: f32, slider: f32| {
+                let bar = Rect::from_min_max(Pos2::new(0.0, 360.0 - bar_height(&model)), Pos2::new(width, 360.0));
+                (bar, bar_row(ui.painter(), bar, &model, slider))
+            };
+            let said = |slots: &[(Slot, Rect)]| slots.iter().filter_map(|(slot, _)| if let Slot::Text(_, galley) = slot { Some(galley.text().to_string()) } else { None }).collect::<Vec<_>>();
+            for width in [640.0, 560.0] {
+                for slider in [0.0, 1.0] {
+                    let (bar, (slots, readout_at, right)) = row(width, slider);
+                    for (i, (_, a)) in slots.iter().enumerate() {
+                        assert!(bar.contains_rect(*a), "at {width}, slider {slider}: {a:?} is off the bar");
+                        for (_, b) in &slots[i + 1..] {
+                            assert!(!a.intersects(*b), "at {width}, slider {slider}: {a:?} meets {b:?}");
+                        }
+                    }
+                    assert!(right + GAP >= readout_at, "at {width}, slider {slider}: the buttons from the right reach {}, the steps end at {readout_at}", right + GAP);
+                    let has = |menu: Menu| slots.iter().any(|(slot, _)| matches!(slot, Slot::Text(on, _) if *on == menu));
+                    assert!(has(Menu::Rate) && has(Menu::Trim), "at {width}, slider {slider}: {:?}", said(&slots));
+                    assert_eq!(slots.iter().filter(|(slot, _)| !matches!(slot, Slot::Text(..))).count(), 10 + (slider > 0.0) as usize, "at {width}, slider {slider}");
+                }
+            }
+            assert_eq!(said(&row(640.0, 0.0).1 .0), ["fit 2250%", "2×", "23.976 fps", "", "trim"]);
+            assert_eq!(said(&row(1600.0, 1.0).1 .0), ["fit 2250%", "2×", "23.976 fps set", "analysis 2.0s", "trim"]);
+        });
+        out.textures_delta.clear();
     }
 
     /// the rate's menu: the usual rates, the current one lit, and first, for files that state their own, that one; a

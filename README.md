@@ -38,7 +38,7 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ### the window
 
 - **the strip** on top holds the tabs, help and settings. drag it to move the window.
-- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar, and the trim's button while a trim is set. an image sequence adds its frame rate, beside the speed. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen; a still that a played folder holds for a time adds play, the loop, and a timebar and readout in seconds.
+- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar, and the trim's button while a trim is set. an image sequence adds its frame rate, beside the speed. in a narrow window nothing on it overlaps: as room runs out the readout goes, the loop shows its icon alone, the rate its number, the speed hides while it is 1× (shift+- and shift+= still set it), and the zoom shows its number. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen; a still that a played folder holds for a time adds play, the loop, and a timebar and readout in seconds.
 - **chips** stay on the picture while it differs from the file.
 - the window takes the clip's shape, up to 90% of the screen.
 - **one window:** a file opened while eyepiece runs, or dropped on it, gets a tab of its own.
