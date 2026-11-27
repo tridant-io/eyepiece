@@ -187,7 +187,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 ![a saved screenshot with its marks and caption](docs/images/saved-frame.png)
 *a saved screenshot with its marks and caption*
 
-- **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
+- **S**, **full frame**, saves the file's frame at its own size as a png, 16-bit when the file is deeper, whatever the zoom. **shift+S**, **as shown**, saves the window's view: its size, zoom, pan, mirror and channel. **ctrl+C** copies the full frame.
 - the screenshot menu can add a caption, the guides and the markup.
 - screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one. the note that says where has **reveal in explorer** (finder on macOS), and stays up while the pointer is on it.
 - **markup:** **E** pauses and shows the tools: select, rectangle, circle, pen, text, and ten inks: red, orange, yellow, green, blue, indigo, violet, white, black and gray. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops.
@@ -292,8 +292,8 @@ on a Mac, command does what control does.
 | | I | pin metadata |
 | | D · C | grid · center lines |
 | | H · V · Q | mirror · flip · rotate |
-| **screenshot** | S | screenshot of the frame |
-| | shift+S | screenshot of the view |
+| **screenshot** | S | screenshot, full frame: the file's frame at its own size |
+| | shift+S | screenshot, as shown: the window's view |
 | | ctrl+C | copy frame |
 | | E | markup mode |
 | | shift+[ · shift+] | in markup mode with a group selected: its in / out, at the frame on screen |

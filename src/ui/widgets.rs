@@ -227,16 +227,18 @@ pub fn line(ui: &mut egui::Ui, text: &str, color: Color32) {
 /// a slider in `rect`, standing at `at` (0 to 1), in `color`: the accent in a menu, plain on the bar. returns where
 /// it was moved to.
 pub fn slider(ui: &mut egui::Ui, name: &str, rect: Rect, at: f32, color: Color32) -> Option<f32> {
-    const KNOB: f32 = 6.0;
+    // square, as the timebar's head and the trim's markers are (the owner's word, 2026-11-27): a track with square
+    // ends and an upright knob 4 across, 14 high
+    const KNOB: Vec2 = Vec2::new(4.0, 14.0);
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click_and_drag());
-    let (low, high) = (rect.left() + KNOB, rect.right() - KNOB);
+    let (low, high) = (rect.left() + KNOB.x / 2.0, rect.right() - KNOB.x / 2.0);
     let slid = response.interact_pointer_pos().filter(|_| response.is_pointer_button_down_on() || response.clicked()).map(|p| ((p.x - low) / (high - low)).clamp(0.0, 1.0));
     let knob = Pos2::new(low + (high - low) * slid.unwrap_or(at).clamp(0.0, 1.0), rect.center().y);
     let track = Rect::from_min_max(Pos2::new(rect.left(), knob.y - 2.0), Pos2::new(rect.right(), knob.y + 2.0));
     let painter = ui.painter();
-    painter.rect_filled(track, 2.0, TRACK);
-    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(knob.x, track.bottom())), 2.0, color);
-    painter.circle_filled(knob, KNOB, color);
+    painter.rect_filled(track, 0.0, TRACK);
+    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(knob.x, track.bottom())), 0.0, color);
+    painter.rect_filled(Rect::from_center_size(knob, KNOB), 0.0, color);
     slid
 }
 

@@ -170,8 +170,9 @@ const SECTIONS: &[(&str, &[Command])] = &[
     (
         "screenshot",
         &[
-            both("screenshot", "screenshot", "S", Key::S, NONE),
-            both("screenshot", "screenshot of the view", "shift S", Key::S, SHIFT),
+            // which is which, in their names (the owner's word, 2026-11-27): the file's frame whole, or the window's view
+            both("screenshot: full frame · as shown", "screenshot, full frame", "S", Key::S, NONE),
+            both("screenshot: full frame · as shown", "screenshot, as shown", "shift S", Key::S, SHIFT),
             menu_only("copy frame", "ctrl C", Key::C, CTRL),
             both("markup", "markup mode", "E", Key::E, NONE),
             menu_only("undo a change to marks", "ctrl Z", Key::Z, CTRL),

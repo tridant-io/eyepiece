@@ -1638,8 +1638,18 @@ impl Ui {
         let words = version.size().x.max(system.size().x).max(link.size().x);
         let size = Vec2::new(10.0 + 40.0 + 12.0 + words + 14.0, 10.0 + 11.5 + 8.0 + 12.0 + 8.0 + 12.0 + 10.0);
         let card = Rect::from_min_size(Pos2::new(mark.right() - size.x, mark.top() + STRIP + 6.0), size);
-        // a press on the card is not a press on what is under it
-        ui.interact(card, ui.scope_id().with("card"), Sense::click());
+        // over everything else, a menu or a panel too (the owner's word, 2026-11-27): a layer of its own, on top
+        egui::Area::new(egui::Id::unique("mark-card")).order(egui::Order::Tooltip).fixed_pos(card.min).show(ui.ctx(), |ui| {
+            // a press on the card is not a press on what is under it
+            ui.allocate_exact_size(size, Sense::click());
+            self.card_drawn(ui, card, (version, system, link), (t, seed), actions);
+        });
+        card
+    }
+
+    /// the card's face, in its own layer: the star, moving or still, and its three lines.
+    fn card_drawn(&mut self, ui: &egui::Ui, card: Rect, (version, system, link): (Arc<egui::Galley>, Arc<egui::Galley>, Arc<egui::Galley>), (t, seed): (f64, u64), actions: &mut Vec<Action>) {
+        let painter = ui.painter();
         painter.rect_filled(card, 0.0, CHIP);
         painter.rect_stroke(card, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
         let (turn, scale) = if self.still {
@@ -1667,7 +1677,6 @@ impl Ui {
             actions.push(Action::OpenUrl(panel::TRIDANT.to_string()));
         }
         dotted(painter, font(SANS, 12.0), at, width, FG);
-        card
     }
 
     /// a box `size` across round `middle` on whole physical pixels, and how many it takes: a texture drawn there
@@ -3490,10 +3499,10 @@ pub(super) mod tests {
     }
 
     /// the right-click menu leaves out what has to do with time over a still, as the bar does: "frame" finds the
-    /// previous frame over a clip, and over a still the first it finds is copying the frame
+    /// previous frame over a clip, and over a still the first it finds is the full frame's screenshot
     #[test]
     fn over_a_still_the_right_click_menu_has_nothing_of_time() {
-        for (frames, wanted) in [(3, Action::Key(Key::F, keys::NONE)), (1, Action::Key(Key::C, keys::CTRL))] {
+        for (frames, wanted) in [(3, Action::Key(Key::F, keys::NONE)), (1, Action::Key(Key::S, keys::NONE))] {
             assert_eq!(found_in_menu(|| Model { frames, ..model() }, "frame"), vec![wanted]);
         }
         // nor has a still a trim: "set in" is a clip's command
@@ -4081,8 +4090,10 @@ pub(super) mod tests {
         drive(&mut ui, &[(mark.0, mark.1, None), (mark.0, mark.1, None)]);
         assert!(ui.card.is_some(), "resting on the mark brings the card up");
         assert_eq!((ui.card_rect.right(), ui.card_rect.top()), (1088.0 - 120.0, STRIP + 6.0));
-        // across the strip's foot and onto the card: it stays
+        // over everything else, a menu or a panel (the owner's word, 2026-11-27)
         let on = ui.card_rect.center();
+        assert_eq!(ui.ctx.layer_id_at(on).map(|layer| layer.order), Some(egui::Order::Tooltip));
+        // across the strip's foot and onto the card: it stays
         drive(&mut ui, &[(mark.0, 36.0, None), (on.x, on.y, None)]);
         std::thread::sleep(Duration::from_millis(300));
         drive(&mut ui, &[(on.x, on.y, None), (on.x + 1.0, on.y, None)]);

@@ -113,8 +113,8 @@ pub fn facts(ui: &mut egui::Ui, corner: Pos2, pivot: Align2, alpha: f32, room: f
                     use crate::media::meta::{Row, Tone};
                     let mut ours = Vec::new();
                     // a sequence at a rate its files do not state: the setting's, or one chosen for it
-                    if let Some((n, d)) = model.rate.filter(|_| model.sequence && model.rate_from != RateFrom::File) {
-                        let exact = if d == 1 { n.to_string() } else { format!("{n}/{d} · {}", clip::rate_name((n, d))) };
+                    if let Some(rate) = model.rate.filter(|_| model.sequence && model.rate_from != RateFrom::File) {
+                        let exact = clip::rate_said(rate);
                         let (from, tone) = if model.rate_from == RateFrom::Set { ("set", Tone::Plain) } else { ("assumed", Tone::Assumed) };
                         ours.push(Row { label: "plays at", value: format!("{exact} fps {from}"), tone });
                     }
@@ -287,7 +287,7 @@ pub fn rate(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, refused:
 
 fn shot(ui: &mut egui::Ui, model: &Model, actions: &mut Vec<Action>) {
     widgets::heading_note(ui, "screenshot", &format!("to {}", model.shots_to));
-    match widgets::buttons(ui, "shots", &[("frame", "S", false), ("view", "shift S", false), ("copy", "ctrl C", false)]) {
+    match widgets::buttons(ui, "shots", &[("full frame", "S", false), ("as shown", "shift S", false), ("copy", "ctrl C", false)]) {
         Some(0) => actions.push(Action::Shot(Shot::Frame)),
         Some(1) => actions.push(Action::Shot(Shot::View)),
         Some(_) => actions.push(Action::Shot(Shot::Copy)),
