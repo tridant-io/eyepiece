@@ -183,7 +183,7 @@ impl Group {
     }
 }
 
-/// which part of a group's bar on the timebar a drag has hold of
+/// which part of a group's bar on the timebar a drag has hold of; or which of the trim's two markers, its in or out
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Part {
     In,

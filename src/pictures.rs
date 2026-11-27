@@ -175,7 +175,7 @@ mod tests {
                 let (mut times, mut had) = (Vec::new(), 0);
                 for i in 0..10 {
                     let asked = Instant::now();
-                    spare.ask(Ask::Frame { path: path.clone(), frame: (2 * i + 1) * frames / 20, playing: false });
+                    spare.ask(Ask::Frame { path: path.clone(), frame: (2 * i + 1) * frames / 20, playing: false, exact: false });
                     match answered(&spare, Duration::from_secs(2)) {
                         Some(Answer::Frame { frame, .. }) => times.push(format!("{:.0} ({frame})", ms(asked.elapsed()))),
                         _ => had += 1,
@@ -195,6 +195,63 @@ mod tests {
             }
             println!("  strip of {made} in {:.1} MB, the first in {:.0} ms, all in {:.0} ms", bytes as f64 / 1e6, ms(first.unwrap_or_default()), ms(whole));
             hovers("with the strip");
+        }
+    }
+
+    /// what a marker of the trim costs at the reader, on the same clips: the very frame asked for, each timed to its
+    /// picture. the last frame of the clip's longest group asked from the clip's start, which costs the most; thirty
+    /// frames back from it a frame at a time, as a slow drag asks for them, and the thirty forward again; then a fast
+    /// drag, 120 frames asked 4 ms apart, which is faster than they are read: how many were read, and how long after
+    /// the last was asked for its picture came.
+    /// `cargo test --release a_markers_frames_are_timed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn a_markers_frames_are_timed() {
+        let gpu = Gpu::offscreen().expect("a graphics device");
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        for path in std::env::var("EYEPIECE_HOVER").expect("EYEPIECE_HOVER names the clips").split(';').map(PathBuf::from) {
+            let (frames, keys) = {
+                let open = Open::new(&gpu, &path).expect("it opens");
+                (open.frames(), open.keys().unwrap_or_default())
+            };
+            let groups = keys.iter().zip(keys.iter().skip(1).chain([&frames])).map(|(key, next)| (next - key, next - 1));
+            let (longest, deep) = groups.max().unwrap_or((1, frames / 2));
+            let spare = timebar_reader();
+            let ask = |frame: usize| spare.ask(Ask::Frame { path: path.clone(), frame, playing: false, exact: true });
+            let read = |frame: usize| {
+                let asked = Instant::now();
+                ask(frame);
+                match answered(&spare, Duration::from_secs(6)) {
+                    Some(Answer::Frame { frame: at, .. }) if at == frame => ms(asked.elapsed()),
+                    _ => panic!("no picture of frame {frame}"),
+                }
+            };
+            let spread = |mut times: Vec<f64>| {
+                times.sort_by(f64::total_cmp);
+                format!("median {:.0} ms, most {:.0} ms", times[times.len() / 2], times[times.len() - 1])
+            };
+            println!("{}: {frames} frames, its longest group {longest}", path.display());
+            println!("  frame 0, which opens the clip: {:.0} ms", read(0));
+            println!("  frame {deep}, the last of that group: {:.0} ms", read(deep));
+            let far = deep.saturating_sub(30);
+            println!("  back a frame at a time to {far}: {}", spread((far..deep).rev().map(read).collect()));
+            println!("  and forward again: {}", spread((far + 1..=deep).map(read).collect()));
+            // (to the frame before it: the reader does not read again the picture it answered last)
+            let (from, to) = (deep.saturating_sub(121), deep - 1);
+            for frame in from..to {
+                ask(frame);
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            let asked = Instant::now();
+            ask(to);
+            let mut pictures = 0;
+            while let Some(Answer::Frame { frame, .. }) = answered(&spare, Duration::from_secs(6)) {
+                pictures += 1;
+                if frame == to {
+                    break;
+                }
+            }
+            println!("  a fast drag from {from} to {to}: {pictures} pictures read, the last {:.0} ms after it was asked for", ms(asked.elapsed()));
         }
     }
 
@@ -222,10 +279,33 @@ mod tests {
             };
             take(Duration::from_secs(3));
             for frame in hovers {
-                spare.ask(Ask::Frame { path: media(name), frame, playing: false });
+                spare.ask(Ask::Frame { path: media(name), frame, playing: false, exact: false });
                 take(Duration::from_secs(1));
             }
             assert_eq!(got, wanted, "{name}");
+        }
+    }
+
+    /// a marker of the trim shows the frame it names: asked for exactly, the reader of key frames gives the frame
+    /// itself, decoded from the key frame before it, in the same clips. going on, going back, a key frame, the last
+    /// frame. in the hevc, places 23 and 47 hold key frames that are shown as frames 24 and 48, and frames 23 and 47
+    /// are the group before's. each is that frame when it is the first thing asked of its place (47), when the pointer
+    /// was just near it and got the key frame for it (22, then 23), and once the reader knows (23 again)
+    #[test]
+    fn the_timebar_gets_the_very_frame_asked_for_exactly_of_a_clip_with_long_groups() {
+        let gpu = Gpu::offscreen().expect("a graphics device");
+        let exactly = |frames: &[usize]| frames.iter().map(|&frame| (frame, true, frame)).collect::<Vec<_>>();
+        let hevc = [exactly(&[47]), vec![(22, false, 24)], exactly(&[23, 20, 26, 24, 23, 71, 48])].concat();
+        for (name, asks) in [("h264_320.mp4", exactly(&[15, 5, 8, 7, 23, 0])), ("hevc_open_320.mp4", hevc)] {
+            let spare = timebar_reader();
+            // a reader of every frame, as a card's is, to tell each picture by
+            let mut every = Open::new(&gpu, &media(name)).expect("it opens");
+            for (frame, exact, wanted) in asks {
+                spare.ask(Ask::Frame { path: media(name), frame, playing: false, exact });
+                let Some(Answer::Frame { frame: at, pixels, strip, .. }) = answered(&spare, Duration::from_secs(10)) else { panic!("{name}: no picture of frame {frame}") };
+                assert_eq!((at, strip), (wanted, false), "{name}: asked for frame {frame}");
+                assert!(pixels == make::small(&mut every, at).expect("the frame").1, "{name}: the picture given as frame {at} is another frame");
+            }
         }
     }
 

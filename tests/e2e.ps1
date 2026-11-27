@@ -14,6 +14,7 @@ public static class EyepieceE2e {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern IntPtr GetClassLongPtrW(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
@@ -77,6 +78,11 @@ public static class EyepiecePicture {
   }
 }
 '@
+# the window is measured and pointed at in its own pixels, whatever the display's scale: a shell that knows nothing of
+# the scale (windows powershell is one) is told the window's size in pixels of 96 to the inch, and windows multiplies
+# the places it posts by the scale. on a display at 150% a place counted from the left then landed half as far again,
+# and one counted from the right or the bottom nowhere near (seen 2026-11-27). -4 is per monitor, version 2
+[void][EyepieceE2e]::SetThreadDpiAwarenessContext([IntPtr](-4))
 # the controls are driven by posted input, not the real pointer and keyboard: the player is told, so it listens only
 # to pointer messages that carry the tests' mark (0x8000) and to keys with no scan code, and takes what is held with
 # a key (1 shift, 2 alt, 4 control) from the message. a person using the machine meanwhile does not disturb it
@@ -128,6 +134,20 @@ function RightClick-At([double]$x, [double]$y) {
     [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 350
     [void][EyepieceE2e]::PostMessage($script:h, 0x204, [IntPtr]0x8002, $at); Start-Sleep -Milliseconds 60
     [void][EyepieceE2e]::PostMessage($script:h, 0x205, [IntPtr]0x8000, $at); Start-Sleep -Milliseconds 200
+}
+# a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other.
+# -Shift presses shift halfway, as a key of its own with no scan code (1 is shift held), and lets it go after the
+# release; the messages after it carry it, as the system's do (4 is shift)
+function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]$Shift) {
+    $held = 0
+    Move-Pointer $x0 $y0
+    [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]0x8001, (Get-Place $x0 $y0)); Start-Sleep -Milliseconds 100
+    foreach ($t in 0.25, 0.5, 0.75, 1) {
+        [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr](0x8001 -bor $held), (Get-Place ($x0 + ($x1 - $x0) * $t) ($y0 + ($y1 - $y0) * $t))); Start-Sleep -Milliseconds 100
+        if ($Shift -and $t -eq 0.5) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]0x10, [IntPtr]1); $held = 4; Start-Sleep -Milliseconds 100 }
+    }
+    [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr](0x8000 -bor $held), (Get-Place $x1 $y1)); Start-Sleep -Milliseconds 300
+    if ($Shift) { [void][EyepieceE2e]::PostMessage($script:h, 0x101, [IntPtr]0x10, [IntPtr]0); Start-Sleep -Milliseconds 100 }
 }
 # bright text between two corners of the window, in the design's pixels as Get-Place takes them; with -Any, what is not
 # near black
@@ -480,6 +500,22 @@ foreach ($ms in 100, 1300) {
     Send-Key 0x24; Send-Key 0x20; Start-Sleep -Milliseconds $ms; Send-Key 0x20
     Wait-Title "loop one plays only the trim: stopped $($ms + 200) ms on, play is inside it" { param($t) $t -match ' (\d+) / 24 .* trim 16 to 19$' -and [int]$Matches[1] -ge 16 -and [int]$Matches[1] -le 19 } 'a frame from 16 to 19'
 }
+# the trim's markers are dragged along the timebar to move its points (the owner's ask, 2026-11-27). the timebar is as
+# wide as the window, its track along the window's foot: frame f of the 24 is f / 23 of the way across. the out marker
+# dragged from 19 to 22 moves the out point and nothing else: the clip stays on frame 0, where the same drag on the
+# track would leave it on 22. a press on a marker alone moves nothing and goes nowhere, which is looked at once the
+# title has had time to say otherwise; the in marker dragged past the out stops on it; and the track beside the
+# markers still goes where it is pressed
+function Get-Along([int]$frame) { (Get-Width) * $frame / 23 }
+Send-Key 0x24
+Drag-On (Get-Along 19) -5 (Get-Along 22) -5
+Assert-Title 'the out marker dragged along the timebar moves the trim''s out point, and the clip stays on its frame' '^h264_320\.mp4 . 0 / 24 . .* trim 16 to 22$'
+Click-At (Get-Along 16) -5; Start-Sleep -Milliseconds 500
+Confirm-That 'a press on a marker alone moves nothing, and goes nowhere in the clip' ((Get-Title) -match '^h264_320\.mp4 . 0 / 24 . .* trim 16 to 22$') "the title is '$(Get-Title)'"
+Drag-On (Get-Along 16) -5 (Get-Along 23) -5
+Assert-Title 'the in marker dragged past the out stops on it' '^h264_320\.mp4 . 0 / 24 . .* trim 22 to 22$'
+Click-At (Get-Along 10) -5
+Assert-Title 'and the track beside the markers goes there as ever' '^h264_320\.mp4 . 10 / 24 . .* trim 22 to 22$'
 Send-Key 0x08 1 1; Send-Key 0x24; Send-Key 0x47; Assert-Frame 'shift + backspace clears the trim' 1 24
 Send-Key 0x4F; Assert-Title 'O lays the browser over the clip' ' . browser$'
 Send-Key 0x1B; Assert-Frame 'escape takes it away again' 1 24
@@ -653,20 +689,6 @@ $notes = Join-Path $env:APPDATA 'notes'
 New-Item -ItemType Directory -Force $notes | Out-Null
 $noted = Join-Path $notes 'h264_320.mp4'
 Copy-Item -LiteralPath (Join-Path $media 'h264_320.mp4') -Destination $noted
-# a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other.
-# -Shift presses shift halfway, as a key of its own with no scan code (1 is shift held), and lets it go after the
-# release; the messages after it carry it, as the system's do (4 is shift)
-function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]$Shift) {
-    $held = 0
-    Move-Pointer $x0 $y0
-    [void][EyepieceE2e]::PostMessage($script:h, 0x201, [IntPtr]0x8001, (Get-Place $x0 $y0)); Start-Sleep -Milliseconds 100
-    foreach ($t in 0.25, 0.5, 0.75, 1) {
-        [void][EyepieceE2e]::PostMessage($script:h, 0x200, [IntPtr](0x8001 -bor $held), (Get-Place ($x0 + ($x1 - $x0) * $t) ($y0 + ($y1 - $y0) * $t))); Start-Sleep -Milliseconds 100
-        if ($Shift -and $t -eq 0.5) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]0x10, [IntPtr]1); $held = 4; Start-Sleep -Milliseconds 100 }
-    }
-    [void][EyepieceE2e]::PostMessage($script:h, 0x202, [IntPtr](0x8000 -bor $held), (Get-Place $x1 $y1)); Start-Sleep -Milliseconds 300
-    if ($Shift) { [void][EyepieceE2e]::PostMessage($script:h, 0x101, [IntPtr]0x10, [IntPtr]0); Start-Sleep -Milliseconds 100 }
-}
 # a png's color type, from its header: 2 is red, green and blue; 6 is with alpha
 function Get-PngColor([string]$file) { [IO.File]::ReadAllBytes($file)[25] }
 Start-Player $noted

@@ -2,7 +2,8 @@
 //! the timebar's pictures, and how much changes across a loop's seam, from the clip's last frame to its first.
 //! the timebar's pictures are the design's hybrid (plan section 06): the timebar strip, frames of the clip made
 //! behind everything else, the nearest of which the timebar shows at once, then the frame under the pointer; or, for a clip
-//! whose frames need the ones before them, the key frame nearest it, never a frame that costs its whole group.
+//! whose frames need the ones before them, the key frame nearest it, never a frame that costs its whole group. but for
+//! a marker of the trim, which names its frame: that one is read whatever its group costs.
 
 use super::make::{self, Reader};
 use crate::browse::{self, Volume};
@@ -32,8 +33,10 @@ pub enum Ask {
     /// how the clip's last frame and its first compare
     Seam(PathBuf),
     /// a small picture of a frame, for the timebar: of a clip whose frames need the ones before them, the key frame
-    /// nearest it. while a clip is `playing`, such a clip is left alone: its decoder would take time from the picture
-    Frame { path: PathBuf, frame: usize, playing: bool },
+    /// nearest it, or when it is asked for `exact` (a marker of the trim names its frame) the frame itself, at the
+    /// cost of its group. while a clip is `playing`, such a clip is left alone: its decoder would take time from the
+    /// picture
+    Frame { path: PathBuf, frame: usize, playing: bool, exact: bool },
     /// the clip that is up: its timebar strip is made, behind everything else. none is made on a network volume (adr 0004)
     Strip(PathBuf),
     /// the clip changed on disk or left the screen: the reader lets go of it, and of its strip
@@ -130,7 +133,7 @@ impl Strip {
 /// strip, which the window takes when it next looks: woken for each, it drew again each time, and a step or a flip
 /// waited a refresh or two behind that. returns when the window's end is gone.
 pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &AtomicBool, told: impl Fn(), mut open: impl FnMut(&Path) -> Option<R>) {
-    let mut held: Option<(PathBuf, R)> = None;
+    let mut held: Option<Held<R>> = None;
     let mut strip: Option<Strip> = None;
     // the picture answered last, and when anything was last asked or made
     let mut answered: Option<(PathBuf, usize)> = None;
@@ -161,7 +164,7 @@ pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &Ato
                 // one frame of the strip
                 since = Instant::now();
                 let Some(s) = strip.as_mut() else { continue };
-                let Some(clip) = hold(&mut held, &s.path, &mut open) else {
+                let Some((clip, misplaced)) = hold(&mut held, &s.path, &mut open) else {
                     strip = None;
                     continue;
                 };
@@ -170,7 +173,7 @@ pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &Ato
                     continue;
                 }
                 let frame = todo.remove(0);
-                if let Some((at, (width, height), pixels)) = picture(clip, frame).filter(|(at, ..)| !s.made.contains(at)) {
+                if let Some((at, (width, height), pixels)) = picture(clip, frame, misplaced).filter(|(at, ..)| !s.made.contains(at)) {
                     s.made.push(at);
                     if !send(Answer::Frame { path: s.path.clone(), frame: at, width, height, pixels, strip: true }) {
                         return;
@@ -194,24 +197,30 @@ pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &Ato
                 Ask::Forget => (held, strip, answered) = (None, None, None),
                 Ask::Strip(path) => strip = (browse::volume_of(&path) != Volume::Network).then(|| Strip { path, todo: None, made: Vec::new() }),
                 Ask::Seam(path) => {
-                    let found = hold(&mut held, &path, &mut open).and_then(seam);
+                    let found = hold(&mut held, &path, &mut open).and_then(|(clip, _)| seam(clip));
                     if !send(Answer::Seam(path, found)) {
                         return;
                     }
                 }
-                Ask::Frame { path, frame, playing } if Some(i) == newest_frame => {
-                    let Some(clip) = hold(&mut held, &path, &mut open) else { continue };
+                Ask::Frame { path, frame, playing, exact } if Some(i) == newest_frame => {
+                    let Some((clip, misplaced)) = hold(&mut held, &path, &mut open) else { continue };
                     let keys = clip.keys();
                     if playing && keys.is_some() {
                         continue;
                     }
                     let frame = frame.min(clip.frames().saturating_sub(1));
-                    let Some(want) = keys.map_or(Some(frame), |keys| nearest(&keys, frame)) else { continue };
+                    let Some(want) = keys.filter(|_| !exact).map_or(Some(frame), |keys| nearest(&keys, frame)) else { continue };
                     let had = strip.as_ref().is_some_and(|s| s.path == path && s.made.contains(&want)) || answered.as_ref().is_some_and(|(of, at)| *of == path && *at == want);
                     if had {
                         continue;
                     }
-                    let Some((at, (width, height), pixels)) = picture(clip, want) else { continue };
+                    let mut read = picture(clip, want, misplaced);
+                    // an open group's key frame, asked for at its place, comes as the frame it is shown as, and the
+                    // clip knows from then on that its place is the group before's: asked again, that frame is read
+                    if exact && read.as_ref().is_some_and(|(at, ..)| *at != want) {
+                        read = picture(clip, want, misplaced);
+                    }
+                    let Some((at, (width, height), pixels)) = read else { continue };
                     answered = Some((path.clone(), at));
                     if !send(Answer::Frame { path, frame: at, width, height, pixels, strip: false }) {
                         return;
@@ -223,22 +232,32 @@ pub fn serve<R: Reader>(asks: Receiver<Ask>, answers: Sender<Answer>, busy: &Ato
     }
 }
 
+/// the clip the reader has open: its path, the clip, and the frame under whose number it holds another frame's
+/// picture, when it may (`picture`)
+type Held<R> = (PathBuf, R, Option<usize>);
+
 /// the clip at `path`, opened unless it is the one held. the one held before goes first: two decoders are not held
 /// at once.
-fn hold<'a, R: Reader>(held: &'a mut Option<(PathBuf, R)>, path: &Path, open: &mut impl FnMut(&Path) -> Option<R>) -> Option<&'a mut R> {
-    if held.as_ref().is_none_or(|(of, _)| of != path) {
+fn hold<'a, R: Reader>(held: &'a mut Option<Held<R>>, path: &Path, open: &mut impl FnMut(&Path) -> Option<R>) -> Option<(&'a mut R, &'a mut Option<usize>)> {
+    if held.as_ref().is_none_or(|(of, ..)| of != path) {
         *held = None;
-        *held = open(path).map(|clip| (path.to_path_buf(), clip));
+        *held = open(path).map(|clip| (path.to_path_buf(), clip, None));
     }
-    held.as_mut().map(|(_, clip)| clip)
+    held.as_mut().map(|(_, clip, misplaced)| (clip, misplaced))
 }
 
 /// a frame as a small picture, with the frame it turned out to be: a key frame asked for at its place in the file is
-/// shown a few frames later in an open group, which the reader learns as it reads it.
-fn picture<R: Reader>(clip: &mut R, frame: usize) -> Option<(usize, (u32, u32), Vec<u8>)> {
+/// shown a few frames later in an open group, which the reader learns as it reads it. the clip then holds that key
+/// frame under its place's number (`misplaced`) until it reads another frame: so when the frame at that place is
+/// asked for, the key frame nearest it is read first.
+fn picture<R: Reader>(clip: &mut R, frame: usize, misplaced: &mut Option<usize>) -> Option<(usize, (u32, u32), Vec<u8>)> {
+    if misplaced.take() == Some(frame) {
+        make::small(clip, nearest(&clip.keys()?, frame)?)?;
+    }
     let place = clip.keys().and_then(|keys| keys.iter().position(|&k| k == frame));
     let (size, pixels) = make::small(clip, frame)?;
     let at = place.and_then(|i| clip.keys()?.get(i).copied()).unwrap_or(frame);
+    *misplaced = (at != frame).then_some(frame);
     Some((at, size, pixels))
 }
 
@@ -387,7 +406,7 @@ mod tests {
     #[test]
     fn a_frame_for_the_timebar_is_read_small_from_a_clip_that_stays_open() {
         let (spare, counts, worker) = spare();
-        let frame = |name: &str, frame, playing| answer(&spare, Ask::Frame { path: at(name), frame, playing });
+        let frame = |name: &str, frame, playing| answer(&spare, Ask::Frame { path: at(name), frame, playing, exact: false });
         for wanted in [3, 7] {
             match frame("ten", wanted, false) {
                 Answer::Frame { frame, width, height, pixels, strip, .. } => assert_eq!((frame, width, height, pixels[0], strip), (wanted, 4, 2, (wanted * 6553 / 257) as u8, false)),
@@ -398,7 +417,7 @@ mod tests {
         assert_eq!(count(&counts.opened), 1);
         assert!(matches!(frame("ten", 99, true), Answer::Frame { frame: 9, .. }));
         // while a clip plays, frames that need the ones before them are not read: the next answer is the seam's
-        spare.ask(Ask::Frame { path: at("long"), frame: 5, playing: true });
+        spare.ask(Ask::Frame { path: at("long"), frame: 5, playing: true, exact: false });
         assert!(matches!(answer(&spare, Ask::Seam(at("long"))), Answer::Seam(..)));
         // standing still, such a clip gives the key frame nearest the frame asked for
         assert!(matches!(frame("long", 5, false), Answer::Frame { frame: 4, .. }));
@@ -433,10 +452,10 @@ mod tests {
         assert_eq!(made, [(4, true), (0, true), (8, true), (2, true), (6, true)]);
         assert_eq!((count(&counts.opened), count(&counts.reads)), (1, 5));
         // a frame of the strip is had already; one that is not is read, once, however often it is asked for
-        spare.ask(Ask::Frame { path: at("ten"), frame: 6, playing: false });
+        spare.ask(Ask::Frame { path: at("ten"), frame: 6, playing: false, exact: false });
         std::thread::sleep(Duration::from_millis(200));
-        assert!(matches!(answer(&spare, Ask::Frame { path: at("ten"), frame: 5, playing: false }), Answer::Frame { frame: 5, strip: false, .. }));
-        spare.ask(Ask::Frame { path: at("ten"), frame: 5, playing: false });
+        assert!(matches!(answer(&spare, Ask::Frame { path: at("ten"), frame: 5, playing: false, exact: false }), Answer::Frame { frame: 5, strip: false, .. }));
+        spare.ask(Ask::Frame { path: at("ten"), frame: 5, playing: false, exact: false });
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(count(&counts.reads), 6);
         // a clip with long groups: the key frame nearest each two seconds, and the nearest key frame had already
@@ -449,9 +468,35 @@ mod tests {
             })
             .collect();
         assert_eq!(made, [4, 0, 8]);
-        spare.ask(Ask::Frame { path: at("long"), frame: 5, playing: false });
+        spare.ask(Ask::Frame { path: at("long"), frame: 5, playing: false, exact: false });
         std::thread::sleep(Duration::from_millis(200));
         assert!(spare.take().is_none());
+        drop(spare);
+        worker.join().unwrap();
+    }
+
+    /// a marker of the trim names its frame, so its picture is asked for exactly: of a clip with a key frame every 4
+    /// the reader then gives the frame itself, not the key frame nearest it. a frame the window has is still not read
+    /// again, and such a clip is still left alone while it plays
+    #[test]
+    fn a_frame_asked_for_exactly_is_the_frame_itself() {
+        let (spare, counts, worker) = spare();
+        let exactly = |frame, playing| Ask::Frame { path: at("long"), frame, playing, exact: true };
+        for wanted in [5, 7, 6] {
+            assert!(matches!(answer(&spare, exactly(wanted, false)), Answer::Frame { frame, strip: false, .. } if frame == wanted), "frame {wanted}");
+        }
+        assert_eq!(count(&counts.reads), 3);
+        // the one answered last, and a key frame the strip has
+        spare.ask(Ask::Strip(at("long")));
+        for _ in 0..3 {
+            assert!(matches!(next(&spare), Answer::Frame { strip: true, .. }));
+        }
+        for had in [6, 8] {
+            spare.ask(exactly(had, false));
+        }
+        spare.ask(exactly(9, true));
+        assert!(matches!(answer(&spare, Ask::Seam(at("long"))), Answer::Seam(..)));
+        assert_eq!(count(&counts.reads), 3 + 3 + 2, "the three, the strip's three and the seam's two");
         drop(spare);
         worker.join().unwrap();
     }
@@ -461,7 +506,7 @@ mod tests {
     #[test]
     fn the_clip_held_is_let_go_when_idle_but_not_while_a_clip_plays() {
         let (spare, counts, worker) = spare();
-        assert!(matches!(answer(&spare, Ask::Frame { path: at("ten"), frame: 3, playing: false }), Answer::Frame { .. }));
+        assert!(matches!(answer(&spare, Ask::Frame { path: at("ten"), frame: 3, playing: false, exact: false }), Answer::Frame { .. }));
         counts.busy.store(true, Ordering::Relaxed);
         std::thread::sleep(IDLE + Duration::from_secs(1));
         assert_eq!(count(&counts.let_go), 0, "let go while a clip played");
@@ -485,7 +530,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         assert!(spare.take().is_none());
         assert_eq!((count(&counts.opened), count(&counts.reads)), (0, 0));
-        assert!(matches!(answer(&spare, Ask::Frame { path: shared, frame: 3, playing: false }), Answer::Frame { frame: 3, strip: false, .. }));
+        assert!(matches!(answer(&spare, Ask::Frame { path: shared, frame: 3, playing: false, exact: false }), Answer::Frame { frame: 3, strip: false, .. }));
         assert_eq!((count(&counts.opened), count(&counts.reads)), (1, 1));
         drop(spare);
         worker.join().unwrap();

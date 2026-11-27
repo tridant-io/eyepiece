@@ -58,8 +58,9 @@ const MENU_ROW: f32 = 24.0;
 const BAR_HIGH: f32 = 2.0;
 const LANE: f32 = 3.0;
 const LANES: usize = 2;
-/// how near an end of a group's bar a press must be to take that end, and how far past the bar it still takes it
-const END_REACH: f32 = 4.0;
+/// how near an end of a group's bar a press must be to take that end, and how far past the bar it still takes it;
+/// and how near a marker of the trim, to take that
+pub(super) const END_REACH: f32 = 4.0;
 
 /// markup mode, and what it is in the middle of. the tool and the ink stay chosen when the mode ends.
 #[derive(Default)]
@@ -1202,6 +1203,29 @@ mod tests {
             drive_with(&mut ui, clip(&marks), &click((along(120), 350.0)));
             assert!(ui.group_selected() == Some(0) && ui.escape() && ui.group_selected().is_none(), "escape lets go of it");
             assert_eq!(ui.markup(), markup, "and leaves markup mode as it was");
+        }
+    }
+
+    /// a group's bar and a marker of the trim at one place are each taken in their own rows (the owner's ask for the
+    /// markers, 2026-11-27): the bars stand over the markers, and no bar reaches the track. a group that ends on the
+    /// trim's out frame and passes over its in: in the bar's lane a press at the out is the group's end and a press
+    /// over the in marker its middle, which moves the whole range; on the track under them both presses are the
+    /// marker's. the pointer is the two-way arrow on an end and on a marker, not on the bar's middle
+    #[test]
+    fn a_groups_bar_and_a_trim_marker_at_one_place_are_each_taken_in_their_own_rows() {
+        let marks = Marks::of(vec![grouped((40, 129))], false);
+        let trimmed = || Model { trim: (Some(55), Some(129)), ..clip(&marks) };
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let (lane, track) = (350.0, 356.0);
+        for (from, to, row, asked) in [(129, 120, lane, Action::Range(0, (40, 120))), (129, 120, track, Action::Trim(Some(55), Some(120))), (55, 45, lane, Action::Range(0, (30, 119))), (55, 45, track, Action::Trim(Some(45), Some(129)))] {
+            assert_eq!(drive_with(&mut ui, trimmed(), &drag((along(from), row), (along(to), row))), vec![asked], "a drag from frame {from} to {to}, {row} down");
+        }
+        for (frame, row, arrow) in [(129, lane, true), (129, track, true), (55, lane, false), (55, track, true), (90, lane, false), (90, track, false)] {
+            drive_with(&mut ui, trimmed(), &[(along(frame), row, None)]);
+            ui.pointer_move(along(frame), row);
+            let mut out = ui.run(&super::super::Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(trimmed()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &super::super::tests::DEFAULTS });
+            out.textures.clear();
+            assert_eq!(out.resize, arrow, "the pointer on frame {frame}, {row} down");
         }
     }
 

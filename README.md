@@ -65,6 +65,9 @@ click or drag to go to a frame: while playing, play goes on from where you let g
 
 - **trim:** **shift+[** sets the in point at the frame on screen and **shift+]** the out point. the out frame is kept: in 55, out 129 is 75 frames. a point alone trims to the clip's end or start. **shift+backspace**, or **clear** in the trim's menu, clears both.
 - two markers stand on the timebar and the track outside the trim is dimmed. a chip names the trim, and the hover picture gives a frame's place in it.
+- **drag a marker** to move its point. with the pointer on one it lights, and the pointer turns to a two-way arrow. a press takes it and goes nowhere in the clip; it then follows the pointer a frame at a time, and stops at the other marker. the clip takes the new trim when you let go, and stays on the frame it was on. a marker taken while playing holds play until you let go.
+- on a marker, the box over the timebar names its point, its frame and the frames the trim keeps (`in 000055 · 75 f`), and its picture is the very frame it trims to, in h.264 and hevc too: the nearest picture had shows until that frame is read. while an h.264 or hevc clip plays nothing is read for the timebar, so there the frame comes once the marker is taken, which holds play.
+- where a group's bar passes over a marker, a press on the bar is the group's and a press on the track under it is the marker's.
 - with a trim set, loop one plays only the trim, and loop analysis plays its out into its in. steps and the timebar still reach every frame. loop off plays the whole clip, as does loop all on its way through a played folder.
 - a trim's in and out belong to its clip and are kept nowhere: they go when the tab closes or another clip takes its place. a still has none. a copy of the trim is saved with its button, below.
 
@@ -282,6 +285,7 @@ on a Mac, command does what control does.
 | | shift+- · shift+= | slower / faster |
 | | backspace | 1× speed |
 | **trim** | shift+[ · shift+] | set in / set out, at the frame on screen |
+| | drag a marker on the timebar | move the in or out point |
 | | shift+backspace | clear in and out |
 | | trim button | save the trim: beside the clip, or in its place |
 | **view** | T | frames / timecode |
