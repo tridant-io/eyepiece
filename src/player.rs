@@ -2646,7 +2646,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             }
             // the timebar asks for the frame under the pointer, each time that is another frame
             if let Some((path, frame)) = asking.clone().filter(|_| asking != time_asked) {
-                spare.ask(Ask::Frame { path: path.into(), frame, playing: tabs.view().is_some_and(|v| v.transport.playing()) });
+                spare.ask(Ask::Frame { path: path.into(), frame, playing: tabs.view().is_some_and(|v| v.transport.playing()), exact: false });
             }
             time_asked = asking;
         }
