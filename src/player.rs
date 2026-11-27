@@ -1331,7 +1331,8 @@ impl Tabs {
     /// being looked at. what the tab shows stays up until the clip's first frame is in; the window then grows to a
     /// bigger clip and never shrinks. returns the clip on its way, for what else is to be said of it.
     fn open(&mut self, gpu: &Gpu, path: String, wake: &Sender<Event>, replace: bool) -> &mut Coming {
-        if !(replace || self.tab().is_empty()) {
+        // a tab whose clip is still on its way is taken: files given one after another each get their own
+        if !(replace || self.tab().is_empty() && self.tab().coming.is_none()) {
             self.all.push(Tab::empty());
             self.select(self.all.len() - 1);
         }
@@ -2866,6 +2867,28 @@ mod tests {
             assert!(Instant::now() < until, "the notes did not come");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// files opened one after another, as an update's restart gives the files that were open and other launches hand
+    /// theirs over, each get a tab of their own: a tab whose clip is still on its way is not empty for the next to take
+    #[test]
+    fn files_opened_one_after_another_each_get_a_tab() {
+        let (gpu, view) = view("h264_320.mp4");
+        let (wake, _woken) = std::sync::mpsc::channel();
+        let keeper = notes::Keeper::start(None, || {});
+        let mut tabs = Tabs { all: vec![Tab { view: Some(view), ..Tab::empty() }], up: 0, closed: Vec::new(), hz: 60.0, stragglers: Vec::new(), play_on_open: false, noted: HashMap::new(), keeper };
+        for name in ["hap_64.mov", "h264_320.mp4", "still_8bit.png"] {
+            tabs.open(&gpu, format!("{}/tests/media/{name}", env!("CARGO_MANIFEST_DIR")), &wake, false);
+        }
+        let coming = tabs.all.iter().filter(|tab| tab.coming.is_some()).count();
+        // (each opening is let go before the device goes)
+        let Tabs { all, stragglers, .. } = &mut tabs;
+        for tab in all.iter_mut() {
+            if let Some(gone) = tab.coming.take() {
+                let_go(gone, stragglers);
+            }
+        }
+        assert_eq!((tabs.all.len(), coming, tabs.up), (4, 3, 3));
     }
 
     /// removes what a test made, a file at a time by its name, then its folders, which must then be empty
