@@ -127,8 +127,8 @@ pub fn facts(ui: &mut egui::Ui, corner: Pos2, pivot: Align2, alpha: f32, room: f
 
 /// the trim's menu (the owner's button, 2026-11-26), standing over its button: what the trim keeps, as its chip says
 /// it; how a copy of it is cut, exactly or from the key frame before; and saving it as a new file beside the clip, or
-/// in the clip's place behind a prompt. `sound` is its keep sound switch and `confirming` whether its prompt is up.
-/// returns where it was drawn.
+/// in the clip's place behind a prompt, with the clip's notes on its frames or without. `sound` is its keep sound
+/// switch and `confirming` whether its prompt is up. returns where it was drawn.
 pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode: bool, (sound, confirming): (&mut bool, &mut bool), actions: &mut Vec<Action>) -> Rect {
     widgets::menu(ui, "trim-menu", corner, Align2::RIGHT_BOTTOM, TRIM_WIDTH, alpha, |ui| {
         if *confirming {
@@ -195,6 +195,14 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
             if widgets::switch(ui, "trim-sound", row, *sound, "keep sound", "", false) {
                 *sound = !*sound;
             }
+        }
+        // a copy cannot change the picture: what include does is said, as it is no burn-in
+        let row = widgets::row(ui, 15.6);
+        if widgets::switch(ui, "trim-notes", row, model.copy_notes, "include annotations", "", false) {
+            actions.push(Action::CopyNotes(!model.copy_notes));
+        }
+        if model.copy_notes {
+            widgets::note(ui, "annotations go with the new file as notes.");
         }
         // a new file beside the clip is the default. in its place is offered only where the original can go to a bin
         let mut choices = vec![("save new file", "", true)];

@@ -124,36 +124,42 @@ pub enum Kept {
 
 /// saves a clip's notes: in its folder's file when `beside` says so and that can be done, else in eyepiece's own
 /// folder. with no groups the clip's notes are taken out of the file, and a file left with nothing in it goes aside
-/// as its `.previous`.
+/// as its `.previous`. notes saved beside the clip are taken out of eyepiece's own folder, where an earlier save may
+/// have had to leave them.
 pub fn save(clip: &Clip, groups: &[Group], beside: bool, own: Option<&Path>) -> Result<Kept, String> {
     let stamp = stamp_of(&clip.stamped);
-    keep(clip, beside, own, &|top| set_groups(top, clip, groups, stamp.as_ref()))
+    let kept = keep(clip, beside, own, &|top| set_groups(top, clip, groups, stamp.as_ref()))?;
+    if let Some(left) = own.map(|own| own_file(own, &clip.folder)).filter(|left| kept == Kept::Beside && left.exists()) {
+        // a copy that cannot be read is not read for the clip's notes either: the save itself stands
+        if let Err(why) = put(&left, &own_header(&clip.folder), &|file, bytes| file.write_all(bytes), &|top| set_groups(top, clip, &[], None)) {
+            eprintln!("eyepiece: {}: {why}", left.display());
+        }
+    }
+    Ok(kept)
 }
 
 /// an export made from a clip, for the log its entry keeps: when, the file written (its name, beside the clip, or its
-/// whole path elsewhere), the clip's frames it holds, how it was made in a word, and the command that made it
-#[allow(dead_code)]
+/// whole path elsewhere), the clip's frames it holds, how it was made in a word, and the command that made it, when
+/// one did (a copy runs none)
 pub struct Export {
     pub when: SystemTime,
     pub file: String,
     pub frames: (usize, usize),
     pub how: String,
-    pub command: String,
+    pub command: Option<String>,
 }
 
-/// adds an export to its clip's log, with the care a save takes. for the trim and export features, which call it off
-/// the drawing thread: nothing does yet.
-#[allow(dead_code)]
+/// adds an export to its clip's log, with the care a save takes, off the drawing thread.
 pub fn log_export(clip: &Clip, export: &Export, beside: bool, own: Option<&Path>) -> Result<Kept, String> {
     let line: Hash = [
-        ("when", text(&utc(export.when))),
-        ("file", text(&export.file)),
-        ("frames", Yaml::Array(vec![Yaml::Integer((export.frames.0 + clip.first) as i64), Yaml::Integer((export.frames.1 + clip.first) as i64)])),
-        ("how", text(&export.how)),
-        ("command", text(&export.command)),
+        ("when", Some(text(&utc(export.when)))),
+        ("file", Some(text(&export.file))),
+        ("frames", Some(Yaml::Array(vec![Yaml::Integer((export.frames.0 + clip.first) as i64), Yaml::Integer((export.frames.1 + clip.first) as i64)]))),
+        ("how", Some(text(&export.how))),
+        ("command", export.command.as_deref().map(text)),
     ]
     .into_iter()
-    .map(|(name, value)| (key(name), value))
+    .filter_map(|(name, value)| Some((key(name), value?)))
     .collect();
     keep(clip, beside, own, &|top| {
         let entry = entry_mut(top, &clip.name)?;
@@ -166,22 +172,13 @@ pub fn log_export(clip: &Clip, export: &Export, beside: bool, own: Option<&Path>
 }
 
 /// makes a change to a clip's entry where it is kept: in its folder's file, or, when that is not wanted or cannot be
-/// done, in eyepiece's own folder. a change that lands beside the clip takes the clip's notes out of eyepiece's own
-/// folder, where an earlier one may have had to leave them.
+/// done, in eyepiece's own folder.
 fn keep(clip: &Clip, beside: bool, own: Option<&Path>, change: &Change<'_>) -> Result<Kept, String> {
     let plain: &Writer<'_> = &|file, bytes| file.write_all(bytes);
     let mut why_not = None;
     if beside {
         match put(&clip.folder.join(FILE), HEADER, plain, change) {
-            Ok(()) => {
-                if let Some(kept) = own.map(|own| own_file(own, &clip.folder)).filter(|kept| kept.exists()) {
-                    // a copy that cannot be read is not read for the clip's notes either: the save itself stands
-                    if let Err(why) = put(&kept, &own_header(&clip.folder), plain, &|top| set_groups(top, clip, &[], None)) {
-                        eprintln!("eyepiece: {}: {why}", kept.display());
-                    }
-                }
-                return Ok(Kept::Beside);
-            }
+            Ok(()) => return Ok(Kept::Beside),
             Err(why) => why_not = Some(why),
         }
     }
@@ -1123,21 +1120,37 @@ clips:
     }
 
     /// an export is logged in its clip's entry with the care a save takes, and stays through saves of the clip's
-    /// notes, and when the last of them is taken off.
+    /// notes, and when the last of them is taken off. one that ran no command (a copy) has none in its line.
     #[test]
     fn an_export_is_logged_and_stays_through_saves() {
         let mut scratch = Scratch::new("exports");
         let clip = scratch.clip("clip.mov");
-        let export = Export { when: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(WHEN), file: "clip_trim.mov".into(), frames: (55, 129), how: "copy".into(), command: "ffmpeg -ss 2.2 -i \"clip.mov\" -c copy".into() };
+        let export = Export { when: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(WHEN), file: "clip_trim.mov".into(), frames: (55, 129), how: "copy".into(), command: Some("ffmpeg -ss 2.2 -i \"clip.mov\" -c copy".into()) };
         assert_eq!(log_export(&clip, &export, true, None), Ok(Kept::Beside));
         let line = "    exports:\n      - { when: 2026-11-26T19:40:12Z, file: clip_trim.mov, frames: [55, 129], how: copy, command: \"ffmpeg -ss 2.2 -i \\\"clip.mov\\\" -c copy\" }\n";
         assert!(scratch.text().ends_with(line), "{}", scratch.text());
         save(&clip, &[group((0, 4), &[boxed(1.0)])], true, None).unwrap();
-        log_export(&clip, &Export { file: "clip_trim (2).mov".into(), ..export }, true, None).unwrap();
+        log_export(&clip, &Export { file: "clip_trim (2).mov".into(), how: "copy, no sound".into(), command: None, ..export }, true, None).unwrap();
+        assert!(scratch.text().contains("      - { when: 2026-11-26T19:40:12Z, file: \"clip_trim (2).mov\", frames: [55, 129], how: \"copy, no sound\" }\n"), "{}", scratch.text());
         save(&clip, &[], true, None).unwrap();
         let text = scratch.text();
         assert!(text.contains("clip_trim.mov") && text.contains("clip_trim (2).mov") && !text.contains("groups"), "{text}");
         assert!(scratch.file().exists(), "an export is something to keep");
+        scratch.tidy();
+    }
+
+    /// an export logged beside the clip leaves the clip's notes in eyepiece's own folder where they are: only a save
+    /// of the notes themselves moves them beside it.
+    #[test]
+    fn an_export_logged_beside_the_clip_leaves_its_notes_in_eyepieces_own_folder() {
+        let mut scratch = Scratch::new("export-own");
+        let clip = scratch.clip("clip.mov");
+        let groups = [group((0, 4), &[boxed(1.0)])];
+        assert_eq!(save(&clip, &groups, false, Some(&scratch.own)), Ok(Kept::Own(None)));
+        let export = Export { when: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(WHEN), file: "clip_trim.mov".into(), frames: (0, 4), how: "copy".into(), command: None };
+        assert_eq!(log_export(&clip, &export, true, Some(&scratch.own)), Ok(Kept::Beside));
+        assert_eq!(read(&clip, Some(&scratch.own)).groups, groups);
+        assert!(scratch.text().contains("clip_trim.mov") && !scratch.text().contains("groups"), "{}", scratch.text());
         scratch.tidy();
     }
 

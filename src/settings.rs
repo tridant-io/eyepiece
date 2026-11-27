@@ -60,6 +60,9 @@ pub struct Settings {
     pub notes_beside: bool,
     /// how long a new group of marks lasts from the frame it is drawn on, in seconds, 0.5 to 60
     pub note_seconds: f32,
+    /// a saved copy takes the clip's groups on its frames as notes of its own (the owner's "include annotations",
+    /// 2026-11-26); off, it has none
+    pub copy_notes: bool,
     pub browser_folder: Option<PathBuf>,
     /// the folders the browser last opened files from, the newest first
     pub browser_recent: Vec<PathBuf>,
@@ -120,6 +123,7 @@ impl Default for Settings {
             pen_smoothing: 0.3,
             notes_beside: true,
             note_seconds: 3.0,
+            copy_notes: true,
             browser_folder: None,
             browser_recent: Vec::new(),
             browser_view: crate::browse::View::Both,
@@ -195,7 +199,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 39] {
+    fn pairs(&self) -> [(&'static str, String); 40] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -223,6 +227,7 @@ impl Settings {
             ("pen_smoothing", self.pen_smoothing.to_string()),
             ("notes_beside", word(&SWITCH, self.notes_beside)),
             ("note_seconds", self.note_seconds.to_string()),
+            ("copy_notes", word(&SWITCH, self.copy_notes)),
             ("browser_folder", path(&self.browser_folder)),
             ("browser_start", path(&self.browser_start)),
             ("browser_recent", recent.join(" | ")),
@@ -273,6 +278,7 @@ impl Settings {
             "pen_smoothing" => self.pen_smoothing = number(v, 0.0, 1.0)?,
             "notes_beside" => self.notes_beside = pick(&SWITCH, v)?,
             "note_seconds" => self.note_seconds = number(v, 0.5, 60.0)?,
+            "copy_notes" => self.copy_notes = pick(&SWITCH, v)?,
             "browser_folder" => self.browser_folder = folder(v),
             "browser_start" => self.browser_start = folder(v),
             // a bar cannot be in a windows path
@@ -421,6 +427,7 @@ mod tests {
             pen_smoothing: 0.75,
             notes_beside: false,
             note_seconds: 1.5,
+            copy_notes: false,
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
             browser_view: crate::browse::View::List,

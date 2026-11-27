@@ -522,6 +522,7 @@ impl View {
             cut: None,
             no_replace: None,
             saving: None,
+            copy_notes: settings.copy_notes,
             sequence: matches!(self.clip.lane, Lane::Stills(_)) && self.clip.timeline.frames() > 1,
             speed: self.transport.speed(),
             shuttle: self.transport.shuttle_rate(),
@@ -581,7 +582,7 @@ impl View {
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::BrowsePlayed | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
-            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::Range(..) | Action::OwnRange(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate | Action::Save { .. } | Action::StopSaving => {}
+            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::Range(..) | Action::OwnRange(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate | Action::Save { .. } | Action::StopSaving | Action::CopyNotes(_) => {}
         }
     }
 
@@ -992,8 +993,9 @@ fn plan_off(path: String, frames: (usize, usize), wake: &Sender<Event>) -> Loade
 }
 
 /// starts saving a copy of the clip in `tab`: of its trim when `trim` asks and one is set, else the whole clip; with
-/// its sound or without; beside it, or in its place. one copy is saved at a time. what to say when none is started.
-fn start_saving(saving: &mut Option<Saving>, tab: &Tab, (trim, sound, replace): (bool, bool, bool), wake: &Sender<Event>) -> Option<String> {
+/// its sound or without; beside it, or in its place; logged and noted as `notes` says. one copy is saved at a time.
+/// what to say when none is started.
+fn start_saving(saving: &mut Option<Saving>, tab: &Tab, (trim, sound, replace): (bool, bool, bool), notes: save::Noting, wake: &Sender<Event>) -> Option<String> {
     let (Some(path), Some(v)) = (&tab.path, &tab.view) else { return None };
     if saving.is_some() {
         return Some("a copy is being saved · wait for it, or stop it".into());
@@ -1003,7 +1005,7 @@ fn start_saving(saving: &mut Option<Saving>, tab: &Tab, (trim, sound, replace): 
     }
     let kept = trimmed(v).filter(|_| trim);
     let frames = kept.unwrap_or((0, v.clip.timeline.frames().saturating_sub(1)));
-    *saving = Some(Saving::start(save::Ask { path: path.into(), frames, trim: kept.is_some(), sound, replace }, wake.clone()));
+    *saving = Some(Saving::start(save::Ask { path: path.into(), frames, trim: kept.is_some(), sound, replace, notes }, wake.clone()));
     None
 }
 
@@ -1918,7 +1920,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let own = settings::file().and_then(|file| Some(file.parent()?.to_path_buf()));
     let keeper = {
         let wake = wake.clone();
-        notes::Keeper::start(own, move || _ = wake.send(Event::Wake))
+        notes::Keeper::start(own.clone(), move || _ = wake.send(Event::Wake))
     };
     // how a copy of the trim up would be cut, read once its menu opens: of which file and frames, and what was read;
     // and the copy being saved, one at a time
@@ -2443,10 +2445,16 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     }
                 }
                 Action::Save { trim, sound, replace } => {
-                    if let Some(said) = start_saving(&mut saving, tabs.tab(), (*trim, *sound, *replace), &wake) {
+                    // the notes as the window shows them go with the copy; a save of them waiting is written first, so
+                    // it cannot land after the copy's
+                    let groups = settings.copy_notes.then(|| tabs.marks(&tabs.all[tabs.up]).map_or_else(Vec::new, |marks| marks.groups().to_vec()));
+                    tabs.keeper.flush();
+                    let notes = save::Noting { groups, beside: settings.notes_beside, own: own.clone() };
+                    if let Some(said) = start_saving(&mut saving, tabs.tab(), (*trim, *sound, *replace), notes, &wake) {
                         toast = say(said);
                     }
                 }
+                Action::CopyNotes(on) => settings.copy_notes = *on,
                 Action::StopSaving => {
                     if let Some(s) = &saving {
                         s.stop();
@@ -2944,6 +2952,25 @@ mod tests {
         assert_eq!(tabs.noted[&clip].marks.groups(), both);
         assert!(!tabs.noted[&clip].marks.earlier);
         drop(tabs);
+        tidy(&root);
+    }
+
+    /// a copy that took its clip's place left the groups shifted to its own frames under the clip's name: when the
+    /// watch brings the copy up in the tab, its notes are read again and the tab holds those, not the ones it had, and
+    /// saves nothing over them.
+    #[test]
+    fn a_copy_in_the_clips_place_comes_up_with_its_shifted_notes() {
+        let (root, clip, mut tabs) = noting("replaced");
+        notes::save(&clip, &[group((0, 9), 1.0), group((20, 24), 2.0)], true, None).unwrap();
+        tabs.read_notes();
+        until_read(&mut tabs);
+        // the save's thread writes the copy's notes, then the copy comes up in the tab
+        notes::save(&clip, &[group((0, 4), 2.0)], true, None).unwrap();
+        tabs.read_notes();
+        until_read(&mut tabs);
+        assert_eq!(tabs.noted[&clip].marks.groups(), [group((0, 4), 2.0)]);
+        drop(tabs);
+        assert_eq!(notes::read(&clip, None).groups, [group((0, 4), 2.0)]);
         tidy(&root);
     }
 

@@ -606,25 +606,35 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
 # h264_320.mp4 has key frames at 0, 8 and 16: a trim from 11 to 13 is copied from the key frame at 8, so the copy has 6
 # frames. the clip is the tests' own copy in a folder of their own, as a save writes beside it. in the window it opens
 # in (640 x 360) the trim button's middle is 355 in from the right, and the menu's save new file 58 from the left and
-# 86 up
+# 86 up. the clip has a mark on frames 9 to 12, in its folder's eyepiece.yaml: the copy is logged there on the clip,
+# and with include annotations on (as it is at first) the mark goes with the copy as its notes, from its frame 1 to 4
 Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
 $trims = Join-Path $env:APPDATA 'trims'
 New-Item -ItemType Directory -Force $trims | Out-Null
 $trimmed = Join-Path $trims 'h264_320.mp4'
 Copy-Item -LiteralPath (Join-Path $media 'h264_320.mp4') -Destination $trimmed
+$trimNotes = Join-Path $trims 'eyepiece.yaml'
+Set-Content -LiteralPath $trimNotes -Value 'version: 1', 'clips:', '  h264_320.mp4:', '    groups:', '      - frames: [9, 12]', '        marks:', '          - { rect: [100, 50, 60, 40], ink: red }'
 Start-Player $trimmed
 Assert-Frame 'a clip to trim is open' 0 24
-Send-Key 0x47 11; Send-Key 0xDB 1 1; Send-Key 0x47 2; Send-Key 0xDD 1 1
+Send-Key 0x47 11; Assert-Title 'its mark on 9 to 12, read from its folder''s eyepiece.yaml, shows on 11' ' 11 / 24 .* fps . 1 mark$'
+Send-Key 0xDB 1 1; Send-Key 0x47 2; Send-Key 0xDD 1 1
 Assert-Title 'a trim from 11 to 13 is set' ' . trim 11 to 13$'
 Click-At -355 -32; Start-Sleep -Milliseconds 800
 Click-At 58 -86
 $copy = Join-Path $trims 'h264_320_trim.mp4'
 Confirm-That 'save new file writes the trim beside the clip, named for it' (Wait-File $copy) "no $copy"
+# the copy takes its name first, and its log and notes are written after
+$written = ''
+foreach ($i in 1..50) { $written = Get-Content -LiteralPath $trimNotes -Raw -ErrorAction SilentlyContinue; if ($written -match '(?m)^  h264_320_trim\.mp4:\r?$') { break }; Start-Sleep -Milliseconds 100 }
+Confirm-That 'the copy is logged on the clip in eyepiece.yaml: its name, the frames it holds, how' ($written -match '(?m)^  h264_320\.mp4:\r?$' -and $written -match 'file: h264_320_trim\.mp4, frames: \[8, 13\], how: copy \}') "the file says: $written"
+Confirm-That 'and the mark on the trimmed frames goes with it as its notes, counted from its first frame' ($written -match '(?m)^  h264_320_trim\.mp4:\r?$' -and $written -match '(?m)^      - frames: \[1, 4\]\r?$') "the file says: $written"
 Stop-Player
 Start-Player $copy
 Assert-Frame 'the copy is the frames from the key frame at 8 to 13' 0 6
+Send-Key 0x47; Assert-Title 'and has the mark on its own frame 1' ' 1 / 6 .* fps . 1 mark$'
 Stop-Player
-foreach ($made in $copy, $trimmed, $trims) {
+foreach ($made in $copy, $trimmed, $trimNotes, "$trimNotes.previous", $trims) {
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 

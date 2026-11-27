@@ -1,17 +1,21 @@
 //! saving a copy of a clip for the user (adr 0009): its trim, or the clip without its sound, beside it under a name
 //! of its own and never over another file; or, asked, in its place, the clip itself to the recycle bin (the trash on a
 //! mac), never deleted. the copy is written under a passing name, checked, and only then takes its own; one that
-//! fails is kept as `<name>.failed`. it runs on a thread of its own, which `Saving` follows.
+//! fails is kept as `<name>.failed`. a copy saved is logged on its clip's notes, and takes the clip's groups on its
+//! frames as its own notes, or none (adr 0010). it runs on a thread of its own, which `Saving` follows.
 
 use crate::browse::{self, Volume};
 use crate::event::Event;
-use crate::media::copy;
+use crate::markup::Group;
+use crate::media::copy::{self, Cut};
+use crate::notes;
 use crate::sys::files;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 /// where a clip's original goes when a copy takes its place
 pub const BIN: &str = if cfg!(target_os = "macos") { "trash" } else { "recycle bin" };
@@ -27,6 +31,17 @@ pub struct Ask {
     pub sound: bool,
     /// the copy takes the clip's place
     pub replace: bool,
+    pub notes: Noting,
+}
+
+/// what a copy saved writes in the notes, as the settings say: the clip's groups, which go with the copy as its own
+/// notes, or none when they are left out; beside the clip, or not; and eyepiece's own folder, where they go when not,
+/// and when they cannot
+#[derive(Clone, Debug, PartialEq)]
+pub struct Noting {
+    pub groups: Option<Vec<Group>>,
+    pub beside: bool,
+    pub own: Option<PathBuf>,
 }
 
 /// what came of a copy: what to say, the file it names, and the clip whose place a copy took.
@@ -117,6 +132,31 @@ fn shown(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// the groups of a clip that a copy of its frames `first` to `last` holds, counted as the copy counts: from 0 at
+/// `first`, each cut to the copy's length. a group wholly outside it is left out.
+fn carried(groups: &[Group], (first, last): (usize, usize)) -> Vec<Group> {
+    groups.iter().filter(|g| g.frames.0 <= last && g.frames.1 >= first).map(|g| Group { frames: (g.frames.0.max(first) - first, g.frames.1.min(last) - first), marks: g.marks.clone() }).collect()
+}
+
+/// logs the copy at `file`, cut as `cut` is, on its clip's notes, then gives it the clip's groups on its frames as its
+/// own notes, or none: in the clip's place, the groups that were on its name go. the log goes first, so the groups a
+/// copy in the clip's place replaces are kept in eyepiece.yaml.previous. what to add to what is said when either
+/// could not be kept.
+fn noted(ask: &Ask, file: &Path, cut: &Cut) -> String {
+    let Noting { groups, beside, own } = &ask.notes;
+    let clip = notes::Clip::of(&ask.path.to_string_lossy(), &shown(&ask.path));
+    let how = if ask.sound { "copy" } else { "copy, no sound" };
+    let export = notes::Export { when: SystemTime::now(), file: shown(file), frames: (cut.first, cut.last), how: how.into(), command: None };
+    // named for the file now at `file`, whose size and time its notes are made on
+    let copy = notes::Clip::of(&file.to_string_lossy(), &shown(file));
+    let carried = groups.as_deref().map_or_else(Vec::new, |groups| carried(groups, (cut.first, cut.last)));
+    let kept = notes::log_export(&clip, &export, *beside, own.as_deref()).map_err(|why| format!("not logged · {why}"));
+    match kept.and_then(|_| notes::save(&copy, &carried, *beside, own.as_deref()).map_err(|why| format!("its notes were not saved · {why}"))) {
+        Ok(_) => String::new(),
+        Err(why) => format!(" · {why}"),
+    }
+}
+
 /// gives the copy at `written` the first of its names that no file has, beside the clip.
 fn take_name(ask: &Ask, written: &Path) -> Result<PathBuf, String> {
     let folder = ask.path.parent().unwrap_or(Path::new("."));
@@ -188,7 +228,10 @@ fn save(ask: &Ask, done: &AtomicU64, stop: &AtomicBool, (refuse, trash): (impl F
             match trash(&ask.path) {
                 Err(why) => format!("the original could not go to the {BIN}: {why}"),
                 Ok(()) => match files::rename_new(&passing, &ask.path) {
-                    Ok(()) => return Done { said: format!("replaced {} · {frames} · the original is in the {BIN}", shown(&ask.path)), file: Some(ask.path.clone()), replaced: Some(ask.path.clone()) },
+                    Ok(()) => {
+                        let said = format!("replaced {} · {frames} · the original is in the {BIN}", shown(&ask.path)) + &noted(ask, &ask.path, &cut);
+                        return Done { said, file: Some(ask.path.clone()), replaced: Some(ask.path.clone()) };
+                    }
                     Err(e) => format!("the original is in the {BIN}, and the copy could not take its name: {e}"),
                 },
             }
@@ -202,18 +245,123 @@ fn save(ask: &Ask, done: &AtomicU64, stop: &AtomicBool, (refuse, trash): (impl F
         (Some(why), _) => format!("not replaced · {why} · saved as {}", shown(&named)),
         (None, Some(differs)) => format!("saved, not as asked · {} · {differs}", shown(&named)),
         (None, None) => format!("saved beside the clip · {} · {frames}", shown(&named)),
-    };
+    } + &noted(ask, &named, &cut);
     Done { said, file: Some(named), replaced: None }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markup::{Mark, Shape, INKS};
     use crate::media::copy::tests::{pictures, scratch, tidy};
     use std::cell::RefCell;
 
+    /// a copy's log and notes beside its clip, in the case's own folder; `groups` go with it
+    fn beside(groups: Option<Vec<Group>>) -> Noting {
+        Noting { groups, beside: true, own: None }
+    }
+
     fn ask(dir: &Path, clip: &str, frames: (usize, usize), trim: bool, sound: bool, replace: bool) -> Ask {
-        Ask { path: dir.join(clip), frames, trim, sound, replace }
+        Ask { path: dir.join(clip), frames, trim, sound, replace, notes: beside(None) }
+    }
+
+    fn group(frames: (usize, usize), x: f32) -> Group {
+        Group { frames, marks: vec![Mark { shape: Shape::Rectangle((x, x), (x + 10.0, x + 20.0)), ink: INKS[0] }] }
+    }
+
+    fn notes_of(dir: &Path, clip: &str) -> notes::Read {
+        notes::read(&notes::Clip::of(&dir.join(clip).to_string_lossy(), clip), None)
+    }
+
+    fn yaml(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(notes::FILE)).unwrap_or_default().replace("\r\n", "\n")
+    }
+
+    /// a copy of frames 8 to 13 holds the groups on those frames, counted from 0 at 8 and cut to its 6 frames; a group
+    /// wholly before or after it is left out, one that touches it by a frame keeps that frame
+    #[test]
+    fn a_copy_holds_the_groups_on_its_frames_counted_as_it_counts() {
+        let groups = [(0, 7), (0, 8), (5, 9), (9, 12), (12, 20), (13, 13), (14, 20), (0, 30)].map(|frames| group(frames, frames.0 as f32));
+        let kept: Vec<(usize, usize)> = carried(&groups, (8, 13)).iter().map(|g| g.frames).collect();
+        assert_eq!(kept, [(0, 0), (0, 1), (1, 4), (4, 5), (5, 5), (0, 5)]);
+        assert_eq!(carried(&groups, (8, 13))[2].marks, groups[3].marks, "the marks go as they are");
+        assert_eq!(carried(&groups, (0, 0)).iter().map(|g| g.frames).collect::<Vec<_>>(), [(0, 0), (0, 0), (0, 0)]);
+        assert!(carried(&[], (8, 13)).is_empty());
+    }
+
+    /// a saved copy is logged on its clip, beside it: when, its name, the frames it really holds (from the key frame
+    /// before the in point), how, and no command. the clip's groups on those frames go with it as its own notes,
+    /// counted as it counts and stamped with its own size and time; left out, it has none, and is logged all the same
+    #[test]
+    fn a_saved_copy_is_logged_and_takes_the_notes_on_its_frames() {
+        let dir = scratch("logged", &["av_tc_64.mov"]);
+        let groups = vec![group((0, 2), 1.0), group((2, 5), 2.0), group((6, 10), 3.0)];
+        let trim = Ask { notes: beside(Some(groups.clone())), ..ask(&dir, "av_tc_64.mov", (5, 7), true, true, false) };
+        assert_eq!(saved(&trim).file, Some(dir.join("av_tc_64_trim.mov")));
+        let text = yaml(&dir);
+        assert!(text.contains("  av_tc_64.mov:\n    exports:\n      - { when: 20") && text.contains("Z, file: av_tc_64_trim.mov, frames: [4, 7], how: copy }\n"), "{text}");
+        assert_eq!(notes_of(&dir, "av_tc_64_trim.mov"), notes::Read { groups: vec![group((0, 1), 2.0), group((2, 3), 3.0)], earlier: false, beside: true, said: None });
+        assert!(notes_of(&dir, "av_tc_64.mov").groups.is_empty(), "the clip's own notes are not touched");
+        // left out: the copy has no entry, and its log line is there beside the first
+        let without = Ask { notes: beside(None), ..ask(&dir, "av_tc_64.mov", (4, 7), true, false, false) };
+        assert_eq!(saved(&without).file, Some(dir.join("av_tc_64_trim_nosound.mov")));
+        let text = yaml(&dir);
+        assert!(text.contains("Z, file: av_tc_64_trim_nosound.mov, frames: [4, 7], how: \"copy, no sound\" }\n") && !text.contains("av_tc_64_trim_nosound.mov:"), "{text}");
+        tidy(&dir);
+    }
+
+    /// a copy that fails, is stopped or has nothing to copy logs nothing and gives no file notes: the folder's file is
+    /// not even made
+    #[test]
+    fn a_copy_that_is_not_saved_logs_nothing() {
+        let dir = scratch("unlogged", &["prores_64.mov"]);
+        let notes = beside(Some(vec![group((0, 3), 1.0)]));
+        let stopped = save(&Ask { notes: notes.clone(), ..ask(&dir, "prores_64.mov", (1, 2), true, true, false) }, &AtomicU64::new(0), &AtomicBool::new(true), (fits, never));
+        assert!(stopped.said.starts_with("not saved · stopped"), "{}", stopped.said);
+        assert!(saved(&Ask { notes: notes.clone(), ..ask(&dir, "prores_64.mov", (0, 3), false, false, false) }).said.starts_with("not saved"));
+        assert!(saved(&Ask { notes, ..ask(&dir, "prores_64.mov", (2, 9), true, true, false) }).said.starts_with("not saved"));
+        assert!(!dir.join(notes::FILE).exists(), "{}", yaml(&dir));
+        tidy(&dir);
+    }
+
+    /// a log that cannot be kept anywhere is said, and the copy stays saved
+    #[test]
+    fn a_log_that_cannot_be_kept_is_said_and_the_copy_stays() {
+        let dir = scratch("nowhere", &["prores_64.mov"]);
+        let trim = Ask { notes: Noting { groups: None, beside: false, own: None }, ..ask(&dir, "prores_64.mov", (1, 2), true, true, false) };
+        let done = saved(&trim);
+        assert_eq!(done.file, Some(dir.join("prores_64_trim.mov")));
+        assert_eq!(done.said, "saved beside the clip · prores_64_trim.mov · 2 frames · not logged · the system names no folder for eyepiece's own files");
+        tidy(&dir);
+    }
+
+    /// a copy in the clip's place is logged on the clip as it was named, and its notes are the groups shifted to its
+    /// frames: the frames changed. the groups it replaced are in eyepiece.yaml.previous. left out, it has none
+    #[test]
+    fn a_copy_in_the_clips_place_has_the_shifted_groups_or_none() {
+        let dir = scratch("replace-notes", &["prores_64.mov"]);
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let to_bin = |file: &Path| std::fs::rename(file, bin.join(file.file_name().unwrap())).map_err(|e| e.to_string());
+        let clip = notes::Clip::of(&dir.join("prores_64.mov").to_string_lossy(), "prores_64.mov");
+        let groups = vec![group((0, 0), 1.0), group((1, 3), 2.0)];
+        notes::save(&clip, &groups, true, None).unwrap();
+        let replace = Ask { notes: beside(Some(groups.clone())), ..ask(&dir, "prores_64.mov", (2, 3), true, true, true) };
+        let done = save(&replace, &AtomicU64::new(0), &AtomicBool::new(false), (fits, to_bin));
+        assert_eq!(done.replaced, Some(dir.join("prores_64.mov")), "{}", done.said);
+        assert_eq!(notes_of(&dir, "prores_64.mov"), notes::Read { groups: vec![group((0, 1), 2.0)], earlier: false, beside: true, said: None });
+        assert!(yaml(&dir).contains("Z, file: prores_64.mov, frames: [2, 3], how: copy }\n"), "{}", yaml(&dir));
+        let previous = std::fs::read_to_string(dir.join(format!("{}.previous", notes::FILE))).unwrap();
+        assert!(previous.contains("- frames: [1, 3]") && previous.contains("exports"), "{previous}");
+        std::fs::remove_file(bin.join("prores_64.mov")).unwrap();
+        // left out: the groups on the clip's name go, as they were on frames it no longer has
+        let replace = Ask { notes: beside(None), ..ask(&dir, "prores_64.mov", (1, 1), true, true, true) };
+        let done = save(&replace, &AtomicU64::new(0), &AtomicBool::new(false), (fits, to_bin));
+        assert_eq!(done.replaced, Some(dir.join("prores_64.mov")), "{}", done.said);
+        assert!(notes_of(&dir, "prores_64.mov").groups.is_empty() && yaml(&dir).contains("frames: [1, 1], how: copy }\n"), "{}", yaml(&dir));
+        std::fs::remove_file(bin.join("prores_64.mov")).unwrap();
+        std::fs::remove_dir(&bin).unwrap();
+        tidy(&dir);
     }
 
     fn never(_: &Path) -> Result<(), String> {
@@ -232,9 +380,9 @@ mod tests {
     #[test]
     fn a_copy_is_named_for_what_it_keeps() {
         let clip = Path::new("shot.v2.mov");
-        let names: Vec<String> = [(true, true), (true, false), (false, false)].into_iter().map(|(trim, sound)| name(&Ask { path: clip.into(), frames: (0, 0), trim, sound, replace: false }, 1)).collect();
+        let names: Vec<String> = [(true, true), (true, false), (false, false)].into_iter().map(|(trim, sound)| name(&Ask { path: clip.into(), frames: (0, 0), trim, sound, replace: false, notes: beside(None) }, 1)).collect();
         assert_eq!(names, ["shot.v2_trim.mov", "shot.v2_trim_nosound.mov", "shot.v2_nosound.mov"]);
-        assert_eq!(name(&Ask { path: clip.into(), frames: (0, 0), trim: true, sound: true, replace: false }, 3), "shot.v2_trim 3.mov");
+        assert_eq!(name(&Ask { path: clip.into(), frames: (0, 0), trim: true, sound: true, replace: false, notes: beside(None) }, 3), "shot.v2_trim 3.mov");
     }
 
     /// a copy goes beside the clip, and never over a file there: the next gets a number. nothing is left under a

@@ -75,6 +75,8 @@ click or drag to go to a frame. hover for a picture of the frame under the point
 - **save new file** writes `<name>_trim.mov` beside the clip, never over a file: then `<name>_trim 2.mov`, and so on. **keep sound** off leaves the sound out: `<name>_trim_nosound.mov`.
 - **replace original…** asks first. the copy is written and checked, then the original goes to the recycle bin (the trash on macOS) and the copy takes its name, and the tab shows it. the original is never deleted: replace is not offered where it could not go to a bin (a network volume, which has none; a bin that is off, or smaller than the file; a drive whose bin Windows keeps no setting for), and Windows is stopped at anything it would delete rather than recycle. if the original cannot go, both are kept and the note says why.
 - **save the trim without sound**, in the right-click menu, copies the trim without its sound, or with no trim set the whole clip: `<name>_nosound.mov`. it has no key.
+- **include annotations** (on at first, and kept between runs) gives the copy the clip's groups of marks on the frames it holds as notes of its own, in the folder's `eyepiece.yaml` (see [notes](#notes)): counted from the copy's first frame and cut to its length, a group wholly outside it left out. a copy cannot change the picture, so the marks are not drawn into it. off, the copy has no notes. in the clip's place, the new file's notes are those groups or none, as its frames changed; the groups the clip had are kept in `eyepiece.yaml.previous`, and the original is in the recycle bin. the right-click menu's **exclude annotations from a copy** (or **include annotations in a copy**) is the same switch, for a copy without sound with no trim set.
+- every copy saved is logged on its clip in the folder's `eyepiece.yaml`: when, the new file's name, the clip's frames it holds (from the key frame it starts at) and how (`copy`, or `copy, no sound`). a copy in the clip's place is logged under the clip's name, which it takes. a copy that fails or is stopped is not logged. with **save notes beside the clip** off, or where the folder's file cannot be written, the log and the copy's notes are kept in eyepiece's own folder, as notes are.
 - the copy keeps the timecode of its first frame (drop-frame stays drop-frame), the rotation, the color tags and the creation time. its sound is copied packet for packet, never cut inside one, so it can end up to one packet past the picture: 21 ms for aac at 48 kHz. other tracks (subtitles, data, a second picture) are not kept, and the menu and the note say so.
 - it is fast: a whole 552 MB prores 422 hq clip without its sound took 0.78 s, written and on the disk, and 51 frames of it 0.30 s (measured on the Windows development machine, 2026-11-26, with the clip in the system's cache).
 - before it says saved, eyepiece reads the copy back its own way: its frames, how long they last, its timecode and its sound. if one is not what was asked, the note says what differs. a copy that fails or is stopped is kept as `<name>.failed`, never deleted.
@@ -192,7 +194,7 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 
 ### notes
 
-a clip's groups of marks are its notes, and they are kept. each folder gets one `eyepiece.yaml` that holds the notes on its clips, and eyepiece reads it when a clip there opens:
+a clip's groups of marks are its notes, and they are kept. each folder gets one `eyepiece.yaml` that holds the notes on its clips and a log of the copies saved from them, and eyepiece reads it when a clip there opens. here a trim of 55 to 129, copied from the key frame at 48, took the group with it:
 
 ```yaml
 # eyepiece's notes for the clips in this folder
@@ -207,12 +209,24 @@ clips:
           - { rect: [100, 100, 300, 200], ink: yellow }
           - { pen: [10, 10, 12, 14, 15, 20], ink: red }
           - { text: "this flickers", at: [900, 300], size: 1.0, ink: white }
+    exports:
+      - { when: 2026-11-26T19:52:03Z, file: pillars_v012_trim.mov, frames: [48, 129], how: copy }
+  pillars_v012_trim.mov:
+    file: { bytes: 97534122, modified: 2026-11-26T19:52:03Z }
+    groups:
+      - frames: [7, 81]
+        marks:
+          - { circle: [812, 440, 120, 120], ink: red }
+          - { rect: [100, 100, 300, 200], ink: yellow }
+          - { pen: [10, 10, 12, 14, 15, 20], ink: red }
+          - { text: "this flickers", at: [900, 300], size: 1.0, ink: white }
 ```
 
 - `frames` are a group's in and out, counted as the file counts, from 0. places are the file's pixels: a rectangle and a circle by left, top, width and height, a pen by its points, text by its upper left corner. inks go by name.
+- `exports` logs each copy saved from the clip (see [saving a trim](#saving-a-trim)): when, in utc, the new file's name, the clip's frames it holds, and how it was made. a copy runs no ffmpeg command, so its line names none.
 - a numbered run is one clip, named with a `#` for each digit (`name.####.exr`), and its frames are its files' numbers, so frames rendered later leave its notes where they are.
 - `file` is the clip's size and when it was written. a clip that is another file now still shows its notes, with a chip that says they were made on an earlier version of the file, until you change them. a renamed clip leaves its notes under its old name.
-- the file is there only while there is a note to keep. opening a clip never makes it. a clip whose last note is taken off loses its entry, and a file left with no clip in it is not deleted: it becomes `eyepiece.yaml.previous`.
+- the file is there only while there is a note or a copy's log to keep. opening a clip never makes it. a clip whose last note is taken off loses its entry, and a file left with no clip in it is not deleted: it becomes `eyepiece.yaml.previous`.
 - notes are saved a moment after a change, when a tab closes and when the window does, off the drawing thread.
 - saving is careful. the file is read again before each save and only the clip saved is changed, so notes on other clips, another person's or another window's, stay. the new file is written whole beside the old one, flushed to the disk and read back, then swapped in in one step, and the version it replaced is kept as `eyepiece.yaml.previous`. two saves of the same clip at the same moment: the last one wins for that clip.
 - a file eyepiece cannot read is never written over. eyepiece says which line it cannot read, and keeps that folder's notes in its own folder until it can.
@@ -325,7 +339,7 @@ in the browser, letters select names instead of running commands:
 
 - **the update check is all eyepiece sends.** at most once a day it asks GitHub for the latest release's manifest, with only `eyepiece/<version>` as its user agent: no account, id, file name or setting. a switch in settings turns it off, and a release is downloaded only when you press **update**.
 - on a network volume, the browser reads only the folder's listing until you open a file or ask.
-- what eyepiece keeps stays on your machine: its settings file, the preview cache and your screenshots. your notes are saved beside the clips they are on, in each folder's `eyepiece.yaml`, and go where the folder goes; a setting keeps them on your machine instead. a trim you save is written beside its clip.
+- what eyepiece keeps stays on your machine: its settings file, the preview cache and your screenshots. your notes are saved beside the clips they are on, in each folder's `eyepiece.yaml`, and go where the folder goes; a setting keeps them on your machine instead. a trim you save is written beside its clip, and logged in that folder's `eyepiece.yaml`.
 
 ## build from source
 

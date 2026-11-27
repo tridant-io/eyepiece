@@ -276,6 +276,8 @@ pub struct Model<'a> {
     pub no_replace: Option<&'a str>,
     /// a copy being saved: its name, and how far it has got, 0 to 1
     pub saving: Option<(&'a str, f32)>,
+    /// a copy saved takes the clip's notes on its frames as its own
+    pub copy_notes: bool,
     pub speed: f64,
     /// negative in reverse, 0 when not shuttling
     pub shuttle: i32,
@@ -367,6 +369,8 @@ pub enum Action {
     Save { trim: bool, sound: bool, replace: bool },
     /// stop the copy being saved
     StopSaving,
+    /// a copy saved takes the clip's notes on its frames as its own, or none
+    CopyNotes(bool),
     Extras(Extras),
     /// a mark drawn on this frame of the clip: it joins the group selected or the one that covers the frame, or
     /// starts one there. the group selected taken off, or with none every group that shows on the frame on screen
@@ -1200,12 +1204,13 @@ impl Ui {
                 self.commands_find.clear();
             }
             let has_trim = trimmed(model).is_some();
-            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !framed(model), model.held.is_some(), has_trim);
+            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !framed(model), model.held.is_some(), (has_trim, model.copy_notes));
             self.commands_rect = drawn;
             if let Some(chosen) = chosen {
                 actions.push(match chosen {
                     keys::Chosen::Key(key, mods) => Action::Key(key, mods),
                     keys::Chosen::Unkeyed(keys::Unkeyed::SaveWithoutSound) => Action::Save { trim: has_trim, sound: false, replace: false },
+                    keys::Chosen::Unkeyed(keys::Unkeyed::CopyNotes) => Action::CopyNotes(!model.copy_notes),
                 });
                 self.commands = None;
             }
@@ -2525,6 +2530,7 @@ pub(super) mod tests {
             sequence: false,
             no_replace: None,
             saving: None,
+            copy_notes: true,
             speed: 1.0,
             shuttle: 0,
             zoom_label: "fit 563%".to_string(),
@@ -2999,6 +3005,25 @@ pub(super) mod tests {
         let prompt = ui.menu_rect;
         assert_eq!(drive_with(&mut ui, trimmed(None), &click(prompt.right() - 30.0, prompt.bottom() - 12.0 - 15.0)), vec![Action::Save { trim: true, sound: true, replace: true }]);
         assert!(ui.menu.is_none());
+        // include annotations, over the buttons: a click asks for the setting the other way, and the menu stays. with
+        // it on, a line under it says what it does for a copy, which is no burn-in: the menu is that much taller
+        let mut tall = Vec::new();
+        for on in [true, false] {
+            let notes = || Model { copy_notes: on, ..trimmed(None) };
+            let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+            drive_with(&mut ui, notes(), &click(button, 333.0));
+            drive_with(&mut ui, notes(), &[(button, 333.0, None)]);
+            let (menu, mut asked) = (ui.menu_rect, Vec::new());
+            tall.push(menu.height());
+            for y in (menu.bottom() as i32 - 120..menu.bottom() as i32 - 42).step_by(3) {
+                let got = drive_with(&mut ui, notes(), &click(menu.left() + 30.0, y as f32));
+                assert!(!got.contains(&Action::CopyNotes(!on)) || ui.menu == Some(Menu::Trim), "the switch closed the menu");
+                asked.extend(got);
+                ui.menu = Some(Menu::Trim);
+            }
+            assert!(asked.contains(&Action::CopyNotes(!on)) && !asked.contains(&Action::CopyNotes(on)), "{on}: {asked:?}");
+        }
+        assert!(tall[0] > tall[1], "{tall:?}");
         // where the original could not go to a bin (a network volume, a bin that cannot be shown to take it), only
         // beside it
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
