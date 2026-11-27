@@ -330,6 +330,8 @@ pub enum Action {
     /// the second click of a double click on the picture: play and the frame go back to what the first click, which
     /// played or paused as any click does, found
     PlayAsBefore,
+    /// play, or stop: around a press on the timebar while playing
+    Play(bool),
     Step(i64),
     Seek(usize),
     /// loop analysis: to this place in its round
@@ -488,6 +490,8 @@ pub struct Ui {
     /// the trim menu's switch, keep sound, while the window is open; and its prompt to replace the original is up
     trim_sound: bool,
     trim_confirm: bool,
+    /// a press on the timebar stopped play, which starts again as the button comes up
+    scrub_stopped: bool,
     /// why the rate last typed into a sequence's rate menu was refused, until the menu closes or a rate is taken
     rate_refused: Option<String>,
     /// the metadata panel: pinned open; or up while the pointer is on its button or on it. when the pointer came
@@ -582,6 +586,7 @@ impl Ui {
             menu_button: Rect::NOTHING,
             trim_sound: true,
             trim_confirm: false,
+            scrub_stopped: false,
             rate_refused: None,
             facts_pinned: false,
             facts_up: false,
@@ -1964,9 +1969,16 @@ impl Ui {
         }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
 
+        // a press while playing plays on from where the button comes up (the owner's word, 2026-11-27): play stops
+        // while it is down, as for any scrub, and starts again after
+        let pressed = scrubbing || response.clicked();
+        if pressed && model.playing && !self.scrub_stopped {
+            self.scrub_stopped = true;
+            actions.push(Action::Play(false));
+        }
         // a drag follows the pointer; a click goes there too, even one that came and went within a single pass. along a
         // held still's hold it goes in seconds
-        if let Some(p) = response.interact_pointer_pos().filter(|_| scrubbing || response.clicked()) {
+        if let Some(p) = response.interact_pointer_pos().filter(|_| pressed) {
             match model.held {
                 Some((held, of)) => {
                     let to = along(p.x) as f64 * of;
@@ -1981,6 +1993,10 @@ impl Ui {
                     }
                 }
             }
+        }
+        if self.scrub_stopped && !response.is_pointer_button_down_on() {
+            self.scrub_stopped = false;
+            actions.push(Action::Play(true));
         }
         // the frame under the pointer: its number, and over it the picture nearest it of those had, which is at once
         // one of the clip's timebar strip and then the frame itself, or the key frame nearest it, once the spare
@@ -3290,7 +3306,60 @@ pub(super) mod tests {
                 ui.menu = Some(Menu::Trim);
             }
         }
-        assert_eq!(asked, vec![]);
+        // only clear
+        assert!(!asked.is_empty() && asked.iter().all(|a| *a == Action::Key(Key::Backspace, keys::SHIFT)), "{asked:?}");
+    }
+
+    /// the trim's menu has a clear (the owner's ask, 2026-11-27): it clears the trim as shift backspace does, at the
+    /// right of the buttons, whatever can be saved. and only a copy that is not the trim says how it is cut: a copy
+    /// that is the trim says nothing of it (the owner's word, 2026-11-27)
+    #[test]
+    fn the_trim_menu_clears_the_trim_and_says_only_a_moved_cut() {
+        for (cut, said) in [(Cut::of(11, 13, 0), None), (Cut::of(8, 13, 0), Some("starts at key frame 8 · 6 frames")), (Cut::of(11, 14, 0), Some("ends at 14 · 4 frames"))] {
+            assert_eq!(menus::moved_cut(&cut, (11, 3), |frame| frame.to_string()).as_deref(), said);
+        }
+        let cut = Cut::of(11, 13, 0);
+        let trimmed = || Model { frames: 24, trim: (Some(11), Some(13)), cut: Some(Ok(&cut)), ..model() };
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let button = (200..640).step_by(4).map(|x| x as f32).find(|&x| {
+            drive_with(&mut ui, trimmed(), &click(x, 333.0));
+            ui.menu.take() == Some(Menu::Trim)
+        });
+        let button = button.expect("a trim button") + 8.0;
+        drive_with(&mut ui, trimmed(), &click(button, 333.0));
+        drive_with(&mut ui, trimmed(), &[(button, 333.0, None)]);
+        let menu = ui.menu_rect;
+        // along the buttons' row from the right, the first a click finds is clear
+        let row = menu.bottom() - 12.0 - 15.0;
+        let clears = (menu.left() as i32 + 16..menu.right() as i32 - 16).rev().step_by(4).find_map(|x| {
+            ui.menu = Some(Menu::Trim);
+            let got = drive_with(&mut ui, trimmed(), &click(x as f32, row));
+            (!got.is_empty()).then_some(got)
+        });
+        assert_eq!(clears, Some(vec![Action::Key(Key::Backspace, keys::SHIFT)]));
+    }
+
+    /// a click on the timebar while playing plays on from there (the owner's word, 2026-11-27), and a drag plays on
+    /// from where it lets go: play stops as the button goes down and starts as it comes up. stopped, a click only
+    /// goes there. the timebar is the bottom 14 of 640 x 360; its middle is frame 1 of the clip's 3
+    #[test]
+    fn a_click_on_the_timebar_while_playing_plays_on() {
+        use crate::event::Button::Left;
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let playing = || Model { playing: true, ..model() };
+        let at = (320.0, 354.0);
+        drive_with(&mut ui, playing(), &[(at.0, at.1, None)]);
+        let down = drive_with(&mut ui, playing(), &[(at.0, at.1, Some((Left, true)))]);
+        assert_eq!(down, vec![Action::Play(false), Action::Seek(1)]);
+        // (stopped now, as the clip would be)
+        let held = drive_with(&mut ui, model(), &[(600.0, at.1, None)]);
+        assert_eq!(held, vec![Action::Seek(2)], "play stays stopped while the button is down");
+        let up = drive_with(&mut ui, model(), &[(600.0, at.1, Some((Left, false))), (600.0, at.1, None)]);
+        assert_eq!(up, vec![Action::Play(true)]);
+        std::thread::sleep(Duration::from_millis(350));
+        // (it goes there as the button goes down, and again as it comes up)
+        let stopped = drive(&mut ui, &click(at.0, at.1));
+        assert!(!stopped.is_empty() && stopped.iter().all(|a| *a == Action::Seek(1)), "stopped, a click only goes there: {stopped:?}");
     }
 
     /// the right-click menu leaves out what has to do with time over a still, as the bar does: "frame" finds the

@@ -570,6 +570,7 @@ impl View {
                     }
                 }
             }
+            Action::Play(on) => self.set_playing(*on),
             Action::Step(by) => self.transport.step(*by),
             Action::Seek(frame) => self.transport.go(*frame as i64),
             Action::SeekPlace(place) => self.transport.go_place(*place),

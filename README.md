@@ -61,9 +61,9 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ![hovering the timebar shows that frame's picture and number](docs/images/timebar.png)
 *hovering the timebar shows that frame's picture and number*
 
-click or drag to go to a frame. hover for a picture of the frame under the pointer. a thin bar over the track stands for each group of marks (see markup), and missing frames of a sequence are amber.
+click or drag to go to a frame: while playing, play goes on from where you let go. hover for a picture of the frame under the pointer. a thin bar over the track stands for each group of marks (see markup), and missing frames of a sequence are amber.
 
-- **trim:** **shift+[** sets the in point at the frame on screen and **shift+]** the out point. the out frame is kept: in 55, out 129 is 75 frames. a point alone trims to the clip's end or start. **shift+backspace** clears both.
+- **trim:** **shift+[** sets the in point at the frame on screen and **shift+]** the out point. the out frame is kept: in 55, out 129 is 75 frames. a point alone trims to the clip's end or start. **shift+backspace**, or **clear** in the trim's menu, clears both.
 - two markers stand on the timebar and the track outside the trim is dimmed. a chip names the trim, and the hover picture gives a frame's place in it.
 - with a trim set, loop one plays only the trim, and loop analysis plays its out into its in. steps and the timebar still reach every frame. loop off plays the whole clip, as does loop all on its way through a played folder.
 - a trim's in and out belong to its clip and are kept nowhere: they go when the tab closes or another clip takes its place. a still has none. a copy of the trim is saved with its button, below.
@@ -72,8 +72,8 @@ click or drag to go to a frame. hover for a picture of the frame under the point
 
 ### saving a trim
 
-- with a trim set, a **trim** button stands on the bar, left of the loop. its menu says what the trim keeps and how a copy of it is cut, and saves it.
-- a copy moves the file's own frames and sound into a new file of the same kind: nothing is re-encoded. where every frame is a key frame (prores, hap, notchlc) it is exactly the trim: **copy · exact**. with long groups (h.264, hevc) it starts at the key frame at or before the in point, and where frames are stored out of order it can end a frame or two past the out point; the menu names the frame it starts on and how many frames it keeps. an exact cut of those needs an encode, which is not built yet. image sequences are not saved yet.
+- with a trim set, a **trim** button stands on the bar, left of the loop. its menu says what the trim keeps, saves it and clears it.
+- a copy moves the file's own frames and sound into a new file of the same kind: nothing is re-encoded. where every frame is a key frame (prores, hap, notchlc) it is exactly the trim, and the menu says nothing more. with long groups (h.264, hevc) it starts at the key frame at or before the in point, and where frames are stored out of order it can end a frame or two past the out point; the menu names the frame it starts on and how many frames it keeps. an exact cut of those needs an encode, which is not built yet. image sequences are not saved yet.
 - **save new file** writes `<name>_trim.mov` beside the clip, never over a file: then `<name>_trim 2.mov`, and so on. **keep sound** off leaves the sound out: `<name>_trim_nosound.mov`.
 - **replace original…** asks first. the copy is written and checked, then the original goes to the recycle bin (the trash on macOS) and the copy takes its name, and the tab shows it. the original is never deleted: replace is not offered where it could not go to a bin (a network volume, which has none; a bin that is off, or smaller than the file; a drive whose bin Windows keeps no setting for), and Windows is stopped at anything it would delete rather than recycle. if the original cannot go, both are kept and the note says why.
 - **save the trim without sound**, in the right-click menu, copies the trim without its sound, or with no trim set the whole clip: `<name>_nosound.mov`. it has no key.

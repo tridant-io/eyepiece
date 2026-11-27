@@ -165,10 +165,6 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
             let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
             ui.painter().galley(rect.min, galley, FG);
         }
-        // a sequence's frames are files of their own: a copy of them is not made yet
-        if model.sequence {
-            return widgets::note(ui, "image sequences are not saved yet.");
-        }
         if let Some((name, part)) = model.saving {
             widgets::line(ui, &format!("saving {name} · {}%", (part * 100.0).floor()), FG);
             if widgets::buttons(ui, "trim-stop", &[("stop", "", false)]).is_some() {
@@ -177,55 +173,73 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
             return;
         }
         let Some((from, kept)) = super::trimmed(model) else { return };
+        // a sequence's frames are files of their own: a copy of them is not made yet
         let cut = match model.cut {
-            None => return widgets::note(ui, "reading where its key frames are…"),
-            Some(Err(why)) => return widgets::note(ui, why),
-            Some(Ok(cut)) => cut,
+            _ if model.sequence => Err("image sequences are not saved yet."),
+            None => Err("reading where its key frames are…"),
+            Some(Err(why)) => Err(why),
+            Some(Ok(cut)) => Ok(cut),
         };
-        // how it is cut: a copy starts at a key frame, and with frames stored out of order may end a frame or two on
-        let at = |frame| super::stamp(frame, model.first, model.clock, timecode).1;
-        let exact = (cut.first, cut.last) == (from, from + kept - 1);
-        let how = match (exact, cut.first == from) {
-            (true, _) => "copy · exact".to_string(),
-            (false, false) => format!("copy · starts at key frame {} · {} frames", at(cut.first), cut.frames()),
-            (false, true) => format!("copy · ends at {} · {} frames", at(cut.last), cut.frames()),
-        };
-        widgets::line(ui, &how, FG);
-        if !exact {
-            widgets::note(ui, "an exact cut of a long-gop file needs an encode, which is not built yet.");
-        }
-        // what of the clip's tracks the copy leaves out, said before it is saved
-        if let Some(left) = &cut.left {
-            widgets::note(ui, &format!("{left}."));
-        }
-        if cut.sound > 0 {
-            let row = widgets::row(ui, 15.6);
-            if widgets::switch(ui, "trim-sound", row, *sound, "keep sound", "", false) {
-                *sound = !*sound;
+        match cut {
+            Err(why) => widgets::note(ui, why),
+            Ok(cut) => {
+                // only a copy that is not the trim says so (the owner's word, 2026-11-27): it starts at a key frame,
+                // and with frames stored out of order may end a frame or two on
+                let at = |frame| super::stamp(frame, model.first, model.clock, timecode).1;
+                if let Some(how) = moved_cut(cut, (from, kept), at) {
+                    widgets::line(ui, &how, FG);
+                    widgets::note(ui, "an exact cut of a long-gop file needs an encode, which is not built yet.");
+                }
+                // what of the clip's tracks the copy leaves out, said before it is saved
+                if let Some(left) = &cut.left {
+                    widgets::note(ui, &format!("{left}."));
+                }
+                if cut.sound > 0 {
+                    let row = widgets::row(ui, 15.6);
+                    if widgets::switch(ui, "trim-sound", row, *sound, "keep sound", "", false) {
+                        *sound = !*sound;
+                    }
+                }
+                // a copy cannot change the picture: what include does is said, as it is no burn-in
+                let row = widgets::row(ui, 15.6);
+                if widgets::switch(ui, "trim-notes", row, model.copy_notes, "include notes", "", false) {
+                    actions.push(Action::CopyNotes(!model.copy_notes));
+                }
+                if model.copy_notes {
+                    widgets::note(ui, "notes go with the new file.");
+                }
             }
         }
-        // a copy cannot change the picture: what include does is said, as it is no burn-in
-        let row = widgets::row(ui, 15.6);
-        if widgets::switch(ui, "trim-notes", row, model.copy_notes, "include notes", "", false) {
-            actions.push(Action::CopyNotes(!model.copy_notes));
+        // a new file beside the clip is the default. in its place is offered only where the original can go to a bin.
+        // clear, whatever can be saved, as shift backspace does (the owner's ask, 2026-11-27)
+        let mut choices = Vec::new();
+        if cut.is_ok() {
+            choices.push(("save new file", "", true));
+            if model.no_replace.is_none() {
+                choices.push(("replace original…", "", false));
+            }
         }
-        if model.copy_notes {
-            widgets::note(ui, "notes go with the new file.");
-        }
-        // a new file beside the clip is the default. in its place is offered only where the original can go to a bin
-        let mut choices = vec![("save new file", "", true)];
-        if model.no_replace.is_none() {
-            choices.push(("replace original…", "", false));
-        }
-        match widgets::buttons(ui, "trim-save", &choices) {
-            Some(0) => actions.push(Action::Save { trim: true, sound: *sound, replace: false }),
-            Some(_) => *confirming = true,
+        choices.push(("clear", "", false));
+        match widgets::buttons(ui, "trim-save", &choices).map(|i| choices[i].0) {
+            Some("save new file") => actions.push(Action::Save { trim: true, sound: *sound, replace: false }),
+            Some("replace original…") => *confirming = true,
+            Some(_) => actions.push(Action::Key(Key::Backspace, super::keys::SHIFT)),
             None => {}
         }
-        if let Some(why) = model.no_replace {
+        if let (Ok(_), Some(why)) = (cut, model.no_replace) {
             widgets::note(ui, &format!("replace original is not offered: {why}."));
         }
     })
+}
+
+/// what a copy of the trim keeps where it is not the trim, which a copy of a long-gop file can be: where it starts
+/// (the key frame at or before the in point) or ends, and how many frames it keeps. None for a copy that is the trim.
+pub(super) fn moved_cut(cut: &crate::media::copy::Cut, (from, kept): (usize, usize), at: impl Fn(usize) -> String) -> Option<String> {
+    match ((cut.first, cut.last) == (from, from + kept - 1), cut.first == from) {
+        (true, _) => None,
+        (false, false) => Some(format!("starts at key frame {} · {} frames", at(cut.first), cut.frames())),
+        (false, true) => Some(format!("ends at {} · {} frames", at(cut.last), cut.frames())),
+    }
 }
 
 /// an image sequence's frame rate (the owner's ask, 2026-11-26), standing over its button: for files that state a rate
