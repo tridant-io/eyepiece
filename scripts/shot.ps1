@@ -1,7 +1,8 @@
 # one readme screenshot: starts a player on scratch settings with -Open (a file or folder; none for the browser),
 # sizes its picture area to -W x -H, follows -Steps, and saves the window's own picture (PrintWindow) to -Out.
 # steps, separated by ';':  key:<vk>[:<mods 1 shift 2 alt 4 ctrl>]  char:<text>  wait:<ms>  move:x,y  click:x,y
-# drag:x1,y1,x2,y2  (pointer positions are the client area's physical pixels)
+# drag:x1,y1,x2,y2  (sizes and pointer positions are the client area's pixels at 100%: on a scaled display they are
+# scaled to it, so the player lays out the same, and the picture is the display's own pixels, sharper)
 param([string]$Exe, [string]$Open = '', [string]$Settings = '', [string]$AppData = '', [int]$W = 1280, [int]$H = 720, [string]$Steps = '', [string]$Out)
 $ErrorActionPreference = 'Stop'
 Add-Type -ReferencedAssemblies System.Drawing @"
@@ -12,6 +13,8 @@ public static class Shot {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
   public static void Save(IntPtr h, string file) {
     RECT c; GetClientRect(h, out c);
@@ -23,7 +26,9 @@ public static class Shot {
 }
 "@
 $env:EYEPIECE_POSTED_POINTER = '1'
-$env:APPDATA = if ($AppData) { $AppData } else { Join-Path $env:TEMP "eyepiece-shot-$PID" }
+# the window's real pixels: unaware, windows hands this script a scaled-down window and the picture is cut off
+[void][Shot]::SetProcessDpiAwarenessContext([IntPtr]::new(-4))
+$env:APPDATA =if ($AppData) { $AppData } else { Join-Path $env:TEMP "eyepiece-shot-$PID" }
 $env:EYEPIECE_CACHE = Join-Path $env:APPDATA 'os-cache'
 $env:EYEPIECE_INSTANCE = "shot-$PID"
 New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
@@ -35,13 +40,14 @@ $hwnd = [IntPtr]::Zero
 foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $hwnd = $p.MainWindowHandle; break } }
 # a file's first frame fits the window to the clip: sized after that, on the primary display
 if ($Open) { foreach ($i in 1..50) { $p.Refresh(); if ($p.MainWindowTitle -ne 'eyepiece') { break }; Start-Sleep -Milliseconds 100 }; Start-Sleep -Milliseconds 500 }
+$k = [Shot]::GetDpiForWindow($hwnd) / 96.0
 foreach ($round in 1..3) {
   $c = New-Object Shot+RECT; $r = New-Object Shot+RECT; [void][Shot]::GetClientRect($hwnd, [ref]$c); [void][Shot]::GetWindowRect($hwnd, [ref]$r)
-  [void][Shot]::SetWindowPos($hwnd, [IntPtr]::Zero, 40, 40, ($r.R - $r.L) + $W - $c.R, ($r.B - $r.T) + $H - $c.B, 0x14)
+  [void][Shot]::SetWindowPos($hwnd, [IntPtr]::Zero, 40, 40, ($r.R - $r.L) + [int]($W * $k) - $c.R, ($r.B - $r.T) + [int]($H * $k) - $c.B, 0x14)
   Start-Sleep -Milliseconds 300
 }
 Start-Sleep -Milliseconds 1500
-function At([string]$xy) { $v = $xy.Split(','); [IntPtr][int64](([int]$v[1] -shl 16) -bor ([int]$v[0] -band 0xffff)) }
+function At([string]$xy) { $v = $xy.Split(','); $x = [int]([double]$v[0] * $k); $y = [int]([double]$v[1] * $k); [IntPtr][int64](($y -shl 16) -bor ($x -band 0xffff)) }
 foreach ($step in ($Steps -split ';' | Where-Object { $_ })) {
   $kind, $what = $step.Split(':', 2)
   switch ($kind) {

@@ -51,7 +51,9 @@ if (Shot 'browser' '' @("browser_folder = $Renders", 'browser_view = both', 'bro
     Add-Type -AssemblyName System.Drawing
     $file = Join-Path $Out 'browser.png'
     $full = [Drawing.Bitmap]::FromFile($file)
-    $cut = $full.Clone([Drawing.Rectangle]::new(150, 0, $full.Width - 150, $full.Height), $full.PixelFormat)
+    # 150 of the 1440 at 100%, scaled with the picture on a scaled display
+    $side = [int](150 * $full.Width / 1440)
+    $cut = $full.Clone([Drawing.Rectangle]::new($side, 0, $full.Width - $side, $full.Height), $full.PixelFormat)
     $full.Dispose()
     $cut.Save($file, [Drawing.Imaging.ImageFormat]::Png)
     $cut.Dispose()
