@@ -59,7 +59,7 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ![hovering the timebar shows that frame's picture and number](docs/images/timebar.png)
 *hovering the timebar shows that frame's picture and number*
 
-click or drag to go to a frame. hover for a picture of the frame under the pointer. ticks mark frames with markup, and missing frames of a sequence are amber.
+click or drag to go to a frame. hover for a picture of the frame under the pointer. a thin bar over the track stands for each group of marks (see markup), and missing frames of a sequence are amber.
 
 - **trim:** **shift+[** sets the in point at the frame on screen and **shift+]** the out point. the out frame is kept: in 55, out 129 is 75 frames. a point alone trims to the clip's end or start. **shift+backspace** clears both.
 - two markers stand on the timebar and the track outside the trim is dimmed. a chip names the trim, and the hover picture gives a frame's place in it.
@@ -169,8 +169,42 @@ a folder's clips, played in name order in one tab. press **open folder** in the 
 - **S** saves the file's frame at full size as a png, 16-bit when the file is deeper. **shift+S** saves the view as shown. **ctrl+C** copies the frame.
 - the screenshot menu can add a caption, the guides and the markup.
 - screenshots go to `eyepiece` in your pictures folder, never beside the media or over an earlier one. the note that says where has **reveal in explorer** (finder on macOS), and stays up while the pointer is on it.
-- **markup:** **E** pauses and shows the tools: select, rectangle, circle, pen, text, and ten inks: red, orange, yellow, green, blue, indigo, violet, white, black and gray. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops. marks stay on their frame until the tab closes.
-- **changing marks:** with select, a click selects a mark, a drag moves it and a drag of a corner handle scales it; **shift** keeps its proportion, and text always keeps its own. **delete** or **backspace** takes the selected mark off. a right click on a mark, with any tool, opens its menu: delete, its color, and edit text for text. **ctrl+Z** takes back the last change, one at a time, and **ctrl+shift+Z** or **ctrl+Y** brings it back, until a new change; the row of tools has both. **esc** lets go of the selected mark.
+- **markup:** **E** pauses and shows the tools: select, rectangle, circle, pen, text, and ten inks: red, orange, yellow, green, blue, indigo, violet, white, black and gray. hold **shift** while drawing for a square or a round circle, as you see it; press or let go of it mid-drag. pen strokes are smoothed a little as you draw; settings > screenshots sets how much, or turns it off. in a text field, **enter** keeps and **esc** drops.
+- **groups:** every mark belongs to a group, and a group shows over a range of frames, while the clip plays too. a mark drawn on a frame no group covers starts a group there that lasts 3 seconds (settings > screenshots, 0.5 to 60) and no further than the clip's end; a still's group is its one frame. a mark drawn on a frame a group covers joins it: the group selected when its range holds the frame, else the newest that does. the group a mark went into is selected.
+- **ranges:** on the timebar each group is a thin bar just over the track, a lane higher where it overlaps another. a click on a bar selects its group, and a chip names its range. drag an end of the bar to move the group's in or out, and the rest of it to move the whole range. in markup mode with a group selected, **shift+[** and **shift+]** set its in and out at the frame on screen; with none selected, and outside markup mode, they set the trim's. the out frame is kept, as a trim's is. a mark's menu has **own range**, which moves the mark into a group of its own with the range it had. the tools' clear takes off the group selected, or with none every group on the frame on screen.
+- **changing marks:** with select, a click selects a mark, a drag moves it and a drag of a corner handle scales it; **shift** keeps its proportion, and text always keeps its own. **delete** or **backspace** takes the selected mark off. a right click on a mark, with any tool, opens its menu: delete, edit text for text, own range, and its color. **ctrl+Z** takes back the last change to the clip's marks and ranges, one at a time, and **ctrl+shift+Z** or **ctrl+Y** brings it back, until a new change; the row of tools has both. **esc** lets go of the selected mark and group.
+
+---
+
+### notes
+
+a clip's groups of marks are its notes, and they are kept. each folder gets one `eyepiece.yaml` that holds the notes on its clips, and eyepiece reads it when a clip there opens:
+
+```yaml
+# eyepiece's notes for the clips in this folder
+version: 1
+clips:
+  pillars_v012.mov:
+    file: { bytes: 578123456, modified: 2026-11-26T19:40:12Z }
+    groups:
+      - frames: [55, 129]
+        marks:
+          - { circle: [812, 440, 120, 120], ink: red }
+          - { rect: [100, 100, 300, 200], ink: yellow }
+          - { pen: [10, 10, 12, 14, 15, 20], ink: red }
+          - { text: "this flickers", at: [900, 300], size: 1.0, ink: white }
+```
+
+- `frames` are a group's in and out, counted as the file counts, from 0. places are the file's pixels: a rectangle and a circle by left, top, width and height, a pen by its points, text by its upper left corner. inks go by name.
+- a numbered run is one clip, named with a `#` for each digit (`name.####.exr`), and its frames are its files' numbers, so frames rendered later leave its notes where they are.
+- `file` is the clip's size and when it was written. a clip that is another file now still shows its notes, with a chip that says they were made on an earlier version of the file, until you change them. a renamed clip leaves its notes under its old name.
+- the file is there only while there is a note to keep. opening a clip never makes it. a clip whose last note is taken off loses its entry, and a file left with no clip in it is not deleted: it becomes `eyepiece.yaml.previous`.
+- notes are saved a moment after a change, when a tab closes and when the window does, off the drawing thread.
+- saving is careful. the file is read again before each save and only the clip saved is changed, so notes on other clips, another person's or another window's, stay. the new file is written whole beside the old one, flushed to the disk and read back, then swapped in in one step, and the version it replaced is kept as `eyepiece.yaml.previous`. two saves of the same clip at the same moment: the last one wins for that clip.
+- a file eyepiece cannot read is never written over. eyepiece says which line it cannot read, and keeps that folder's notes in its own folder until it can.
+- a folder that cannot be written (a read-only share, a camera card) keeps its notes in eyepiece's own folder, and eyepiece says so once. notes kept there are shown with those in the folder's file, and move into it at the first save that can be made there.
+- network folders too: notes are saved beside the clips on a network volume as anywhere, so a team on a shared folder sees each other's notes.
+- settings > screenshots has **save notes beside the clip**. off, notes are kept in eyepiece's own folder (`%APPDATA%\eyepiece\notes`, on macOS `~/Library/Application Support/eyepiece/notes`), a file for each folder of clips, saved with the same care.
 
 ---
 
@@ -188,7 +222,7 @@ the clip's sound plays with it and keeps the clock. pitch holds from half to dou
 ![the about page](docs/images/about.png)
 *the about page*
 
-the gear, or **ctrl+,**, opens settings. a change takes effect at once. the screenshots page also holds markup's pen smoothing. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
+the gear, or **ctrl+,**, opens settings. a change takes effect at once. the screenshots page also holds markup's pen smoothing, how long a new group of marks lasts, and whether notes are saved beside the clip. settings are also a plain text file you can edit. **?** opens help: the keys, and what eyepiece does.
 
 ## keys
 
@@ -227,6 +261,7 @@ on a Mac, command does what control does.
 | | shift+S | screenshot of the view |
 | | ctrl+C | copy frame |
 | | E | markup mode |
+| | shift+[ · shift+] | in markup mode with a group selected: its in / out, at the frame on screen |
 | | ctrl+Z | undo a change to marks |
 | | ctrl+shift+Z · ctrl+Y | redo a change to marks |
 | | delete · backspace | take off the selected mark (backspace is 1× speed when none is selected) |
@@ -239,7 +274,7 @@ on a Mac, command does what control does.
 | | ctrl+, | settings |
 | | esc | leave fullscreen, close |
 
-**esc** leaves fullscreen, then drops markup text being typed, then closes a menu, then lets go of a selected mark, then ends markup mode. with help up, any key closes it and then does what it does. **esc** and **?** only close it.
+**esc** leaves fullscreen, then drops markup text being typed, then closes a menu, then lets go of a selected mark and group, then ends markup mode. with help up, any key closes it and then does what it does. **esc** and **?** only close it.
 
 in the browser, letters select names instead of running commands:
 
@@ -275,7 +310,7 @@ in the browser, letters select names instead of running commands:
 
 - **the update check is all eyepiece sends.** at most once a day it asks GitHub for the latest release's manifest, with only `eyepiece/<version>` as its user agent: no account, id, file name or setting. a switch in settings turns it off, and a release is downloaded only when you press **update**.
 - on a network volume, the browser reads only the folder's listing until you open a file or ask.
-- what eyepiece keeps stays on your machine: its settings file, the preview cache and your screenshots.
+- what eyepiece keeps stays on your machine: its settings file, the preview cache and your screenshots. your notes are saved beside the clips they are on, in each folder's `eyepiece.yaml`, and go where the folder goes; a setting keeps them on your machine instead.
 
 ## build from source
 

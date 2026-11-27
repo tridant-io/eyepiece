@@ -76,6 +76,11 @@ impl Watch {
     }
 }
 
+/// a file's size and when it was last written, as its folder lists them: the file itself is not opened or asked about
+pub fn listed_stamp(path: &Path) -> Option<(u64, SystemTime)> {
+    listed(path).map(|look| (look.len, look.modified))
+}
+
 /// none when the file cannot be seen, for whatever reason: missing, or its volume unreachable
 fn look(path: &Path, network: bool) -> Option<Look> {
     if network {

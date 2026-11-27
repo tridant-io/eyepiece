@@ -10,11 +10,12 @@ use crate::audio::{Audio, Speaker};
 use crate::browse;
 use crate::event::{Event, Key, Mods};
 use crate::folder;
-use crate::markup::{Marks, Placing};
+use crate::markup::{self, Marks, Placing};
 use crate::media::clip::{Clip, Lane};
 use crate::media::hap::Tex;
 use crate::media::meta::Meta;
 use crate::media::watch::{Change, Watch};
+use crate::notes;
 use crate::media::still::Samples;
 use crate::play::{Show, Transport};
 use crate::preview::spare::{Answer, Ask, Seam};
@@ -573,7 +574,7 @@ impl View {
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::BrowsePlayed | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
-            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
+            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::Range(..) | Action::OwnRange(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
         }
     }
 
@@ -664,9 +665,26 @@ struct Tab {
     label: String,
     /// the watch on its file, for a render that writes over it
     watch: Option<Watching>,
-    /// the marks drawn on each of its clips, by file: they stay while the tab is open, through cuts, steps and
-    /// another tab being up, and go with it
-    marks: HashMap<String, Marks>,
+    /// the clip it shows, as its notes know it: they are the window's (`Tabs::noted`), so two tabs on one clip show
+    /// the same
+    notes: Option<notes::Clip>,
+}
+
+/// a clip's notes as the window holds them, while a tab shows the clip
+#[derive(Default)]
+struct Noted {
+    marks: Marks,
+    /// they are being read: nothing of the clip's is saved until they are here, so a save never replaces notes the
+    /// window has not seen
+    reading: bool,
+    /// they have been read before
+    read: bool,
+    /// how many changes had been sent to be saved when they were asked for, and how many have been now: a change
+    /// past the first is one the keeper, and so the file it reads, does not have yet
+    asked: u64,
+    kept: u64,
+    /// the folder's own file could be read, or was not there: they may be saved in it
+    beside: bool,
 }
 
 /// a watch on a tab's file, kept from a thread of its own (asking after a file on a share that sleeps can take
@@ -1007,7 +1025,7 @@ type Closed = (String, usize, Framing, Look);
 
 impl Tab {
     fn empty() -> Tab {
-        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch: None, marks: HashMap::new() }
+        Tab { path: None, view: None, error: None, browsing: false, facts: None, mode: settings::Loop::One, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch: None, notes: None }
     }
 
     /// a tab for a file: its clip, or why there is none.
@@ -1018,12 +1036,8 @@ impl Tab {
             Err(why) => (None, Some(why)),
         };
         let mode = if settings.loop_file == settings::Loop::Off { settings::Loop::Off } else { settings::Loop::One };
-        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch, marks: HashMap::new() }
-    }
-
-    /// the marks of the clip it shows, when it shows one.
-    fn marks(&self) -> Option<&Marks> {
-        self.marks.get(self.path.as_ref()?)
+        let notes = view.as_ref().map(|view| notes::Clip::of(&path, &view.clip.name));
+        Tab { path: Some(path), view, error, browsing: false, facts, mode, played: None, coming: None, parked: Vec::new(), held: 0, label: String::new(), watch, notes }
     }
 
     /// play or pause, asked for while play waits on a clip's last frame for the folder's next, or while a file is
@@ -1118,6 +1132,9 @@ struct Tabs {
     stragglers: Vec<std::thread::JoinHandle<()>>,
     /// a file opened starts playing
     play_on_open: bool,
+    /// the notes of the clips the tabs show, and what reads and saves them off this thread
+    noted: HashMap<notes::Clip, Noted>,
+    keeper: notes::Keeper,
 }
 
 impl Drop for Tabs {
@@ -1145,17 +1162,71 @@ impl Tabs {
         }
     }
 
+    /// the notes of the clip a tab shows, when it shows one.
+    fn marks(&self, tab: &Tab) -> Option<&Marks> {
+        tab.view.as_ref()?;
+        self.noted.get(tab.notes.as_ref()?).map(|noted| &noted.marks)
+    }
+
     /// the clip on screen with its marks, when a clip is what is on screen.
     fn marked(&self) -> Option<(&View, Option<&Marks>)> {
         let tab = &self.all[self.up];
-        Some((tab.view.as_ref().filter(|_| !tab.browsing())?, tab.marks()))
+        Some((tab.view.as_ref().filter(|_| !tab.browsing())?, self.marks(tab)))
     }
 
-    /// the marks of the clip on screen, to draw on or take off, and the frame it is on.
-    fn marking(&mut self) -> Option<(&mut Marks, usize)> {
-        let tab = &mut self.all[self.up];
-        let frame = tab.view.as_ref().filter(|_| !tab.browsing())?.transport.frame();
-        Some((tab.marks.entry(tab.path.clone()?).or_default(), frame))
+    /// the marks of the clip on screen, to draw on or take off, and the clip.
+    fn marking(&mut self) -> Option<(&mut Marks, &View)> {
+        let tab = &self.all[self.up];
+        let view = tab.view.as_ref().filter(|_| !tab.browsing())?;
+        Some((&mut self.noted.get_mut(tab.notes.as_ref()?)?.marks, view))
+    }
+
+    /// asks for the notes of the clip that has just come up in the tab that is up. what the window holds of them
+    /// stays on screen meanwhile.
+    fn read_notes(&mut self) {
+        let Some(clip) = self.all[self.up].notes.clone() else { return };
+        let noted = self.noted.entry(clip.clone()).or_default();
+        (noted.reading, noted.asked) = (true, noted.kept);
+        self.keeper.read(clip);
+    }
+
+    /// takes in the notes that have been read, sends those that changed to be saved, `beside` their clips when the
+    /// settings say so, and lets go of those no tab shows any more. returns what there is to say.
+    fn keep_notes(&mut self, beside: bool) -> Option<String> {
+        let mut said = None;
+        while let Some(came) = self.keeper.take() {
+            match came {
+                notes::Came::Said(words) => said = Some(words),
+                notes::Came::Read(clip, read) => {
+                    let Some(noted) = self.noted.get_mut(&clip) else { continue };
+                    let drawn = noted.marks.changes() != noted.asked;
+                    if !drawn && noted.marks.groups() == read.groups {
+                        noted.marks.earlier = read.earlier;
+                    } else if !drawn {
+                        noted.marks = Marks::of(read.groups, read.earlier);
+                        noted.kept = noted.marks.changes();
+                    } else if !noted.read {
+                        // drawn on before its notes were here: they go under what was drawn, and all of it is saved
+                        let both = read.groups.into_iter().chain(noted.marks.groups().iter().cloned()).collect();
+                        (noted.marks, noted.kept) = (Marks::of(both, false), u64::MAX);
+                    }
+                    (noted.reading, noted.read, noted.beside) = (false, true, read.beside);
+                }
+            }
+        }
+        for (clip, noted) in &mut self.noted {
+            if !noted.reading && noted.marks.changes() != noted.kept {
+                noted.kept = noted.marks.changes();
+                self.keeper.keep(clip.clone(), noted.marks.groups().to_vec(), beside && noted.beside);
+            }
+        }
+        // a clip no tab shows any more: its last change is saved now, not in a moment
+        let (all, held) = (&self.all, self.noted.len());
+        self.noted.retain(|clip, noted| noted.reading || all.iter().any(|tab| tab.notes.as_ref() == Some(clip)));
+        if self.noted.len() < held {
+            self.keeper.flush();
+        }
+        said
     }
 
     /// puts another tab up. the one left behind stops where it is. two clips of one size and length change places on
@@ -1405,6 +1476,7 @@ impl Tabs {
                             } else if let Some(played) = &mut tab.played {
                                 played.at = coming.item;
                             }
+                            tab.notes = None;
                             (tab.facts, tab.watch) = (Some(read_facts(&coming.path, wake)), Some(Watching::start(&coming.path, wake)));
                             (tab.path, tab.error) = (Some(std::mem::take(&mut coming.path)), Some(why));
                             tab.relabel();
@@ -1471,11 +1543,14 @@ impl Tabs {
             view.set_playing(true);
         }
         (tab.facts, tab.watch) = (Some(read_facts(&coming.path, wake)), Some(Watching::start(&coming.path, wake)));
+        tab.notes = Some(notes::Clip::of(&coming.path, &view.clip.name));
         (tab.path, tab.error) = (Some(std::mem::take(&mut coming.path)), None);
         if let Some(old) = tab.view.replace(view) {
             old.retire();
         }
         tab.relabel();
+        // its notes are read each time it comes up: another's save, or its own file changed on disk, shows
+        self.read_notes();
         Ok(Some(said))
     }
 
@@ -1556,7 +1631,7 @@ fn shot_pixels(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings:
     };
     let extras = what != Shot::Copy;
     let guides = Some(guides(settings)).filter(|g| extras && settings.screenshot_guides && (g.grid || g.center));
-    let marks = if extras && settings.screenshot_markup { marks.map_or(&[][..], |m| m.on(frame)) } else { &[] };
+    let marks: Vec<markup::Mark> = marks.filter(|_| extras && settings.screenshot_markup).map_or_else(Vec::new, |m| m.on(frame).into_iter().cloned().collect());
     let caption = (extras && settings.screenshot_caption).then(|| ui::caption(&v.clip.name, frame, settings.first_frame, v.clip.clock, v.clip.timeline.rate(), v.size()));
     let with: Vec<&'static str> = [(caption.is_some(), "caption"), (guides.is_some(), "guides"), (!marks.is_empty(), "markup")].into_iter().filter(|(on, _)| *on).map(|(_, name)| name).collect();
     if with.is_empty() {
@@ -1564,7 +1639,7 @@ fn shot_pixels(v: &View, marks: Option<&Marks>, gpu: &Gpu, what: Shot, settings:
     }
     // a pass of egui of their own, painted after the picture by a painter of its own (the window's holds the
     // controls' textures, under the same names)
-    let mut over = ui::saved(size, unit, &place, guides, marks, caption.as_deref());
+    let mut over = ui::saved(size, unit, &place, guides, &marks, caption.as_deref());
     let size = (size.0, over.height);
     let pixels = UiPainter::new(gpu).ok().and_then(|mut painter| {
         {
@@ -1798,7 +1873,14 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     // the pointer was on the toast at the last pass: it is not taken away under it
     let mut toast_held = false;
     let mut shots_label = shots_to(&shots_folder(settings));
-    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open };
+    // notes are read and saved off this thread; those that cannot be beside their clip go where the settings are kept
+    let own = settings::file().and_then(|file| Some(file.parent()?.to_path_buf()));
+    let keeper = {
+        let wake = wake.clone();
+        notes::Keeper::start(own, move || _ = wake.send(Event::Wake))
+    };
+    let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open, noted: HashMap::new(), keeper };
+    tabs.read_notes();
     // the file given at launch, opened before there were tabs, plays as any file opened does
     if let Some(view) = tabs.view().filter(|_| settings.play_on_open) {
         view.transport.set_playing(true);
@@ -1879,6 +1961,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     if !fullscreen && settings.remember_size {
                         settings.window_size = Some((gpu.w, gpu.h));
                     }
+                    // a change to the notes made in this very turn goes to be saved too: the keeper writes what it
+                    // has as it is let go
+                    tabs.keep_notes(settings.notes_beside);
                     return;
                 }
                 Event::Resize { w, h } => {
@@ -1956,14 +2041,14 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }
                 // in markup mode control + shift + Z, or control + Y, brings back the last change control + Z took back
                 Event::Key { key, mods } if mods.ctrl && !browsing && ui.markup() && (key == Key::Z && mods.shift || key == Key::Y) => {
-                    if let Some((marks, frame)) = tabs.marking() {
-                        marks.redo(frame);
+                    if let Some((marks, _)) = tabs.marking() {
+                        marks.redo();
                     }
                 }
-                // and control + Z takes back the last change to the marks on the frame on screen
+                // and control + Z takes back the last change to the clip's notes
                 Event::Key { key: Key::Z, mods } if mods.ctrl && !browsing && ui.markup() => {
-                    if let Some((marks, frame)) = tabs.marking() {
-                        marks.undo(frame);
+                    if let Some((marks, _)) = tabs.marking() {
+                        marks.undo();
                     }
                 }
                 // and delete or backspace takes off the mark selected (backspace is 1× speed while none is; with
@@ -1971,6 +2056,15 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Event::Key { key: key @ (Key::Delete | Key::Backspace), mods } if !mods.ctrl && !mods.alt && !(key == Key::Backspace && mods.shift) && !browsing && ui.mark_selected() => {
                     if let (Some((frame, index)), Some((marks, _))) = (ui.take_selected_mark(), tabs.marking()) {
                         marks.change(frame, index, None);
+                    }
+                }
+                // and with a group selected, shift with [ and ] set its in and out at the frame on screen, as they
+                // set the trim's when none is, and outside markup mode
+                Event::Key { key: key @ (Key::BracketLeft | Key::BracketRight), mods } if mods.shift && !mods.ctrl && !mods.alt && !browsing && ui.group_for_keys().is_some() => {
+                    if let (Some(group), Some((marks, view))) = (ui.group_for_keys(), tabs.marking()) {
+                        if let Some(frames) = marks.set_end(group, key == Key::BracketRight, view.transport.frame()) {
+                            ui.group_ranged(frames);
+                        }
                     }
                 }
                 // escape leaves fullscreen first; then it is the browser's, which goes back to the clip, or closes a menu
@@ -2127,6 +2221,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         if let Some(facts) = &mut tabs.tab().facts {
             facts.poll();
         }
+        // notes read in the background come in before the controls are laid out, so they show in the turn that woke
+        // for them; and what changed since the last look (a key in this turn, the controls in the one before, which
+        // asked for this one) goes to be saved
+        if let Some(said) = tabs.keep_notes(settings.notes_beside) {
+            // where notes went, or why they cannot be read: up as long as a saved file's name, to be read
+            toast = Some(Toast { said, until: Instant::now() + Duration::from_millis(5000), file: None });
+        }
         if !toast_held && toast.as_ref().is_some_and(|t| Instant::now() >= t.until) {
             toast = None;
         }
@@ -2162,7 +2263,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 tabs: tabs.all.iter().map(Tab::name).collect(),
                 places: tabs.all.iter().map(|t| t.played.as_ref().map(|p| ui::Place { folder: &p.title, at: p.at, count: p.items.len(), clip: t.clip_name() })).collect(),
                 current: tabs.up,
-                clip: tab.view.as_ref().map(|v| Model { marks: tab.marks(), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }),
+                clip: tab.view.as_ref().map(|v| Model { marks: tabs.marks(tab), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }),
                 error: tab.error.as_deref(),
                 opening: opening.as_deref().filter(|_| tab.view.is_none() && tab.error.is_none()),
                 list: tab.played.as_ref().map(|played| FolderList {
@@ -2253,19 +2354,31 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     }
                 }
                 Action::Extras(to) => (settings.screenshot_caption, settings.screenshot_guides, settings.screenshot_markup) = (to.caption, to.guides, to.markup),
+                // a new group lasts the settings' seconds, counted in frames as loop analysis counts its own
                 Action::Mark(frame, mark) => {
-                    if let Some((marks, _)) = tabs.marking() {
-                        marks.add(*frame, mark.clone());
+                    if let Some((marks, view)) = tabs.marking() {
+                        let timeline = &view.clip.timeline;
+                        marks.add(*frame, ui.group_selected(), mark.clone(), markup::lasting(settings.note_seconds, timeline.fps()), timeline.frames());
                     }
                 }
                 Action::ClearMarks => {
-                    if let Some((marks, frame)) = tabs.marking() {
-                        marks.clear(frame);
+                    if let Some((marks, view)) = tabs.marking() {
+                        marks.clear(view.transport.frame(), ui.group_selected());
                     }
                 }
                 Action::Change(frame, index, to) => {
                     if let Some((marks, _)) = tabs.marking() {
                         marks.change(*frame, *index, to.clone());
+                    }
+                }
+                Action::Range(group, frames) => {
+                    if let Some((marks, view)) = tabs.marking() {
+                        marks.set_range(*group, *frames, view.clip.timeline.frames());
+                    }
+                }
+                Action::OwnRange(frame, index) => {
+                    if let Some((marks, _)) = tabs.marking() {
+                        marks.own_range(*frame, *index);
                     }
                 }
                 Action::Copy(text) => {
@@ -2531,7 +2644,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     (Some(v), _) => {
                         let (mode, folder) = tab.words();
                         // the marks on the frame on screen, and markup mode
-                        let marks = match tab.marks().map_or(0, |m| m.on(v.transport.frame()).len()) {
+                        let marks = match tabs.marks(tab).map_or(0, |m| m.on(v.transport.frame()).len()) {
                             0 => String::new(),
                             1 => " · 1 mark".to_string(),
                             n => format!(" · {n} marks"),
@@ -2589,6 +2702,48 @@ mod tests {
         }
     }
 
+    /// a folder of a test's own with a clip in it that is a few bytes (notes never open a clip), a folder to stand
+    /// for eyepiece's own, and the window's tabs with one that shows the clip. nothing is written beside the repo's
+    /// media.
+    fn noting(test: &str) -> (PathBuf, notes::Clip, Tabs) {
+        let root = std::env::temp_dir().join(format!("eyepiece-noting-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("shots")).unwrap();
+        std::fs::write(root.join("shots").join("clip.mov"), b"not a real clip").unwrap();
+        let clip = notes::Clip::of(&root.join("shots").join("clip.mov").to_string_lossy(), "clip.mov");
+        let tab = Tab { notes: Some(clip.clone()), ..Tab::empty() };
+        let keeper = notes::Keeper::start(Some(root.join("own")), || {});
+        (root, clip, Tabs { all: vec![tab], up: 0, closed: Vec::new(), hz: 60.0, stragglers: Vec::new(), play_on_open: false, noted: HashMap::new(), keeper })
+    }
+
+    /// looks, as the loop does each turn, until the notes asked for have come
+    fn until_read(tabs: &mut Tabs) {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            tabs.keep_notes(true);
+            if tabs.noted.values().all(|noted| !noted.reading) {
+                return;
+            }
+            assert!(Instant::now() < until, "the notes did not come");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// removes what a test made, a file at a time by its name, then its folders, which must then be empty
+    fn tidy(root: &Path) {
+        let (shots, own) = (root.join("shots"), root.join("own"));
+        let kept = notes::own_file(&own, &shots);
+        for file in [shots.join("clip.mov"), shots.join(notes::FILE), shots.join(format!("{}.previous", notes::FILE)), kept.clone(), kept.with_extension("yaml.previous")] {
+            if file.exists() {
+                std::fs::remove_file(&file).unwrap();
+            }
+        }
+        for dir in [shots, own.join("notes"), own, root.to_path_buf()] {
+            if dir.exists() {
+                std::fs::remove_dir(&dir).unwrap_or_else(|e| panic!("{} is not empty: {e}", dir.display()));
+            }
+        }
+    }
+
     /// slower than two frames a refresh the frames next to the pointer are the ones it comes to: the reader is told
     /// what standing still tells it. at the clip's ends the lattice stops
     #[test]
@@ -2624,6 +2779,89 @@ mod tests {
             pace.note(152 - 3 * n, at(20.0 + n as f64));
         }
         assert!((pace.note(134, at(27.0)) + 3.0).abs() < 0.01);
+    }
+
+    fn boxed(x: f32) -> markup::Mark {
+        markup::Mark { shape: markup::Shape::Rectangle((x, x), (x + 10.0, x + 10.0)), ink: markup::INKS[0] }
+    }
+
+    fn group(frames: (usize, usize), x: f32) -> markup::Group {
+        markup::Group { frames, marks: vec![boxed(x)] }
+    }
+
+    /// a clip's notes are never saved before they have been read: a mark drawn while the read is on its way waits,
+    /// and when the notes come it joins them, so the save holds both and replaces nothing the window had not seen.
+    #[test]
+    fn a_mark_drawn_before_a_clips_notes_are_read_joins_them_and_nothing_is_saved_until_then() {
+        let (root, clip, mut tabs) = noting("early");
+        notes::save(&clip, &[group((0, 9), 1.0)], true, None).unwrap();
+        let file = root.join("shots").join(notes::FILE);
+        let before = std::fs::read(&file).unwrap();
+        // the clip has come up and its notes are asked for, but the answer is not here yet
+        tabs.noted.entry(clip.clone()).or_default().reading = true;
+        tabs.noted.get_mut(&clip).unwrap().marks.add(20, None, boxed(2.0), 5, 100);
+        tabs.keep_notes(true);
+        tabs.keeper.read(clip.clone());
+        until_read(&mut tabs);
+        assert_eq!(tabs.noted[&clip].marks.groups(), [group((0, 9), 1.0), group((20, 24), 2.0)]);
+        drop(tabs);
+        assert_eq!(notes::read(&clip, None).groups, [group((0, 9), 1.0), group((20, 24), 2.0)]);
+        assert_eq!(std::fs::read(root.join("shots").join(format!("{}.previous", notes::FILE))).unwrap(), before, "one save, of both: the file as it was is the version it replaced");
+        tidy(&root);
+    }
+
+    /// a mark drawn in the very turn its clip comes up again (a render over the open file) is not lost to the notes
+    /// read then: what was not yet sent to be saved is newer than the file. a tab closed and its clip opened again
+    /// has its notes back.
+    #[test]
+    fn a_change_not_yet_saved_outlives_a_read_and_notes_are_back_when_the_clip_comes_up_again() {
+        let (root, clip, mut tabs) = noting("again");
+        tabs.read_notes();
+        until_read(&mut tabs);
+        assert!(tabs.noted[&clip].marks.groups().is_empty() && tabs.noted[&clip].beside);
+        tabs.noted.get_mut(&clip).unwrap().marks.add(0, None, boxed(1.0), 5, 100);
+        tabs.keep_notes(true);
+        // drawn, and before the loop next looks the clip comes up again and its notes are asked for
+        tabs.noted.get_mut(&clip).unwrap().marks.add(50, None, boxed(2.0), 5, 100);
+        tabs.read_notes();
+        until_read(&mut tabs);
+        let both = [group((0, 4), 1.0), group((50, 54), 2.0)];
+        assert_eq!(tabs.noted[&clip].marks.groups(), both);
+        // the tab closes: its notes are let go once they are sent, and saved at once
+        tabs.all[0] = Tab::empty();
+        tabs.keep_notes(true);
+        assert!(tabs.noted.is_empty());
+        // and the clip is opened again
+        tabs.all[0].notes = Some(clip.clone());
+        tabs.read_notes();
+        until_read(&mut tabs);
+        assert_eq!(tabs.noted[&clip].marks.groups(), both);
+        assert!(!tabs.noted[&clip].marks.earlier);
+        drop(tabs);
+        tidy(&root);
+    }
+
+    /// a folder's file that cannot be read when a clip comes up is not written over later in the session, even once
+    /// it reads again: the clip's notes were never read from it, so they are kept in eyepiece's own folder.
+    #[test]
+    fn a_clip_whose_folders_file_could_not_be_read_is_never_saved_into_it() {
+        let (root, clip, mut tabs) = noting("unread");
+        let file = root.join("shots").join(notes::FILE);
+        std::fs::write(&file, "version: 1\nclips:\n  clip.mov: b: c\n").unwrap();
+        tabs.read_notes();
+        until_read(&mut tabs);
+        assert!(!tabs.noted[&clip].beside);
+        // someone mends the file, with a note of their own on the clip
+        let mended = "version: 1\nclips:\n  clip.mov:\n    groups:\n      - frames: [3, 4]\n        marks:\n          - { rect: [1, 2, 3, 4], ink: green }\n";
+        std::fs::write(&file, mended).unwrap();
+        tabs.noted.get_mut(&clip).unwrap().marks.add(0, None, boxed(1.0), 5, 100);
+        tabs.keep_notes(true);
+        drop(tabs);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), mended, "their note is as they left it");
+        // this window's is in eyepiece's own folder, and both are read: neither is ever saved over the other unseen
+        let theirs = markup::Group { frames: (3, 4), marks: vec![markup::Mark { shape: markup::Shape::Rectangle((1.0, 2.0), (4.0, 6.0)), ink: markup::INKS[3] }] };
+        assert_eq!(notes::read(&clip, Some(&root.join("own"))).groups, [theirs, group((0, 4), 1.0)]);
+        tidy(&root);
     }
 
     /// chroma smaller than the picture is brought up to it by blending the four samples round each pixel, placed
@@ -2799,7 +3037,7 @@ mod tests {
         let (gpu, view) = view("hap_64.mov");
         let plain = view.read(&gpu, 64, 64).expect("the frame");
         let mut marks = Marks::default();
-        marks.add(0, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] });
+        marks.add(0, None, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] }, 1, 1);
         let settings = Settings { screenshot_caption: true, screenshot_markup: true, ..Settings::default() };
         let ((w, h), pixels, with) = shot_pixels(&view, Some(&marks), &gpu, Shot::Frame, &settings, 1.0).expect("a picture");
         assert_eq!((w, with), (64, vec!["caption", "markup"]));
@@ -2829,7 +3067,7 @@ mod tests {
         let (gpu, mut view) = view("hap_64.mov");
         view.set_look(Look { mirror: true, ..Look::default() });
         let mut marks = Marks::default();
-        marks.add(0, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] });
+        marks.add(0, None, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] }, 1, 1);
         let settings = Settings { center: true, screenshot_guides: true, screenshot_markup: true, ..Settings::default() };
         let ((w, h), pixels, with) = shot_pixels(&view, Some(&marks), &gpu, Shot::View, &settings, 1.0).expect("a picture");
         assert_eq!((w, h, with), (64, 64, vec!["guides", "markup"]));
@@ -2862,7 +3100,7 @@ mod tests {
         // along row 10 of the frame turned a quarter clockwise, and not down its column 10
         use crate::markup::{Mark, Shape, INKS};
         let mut marks = Marks::default();
-        marks.add(0, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] });
+        marks.add(0, None, Mark { shape: Shape::Rectangle((10.0, 10.0), (40.0, 40.0)), ink: INKS[0] }, 1, 1);
         let (_, pixels, _) = shot_pixels(&turned, Some(&marks), &gpu, Shot::Frame, &Settings { screenshot_markup: true, ..Settings::default() }, 1.0).expect("a frame");
         let red = |x: usize, y: usize| pixels[(y * 180 + x) * 4..][..3].iter().zip([65535, 0x3b * 257, 0x30 * 257]).all(|(&got, want): (&u16, i32)| (got as i32 - want).abs() < 700);
         assert!(red(150, 9) && red(150, 10) && !red(150, 20) && !red(10, 25));

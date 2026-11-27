@@ -10,6 +10,7 @@ mod event;
 mod folder;
 mod markup;
 mod media;
+mod notes;
 mod play;
 mod pictures;
 mod player;

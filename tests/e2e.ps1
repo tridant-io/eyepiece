@@ -603,8 +603,14 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
 
 # ---- markup (fig. 19), and what a saved screenshot carries (figs 18, 20). E turns the pointer into a pen: a drag on
 # the picture draws a rectangle on the frame on screen, and control + Z takes it back. the screenshot menu's three
-# switches put the marks, the guides and a caption into a saved frame, and are kept between runs
+# switches put the marks, the guides and a caption into a saved frame, and are kept between runs.
+# marks are a clip's notes, saved beside it (adr 0010): the clip is a copy in a folder of the test's own, so nothing
+# is ever written beside the repo's media
 Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA", "screenshot_folder = $shots"
+$notes = Join-Path $env:APPDATA 'notes'
+New-Item -ItemType Directory -Force $notes | Out-Null
+$noted = Join-Path $notes 'h264_320.mp4'
+Copy-Item -LiteralPath (Join-Path $media 'h264_320.mp4') -Destination $noted
 # a drag: the button goes down at one place, the pointer moves there with it held, and it comes up at the other.
 # -Shift presses shift halfway, as a key of its own with no scan code (1 is shift held), and lets it go after the
 # release; the messages after it carry it, as the system's do (4 is shift)
@@ -621,7 +627,7 @@ function Drag-On([double]$x0, [double]$y0, [double]$x1, [double]$y1, [switch]$Sh
 }
 # a png's color type, from its header: 2 is red, green and blue; 6 is with alpha
 function Get-PngColor([string]$file) { [IO.File]::ReadAllBytes($file)[25] }
-Start-Player (Join-Path $media 'h264_320.mp4')
+Start-Player $noted
 Assert-Frame 'the clip is open' 0 24
 Send-Key 0x45; Assert-Title 'E turns markup mode on, and the title says so' ' fps . markup$'
 # the picture fills the window here; the drag is in its middle, where the pointer does not bring the controls up.
@@ -675,8 +681,12 @@ Send-Key 0x5A 3 4; Assert-Title 'back to no mark' ' fps . markup$'
 Click-At ($rectangle - 15) 60
 Confirm-That 'the rectangle tool is chosen again' ([math]::Abs((Get-ChosenTool) - $rectangle) -lt 3) "the lit tool's right end is at $(Get-ChosenTool)"
 Drag-On 200 120 300 200; Assert-Title 'a mark again' ' fps . 1 mark . markup$'
-Send-Key 0x47; Assert-Title 'a mark sits on its frame: the next one has none' '^h264_320\.mp4 . 1 / 24 .* fps . markup$'
-Send-Key 0x46; Assert-Title 'and back on its frame, there it is' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'
+# a mark is its group's, which shows over a range of frames: 3 seconds from the frame it was drawn on, and here to
+# the clip's end. the group a mark went into is selected, and in markup mode shift + ] (0xDD, 1 is shift held) sets its
+# out at the frame on screen, where outside markup mode it sets the trim's
+Send-Key 0x47; Assert-Title 'a mark shows through its group''s range: the next frame has it too' '^h264_320\.mp4 . 1 / 24 .* fps . 1 mark . markup$'
+Send-Key 0xDD 1 1; Send-Key 0x47; Assert-Title 'shift + ] sets the selected group''s out, not the trim''s: the frame after it has no mark' '^h264_320\.mp4 . 2 / 24 .* fps . markup$'
+Send-Key 0x46 2; Assert-Title 'and back in its range, there it is' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'
 Send-Key 0x4E; Send-Key 0xDB; Assert-Title 'it stays while another tab is up' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark . markup$'
 # markup is on in the screenshot menu by default: S saves the frame with the mark. the menu stands over the
 # screenshot button (87 from the right); its switches, from the bottom: markup 120 up, guides 146, the caption 173
@@ -693,6 +703,26 @@ Send-Key 0x53
 Confirm-That 'with the caption switch on, the saved frame has the caption under it: as wide, and taller' ((Wait-File $captioned) -and (Get-PngSize $captioned) -match '^320 x (\d+)$' -and [int]$Matches[1] -gt 180) "$captioned is $(if (Test-Path -LiteralPath $captioned) { Get-PngSize $captioned })"
 Send-Key 0x45; Assert-Title 'E again ends markup mode, and the mark stays' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark$'
 Stop-Player
+# notes are kept (adr 0010): the mark is in the folder's eyepiece.yaml once the window has closed, under the clip's
+# name, with its group's range
+$yaml = Join-Path $notes 'eyepiece.yaml'
+$written = if (Wait-File $yaml) { Get-Content -LiteralPath $yaml -Raw } else { '' }
+Confirm-That 'the mark is saved beside the clip, in the folder''s eyepiece.yaml' ($written -match '(?m)^  h264_320\.mp4:\r?$' -and $written -match '(?m)^      - frames: \[0, 1\]\r?$' -and $written -match '(?m)^          - \{ rect: \[') "the file says: $written"
+Confirm-That 'and nothing was written beside the repo''s media' (-not (Test-Path -LiteralPath (Join-Path $media 'eyepiece.yaml'))) "there is a $(Join-Path $media 'eyepiece.yaml')"
+# the clip opened again has its mark, read from the file; a mark drawn then is back too when the tab is closed
+# (control + W) and brought back (control + shift + T): saved as the tab closed, read as the clip came up
+Start-Player $noted
+Assert-Title 'the clip opened again has its mark' '^h264_320\.mp4 . 0 / 24 .* fps . 1 mark$'
+Send-Key 0x45; Drag-On 330 230 400 280; Assert-Title 'a second mark, in the same group' ' fps . 2 marks . markup$'
+Send-Key 0x57 1 4; Assert-Title 'control + W closes the tab' '^eyepiece$'
+Send-Key 0x54 1 5; Assert-Title 'the tab brought back has both marks' '^h264_320\.mp4 . 0 / 24 .* fps . 2 marks'
+Send-Key 0x47 2; Assert-Title 'and they keep their group''s range: none two frames on' '^h264_320\.mp4 . 2 / 24 .* fps( . markup)?$'
+Stop-Player
+$written = Get-Content -LiteralPath $yaml -Raw
+Confirm-That 'both marks are in the file, and the version it replaced is kept beside it' (([regex]::Matches($written, '\{ rect: \[')).Count -eq 2 -and (Test-Path -LiteralPath "$yaml.previous")) "the file says: $written"
+foreach ($made in $yaml, "$yaml.previous", $noted, $notes) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
 $kept = Get-Content -LiteralPath $settings
 Confirm-That 'the switches are kept between runs' (($kept -contains 'screenshot_caption = on') -and ($kept -contains 'screenshot_markup = off') -and ($kept -contains 'screenshot_guides = off')) "the settings say: $($kept -match 'screenshot_')"
 # a still with clear pixels: its saved frame keeps its alpha

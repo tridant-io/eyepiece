@@ -3,11 +3,13 @@
 mod instance;
 mod metal;
 mod paint;
+mod swap;
 mod ui_paint;
 pub mod window;
 
 pub use metal::Gpu;
 pub use paint::Paint;
+pub use swap::swap_in;
 pub use ui_paint::UiPainter;
 
 use crate::media::clip::Clip;

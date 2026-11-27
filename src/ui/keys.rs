@@ -137,6 +137,8 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("screenshot", "screenshot of the view", "shift S", Key::S, SHIFT),
             menu_only("copy frame", "ctrl C", Key::C, CTRL),
             both("markup", "markup mode", "E", Key::E, NONE),
+            // the trim's keys, while a group is selected in markup mode: the menu sends them as the trim's rows do
+            table_only("a selected group's in / out", "shift [ ]"),
             menu_only("undo a change to marks", "ctrl Z", Key::Z, CTRL),
             menu_only("redo a change to marks", "ctrl shift Z", Key::Z, CTRL_SHIFT),
         ],
@@ -382,7 +384,7 @@ mod tests {
     fn the_table_of_keys_is_the_designs_as_built() {
         let keys: Vec<String> = sections().into_iter().flat_map(|(_, lines)| lines.into_iter().map(|(keys, _)| keys)).collect();
         let wanted = [
-            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "ctrl left right", "R", "A", "shift - =", "shift [ ]", "shift backspace", "T", "I", "D C", "H V Q", "S shift S", "E", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
+            "space", "F G left right", "shift F G home end", "J K L", "wheel", "shift wheel", "0 1 2", "- =", "double-click", "alt arrows", "O", "N", "[ ]", "ctrl left right", "R", "A", "shift - =", "shift [ ]", "shift backspace", "T", "I", "D C", "H V Q", "S shift S", "E", "shift [ ]", "M ↑ ↓", "P shift P", "right-click", "?", "ctrl ,", "esc",
         ];
         assert_eq!(keys, wanted);
         assert_eq!(named(Key::Comma, CTRL), Some(("settings".to_string(), "ctrl ,".to_string())));

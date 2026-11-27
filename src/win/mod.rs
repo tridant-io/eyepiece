@@ -3,6 +3,7 @@
 mod d3d;
 mod instance;
 mod paint;
+mod swap;
 mod ui_paint;
 pub mod window;
 
@@ -18,6 +19,7 @@ impl Pool {
 
 pub use d3d::Gpu;
 pub use paint::Paint;
+pub use swap::swap_in;
 pub use ui_paint::UiPainter;
 
 use crate::media::clip::Clip;

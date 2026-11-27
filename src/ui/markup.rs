@@ -1,12 +1,13 @@
 //! markup mode (fig. 19): the pointer draws on the frame with the tool and the ink chosen in a row of tools at the top
-//! middle of the picture. marks are kept in the file's own pixels (`crate::markup`), and the same drawing puts them,
-//! with the guides and a caption, into a saved picture (fig. 20).
+//! middle of the picture. marks are kept in the file's own pixels (`crate::markup`), in groups that each show over a
+//! range of frames: a group is a bar on the timebar, which a drag resizes and moves as a trim is set. the same drawing
+//! puts the marks, with the guides and a caption, into a saved picture (fig. 20).
 
 use super::icons::{self, Icon};
 use super::widgets::{self, CHOSEN, ON_CHOSEN};
-use super::{font, keys, text_top, Action, Model, Shot, Ui, DIM, FG, HOVER, LINE, MONO_MEDIUM, SANS, SOLID};
+use super::{font, keys, stamp, text_top, Action, Model, Shot, Ui, DIM, FG, FILL, HOVER, LINE, MONO_MEDIUM, SANS, SOLID, TRACK_THICK};
 use crate::event::Key;
-use crate::markup::{scale_by, smooth, square, Mark, Marks, Placing, Point, Shape, Tool, INKS};
+use crate::markup::{dragged, lanes, scale_by, smooth, square, Mark, Marks, Part, Placing, Point, Shape, Tool, INKS};
 use crate::timecode::Timecode;
 use crate::view::Guides;
 use egui::text::LayoutJob;
@@ -52,6 +53,13 @@ const TEXT_SIZES: (f32, f32) = (0.5, 8.0);
 // a mark's menu, as wide as the bar's menus, its rows 24 high as the right-click menu's
 const MENU_WIDTH: f32 = 268.0;
 const MENU_ROW: f32 = 24.0;
+// a group's bar on the timebar: 2 high and 1 clear of the track at its thickest, so the track never grows over it; a
+// second lane 3 higher for a group that overlaps another, and no third: there is no room over the track for one
+const BAR_HIGH: f32 = 2.0;
+const LANE: f32 = 3.0;
+const LANES: usize = 2;
+/// how near an end of a group's bar a press must be to take that end, and how far past the bar it still takes it
+const END_REACH: f32 = 4.0;
 
 /// markup mode, and what it is in the middle of. the tool and the ink stay chosen when the mode ends.
 #[derive(Default)]
@@ -74,6 +82,25 @@ pub(super) struct Markup {
     /// the selected mark's menu, which a right click on it opened, where it was asked for; and where it was drawn last
     pub(super) menu: Option<Pos2>,
     pub(super) menu_rect: Option<Rect>,
+    /// the group selected: its place among the clip's groups, and its range as last seen. it is let go when the
+    /// groups change under it (undo, another clip, another tab)
+    group: Option<(usize, (usize, usize))>,
+    /// a mark was drawn on this frame: the group it went into is selected at the next pass, when it is there
+    adopt: Option<usize>,
+    /// what a press on a group's bar took hold of, until the button comes up
+    grip: Option<Grip>,
+    /// the pointer is on an end of a group's bar, or has one in hand: it is shown as a two-way arrow
+    at_end: bool,
+}
+
+/// a hold on a group's bar: the group, the part of the bar, the frame under the press, and its range then and as the
+/// drag has it so far
+struct Grip {
+    group: usize,
+    part: Part,
+    from: usize,
+    was: (usize, usize),
+    now: (usize, usize),
 }
 
 /// a hold on the mark selected: a corner of its bounds to scale it by (or none, to move it), where the press was and
@@ -251,6 +278,49 @@ impl Markup {
         self.selected.take().map(|(frame, index, _)| (frame, index))
     }
 
+    /// escape: lets go of the mark selected and of the group selected. false when neither was.
+    pub(super) fn let_go_all(&mut self) -> bool {
+        self.let_go().is_some() | (self.group.take().is_some() | self.grip.take().is_some())
+    }
+
+    /// the group selected, by its place among the clip's groups
+    pub(super) fn group(&self) -> Option<usize> {
+        self.group.map(|(group, _)| group)
+    }
+
+    /// the group selected has this range now: its keys set it, and it stays selected
+    pub(super) fn group_ranged(&mut self, frames: (usize, usize)) {
+        if let Some((_, was)) = &mut self.group {
+            *was = frames;
+        }
+    }
+
+    /// true once a pass while the pointer is on an end of a group's bar
+    pub(super) fn over_end(&mut self) -> bool {
+        std::mem::take(&mut self.at_end)
+    }
+
+    /// before a pass over a clip: the group a mark was just drawn into is selected, unless the one selected took it;
+    /// and a group selected is let go when the clip's groups are no longer as they were when it was taken.
+    pub(super) fn settle(&mut self, model: &Model) {
+        let groups = model.marks.map_or(&[][..], Marks::groups);
+        if let Some(frame) = self.adopt.take() {
+            let home = model.marks.and_then(|marks| marks.home(frame, self.group()));
+            self.group = home.map(|group| (group, groups[group].frames));
+        }
+        self.group = self.group.filter(|(group, frames)| groups.get(*group).is_some_and(|at| at.frames == *frames));
+        if self.group.is_none() {
+            self.grip = None;
+        }
+    }
+
+    /// selects the mark at `index` among those on the frame on screen, and with it its group
+    fn take(&mut self, model: &Model, index: usize, mark: &Mark) {
+        self.selected = Some((model.frame, index, mark.clone()));
+        let group = model.marks.and_then(|marks| Some((marks.group_of(model.frame, index)?, marks)));
+        self.group = group.map(|(group, marks)| (group, marks.groups()[group].frames));
+    }
+
     pub(super) fn selects(&self) -> bool {
         self.selected.is_some()
     }
@@ -262,12 +332,15 @@ impl Markup {
 
     /// what was typed becomes a mark, unless it is only spaces. text put back in the field by its menu is kept in its
     /// place, or taken off when nothing is left of it.
-    fn keep(&self, writing: Writing, actions: &mut Vec<Action>) {
+    fn keep(&mut self, writing: Writing, actions: &mut Vec<Action>) {
         let mark = Mark { shape: Shape::Text(writing.at, writing.text.trim().to_string(), writing.size), ink: writing.ink };
         let kept = (!mark.tiny(1.0)).then_some(mark);
         match writing.replaces {
             Some(index) => actions.push(Action::Change(writing.frame, index, kept)),
-            None => actions.extend(kept.map(|mark| Action::Mark(writing.frame, mark))),
+            None => {
+                self.adopt = kept.is_some().then_some(writing.frame);
+                actions.extend(kept.map(|mark| Action::Mark(writing.frame, mark)));
+            }
         }
     }
 
@@ -294,9 +367,9 @@ impl Markup {
         let (x, y, w, h) = model.picture;
         let on_picture = |p: &Pos2| (x..x + w).contains(&(p.x * scale)) && (y..y + h).contains(&(p.y * scale));
         let file = |p: Pos2| place.to_file((p.x * scale, p.y * scale));
-        let on = model.marks.map_or(&[][..], |marks| marks.on(model.frame));
+        let on = model.marks.map_or_else(Vec::new, |marks| marks.on(model.frame));
         // a selection lasts while its mark is as it was, on the frame on screen
-        self.selected = self.selected.take().filter(|(frame, index, mark)| *frame == model.frame && on.get(*index) == Some(mark));
+        self.selected = self.selected.take().filter(|(frame, index, mark)| *frame == model.frame && on.get(*index) == Some(&mark));
         if self.selected.is_none() {
             (self.held, self.menu) = (None, None);
         }
@@ -313,11 +386,12 @@ impl Markup {
         let mut asked = false;
         if picture.secondary_clicked() {
             if let Some((at, index)) = picture.interact_pointer_pos().and_then(|at| Some((at, pick(&seen, at)?))) {
-                (self.selected, self.held, self.menu, asked) = (Some((model.frame, index, on[index].clone())), None, Some(at), true);
+                self.take(model, index, on[index]);
+                (self.held, self.menu, asked) = (None, Some(at), true);
             }
         }
         if self.tool == Tool::Select {
-            self.select(ui, picture, &place, scale, (model.frame, on), &seen, actions);
+            self.select(ui, picture, &place, scale, (model, &on), &seen, actions);
         }
         if picture.drag_started_by(egui::PointerButton::Primary) && self.draws() && self.tool != Tool::Text {
             let origin = ui.input(|i| i.pointer.press_origin());
@@ -338,6 +412,7 @@ impl Markup {
             let per = w / model.shown_size.0.max(1) as f32 / scale;
             if let Some((frame, mark)) = self.drawn(model, scale, smoothing).filter(|(_, mark)| !mark.tiny(per)) {
                 actions.push(Action::Mark(frame, mark));
+                self.adopt = Some(frame);
             }
             self.drawing = None;
         }
@@ -353,17 +428,17 @@ impl Markup {
     /// selected mark's bounds takes hold of it to scale the mark about the opposite corner, a press on a mark selects
     /// it and takes hold of it to move it, and a press on no mark lets go. the drag changes the mark as it goes, and
     /// the release keeps the change, with the mark still selected.
-    fn select(&mut self, ui: &egui::Ui, picture: &egui::Response, place: &Placing, scale: f32, (frame, on): (usize, &[Mark]), seen: &[Seen], actions: &mut Vec<Action>) {
+    fn select(&mut self, ui: &egui::Ui, picture: &egui::Response, place: &Placing, scale: f32, (model, on): (&Model, &[&Mark]), seen: &[Seen], actions: &mut Vec<Action>) {
         if let Some(at) = ui.input(|i| i.pointer.press_origin()).filter(|_| ui.input(|i| i.pointer.primary_pressed()) && picture.hovered()) {
             let corner = self.selected.as_ref().and_then(|(_, index, _)| corners(grip_box(&seen[*index])).iter().position(|c| c.distance(at) <= REACH));
             self.held = match (corner, pick(seen, at)) {
                 (Some(_), _) => self.selected.as_ref().map(|(_, index, _)| Held { corner, from: at, bounds: grip_box(&seen[*index]), now: None }),
                 (None, Some(index)) => {
-                    self.selected = Some((frame, index, on[index].clone()));
+                    self.take(model, index, on[index]);
                     Some(Held { corner: None, from: at, bounds: grip_box(&seen[index]), now: None })
                 }
                 (None, None) => {
-                    self.selected = None;
+                    (self.selected, self.group) = (None, None);
                     None
                 }
             };
@@ -384,16 +459,17 @@ impl Markup {
         }
     }
 
-    /// the marks on the frame on screen, and the one being drawn on it, over the picture and clipped to it: the one
-    /// selected as a drag has it so far, with its bounds and their handles; and not the text in the field.
+    /// the marks that show on the frame on screen (those of every group whose range holds it), and the one being
+    /// drawn on it, over the picture and clipped to it: the one selected as a drag has it so far, with its bounds and
+    /// their handles; and not the text in the field.
     pub(super) fn marks(&self, ui: &egui::Ui, model: &Model, scale: f32, smoothing: f32) {
+        let on = model.marks.map_or_else(Vec::new, |marks| marks.on(model.frame));
         let (x, y, w, h) = model.picture;
         let painter = ui.painter().with_clip_rect(Rect::from_min_size(Pos2::new(x / scale, y / scale), Vec2::new(w / scale, h / scale)));
         let place = placing(model);
         let selected = self.selected.as_ref().filter(|(frame, ..)| *frame == model.frame).map(|(_, index, mark)| (*index, self.held.as_ref().and_then(|held| held.now.as_ref()).unwrap_or(mark)));
         let editing = self.writing.as_ref().filter(|writing| writing.frame == model.frame).and_then(|writing| writing.replaces);
-        let on = model.marks.map_or(&[][..], |marks| marks.on(model.frame));
-        let shown = on.iter().enumerate().filter(|(index, _)| editing != Some(*index)).map(|(index, mark)| selected.filter(|(at, _)| *at == index).map_or(mark, |(_, now)| now));
+        let shown = on.iter().enumerate().filter(|(index, _)| editing != Some(*index)).map(|(index, mark)| selected.filter(|(at, _)| *at == index).map_or(*mark, |(_, now)| now));
         let drawing = self.drawn(model, scale, smoothing).filter(|(frame, _)| *frame == model.frame).map(|(_, mark)| mark);
         draw_marks(&painter, shown.chain(drawing.as_ref()), &place, scale);
         if let Some((_, mark)) = selected {
@@ -409,8 +485,8 @@ impl Markup {
     }
 
     /// the selected mark's menu, at the right click that opened it and kept inside `full`: delete, edit text for a
-    /// text, then the inks. a press anywhere else closes it, as a choice does. what it does is a change to the mark,
-    /// which undo takes back.
+    /// text, own range for a mark that shares its group, then the inks. a press anywhere else closes it, as a choice
+    /// does. what it does is a change to the clip's notes, which undo takes back.
     pub(super) fn mark_menu(&mut self, ui: &egui::Ui, full: Rect, model: &Model, scale: f32, actions: &mut Vec<Action>) {
         let (Some(at), Some((frame, index, mark))) = (self.menu, self.selected.clone()) else {
             self.menu = None;
@@ -423,22 +499,25 @@ impl Markup {
         enum Chosen {
             Delete,
             EditText,
+            OwnRange,
             Ink([u8; 3]),
         }
+        // a mark that shares its group can have a range of its own: the row is there for it
+        let shares = model.marks.and_then(|marks| Some(&marks.groups()[marks.group_of(frame, index)?])).filter(|group| group.marks.len() > 1).map(|group| group.frames);
         let mut chosen = None;
         let last = self.menu_rect.unwrap_or(Rect::NOTHING);
         let corner = Pos2::new(at.x.min(full.right() - 8.0 - last.width()).max(full.left() + 8.0), at.y.min(full.bottom() - 8.0 - last.height()).max(full.top() + 8.0));
         self.menu_rect = Some(widgets::menu(ui, "mark-menu", corner, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             // what can be done to the mark, a row each
-            let rows: &[(&str, Option<&str>, fn() -> Chosen)] = match mark.shape {
-                Shape::Text(..) => &[("delete", Some("del"), || Chosen::Delete), ("edit text", None, || Chosen::EditText)],
-                _ => &[("delete", Some("del"), || Chosen::Delete)],
-            };
-            for (name, key, what) in rows {
-                if menu_row(ui, name, *key) {
-                    chosen = Some(what());
-                }
+            if menu_row(ui, "delete", Some("del")) {
+                chosen = Some(Chosen::Delete);
+            }
+            if matches!(mark.shape, Shape::Text(..)) && menu_row(ui, "edit text", None) {
+                chosen = Some(Chosen::EditText);
+            }
+            if shares.is_some() && menu_row(ui, "own range", None) {
+                chosen = Some(Chosen::OwnRange);
             }
             ui.add_space(10.0);
             widgets::heading(ui, "color", &[]);
@@ -461,6 +540,14 @@ impl Markup {
                 let inked = Mark { ink: rgb, ..mark };
                 actions.push(Action::Change(frame, index, Some(inked.clone())));
                 self.selected = Some((frame, index, inked));
+            }
+            // it is the last of the frame's marks then, in a group after every other, and both stay selected
+            Some(Chosen::OwnRange) => {
+                if let (Some(frames), Some(marks)) = (shares, model.marks) {
+                    actions.push(Action::OwnRange(frame, index));
+                    self.selected = Some((frame, marks.on(frame).len() - 1, mark));
+                    self.group = Some((marks.groups().len(), frames));
+                }
             }
             Some(Chosen::EditText) => {
                 if let Shape::Text(at, text, size) = mark.shape {
@@ -616,13 +703,86 @@ fn edited(place: &Placing, scale: f32, held: &Held, was: &Mark, now: Pos2, keep:
     mark
 }
 
-/// a tick over the timebar at each frame that carries marks: 1 wide and 5 high, 8 over the track. `last` is the
-/// frame at the timebar's right end.
-pub(super) fn ticks(painter: &egui::Painter, area: Rect, track: Rect, last: f32, marks: &Marks) {
-    for frame in marks.frames() {
-        let x = area.left() + area.width() * (frame as f32 / last).min(1.0);
-        painter.rect_filled(Rect::from_min_max(Pos2::new(x, track.top() - 8.0), Pos2::new(x + 1.0, track.top() - 3.0)), 0.0, Color32::WHITE);
+impl Markup {
+    /// the clip's groups on the timebar: each a thin bar just over the track from its in frame to its out, in a lane
+    /// of its own where it overlaps another, white as the trim's markers are; the one selected brighter, with a stem
+    /// down to the track at each end. a press on a bar selects its group; a drag on an end of it moves that end, and
+    /// on the rest of it the whole range, as far as the pointer goes; the release keeps the range. the bars stand
+    /// over the timebar, so a press on one goes nowhere in the clip. `track` is the track as drawn and `last` the
+    /// frame at the timebar's right end.
+    pub(super) fn bars(&mut self, ui: &egui::Ui, area: Rect, track: Rect, last: f32, marks: &Marks, actions: &mut Vec<Action>) {
+        let painter = ui.painter();
+        let x_of = |frame: usize| area.left() + area.width() * (frame as f32 / last).min(1.0);
+        let frame_at = |x: f32| (((x - area.left()) / area.width()).clamp(0.0, 1.0) * last).round() as usize;
+        let lane_of = lanes(marks.groups(), LANES);
+        let highest = lane_of.iter().copied().max().unwrap_or(0);
+        let down = ui.input(|i| i.pointer.primary_down());
+        for (i, group) in marks.groups().iter().enumerate() {
+            let frames = self.grip.as_ref().filter(|grip| grip.group == i).map_or(group.frames, |grip| grip.now);
+            let top = area.bottom() - TRACK_THICK - 1.0 - BAR_HIGH - LANE * lane_of[i] as f32;
+            let bar = Rect::from_min_max(Pos2::new(x_of(frames.0) - 1.0, top), Pos2::new(x_of(frames.1) + 1.0, top + BAR_HIGH));
+            // the room a press has: the lane's own height, down to the track from the lowest, and up to the timebar's
+            // top from a lane with none over it
+            let over = if lane_of[i] == highest && highest == 0 { area.top() } else { top - 1.0 };
+            let under = if lane_of[i] == 0 { top + BAR_HIGH + 1.0 } else { top + BAR_HIGH };
+            let room = Rect::from_min_max(Pos2::new(bar.left() - END_REACH, over), Pos2::new(bar.right() + END_REACH, under));
+            let response = ui.interact(room, ui.scope_id().with(("group-bar", i)), Sense::click_and_drag());
+            let end_at = |x: f32| match ((x - bar.left()).abs() <= END_REACH, (x - bar.right()).abs() <= END_REACH) {
+                (true, true) if x - bar.left() <= bar.right() - x => Part::In,
+                (true, false) => Part::In,
+                (_, true) => Part::Out,
+                (false, false) => Part::Whole,
+            };
+            if down && response.is_pointer_button_down_on() && self.grip.is_none() {
+                if let Some(at) = ui.input(|i| i.pointer.press_origin()) {
+                    (self.group, self.grip) = (Some((i, group.frames)), Some(Grip { group: i, part: end_at(at.x), from: frame_at(at.x), was: group.frames, now: group.frames }));
+                    // a mark of another group is let go
+                    self.selected = self.selected.take().filter(|(frame, index, _)| marks.group_of(*frame, *index) == Some(i));
+                    (self.held, self.menu) = (None, None);
+                }
+            }
+            if let Some(grip) = self.grip.as_mut().filter(|grip| grip.group == i) {
+                if let Some(at) = response.interact_pointer_pos().filter(|_| down) {
+                    grip.now = dragged(grip.was, grip.part, grip.from, frame_at(at.x), last as usize);
+                }
+                self.at_end |= grip.part != Part::Whole;
+                if !down {
+                    if grip.now != grip.was {
+                        actions.push(Action::Range(i, grip.now));
+                        self.group = Some((i, grip.now));
+                    }
+                    self.grip = None;
+                }
+            } else if let Some(at) = response.hover_pos() {
+                self.at_end |= end_at(at.x) != Part::Whole;
+            }
+            if self.group() == Some(i) {
+                painter.rect_filled(bar, 0.0, Color32::WHITE);
+                for x in [bar.left(), bar.right() - 2.0] {
+                    painter.rect_filled(Rect::from_min_max(Pos2::new(x, top), Pos2::new(x + 2.0, track.top())), 0.0, Color32::WHITE);
+                }
+            } else {
+                painter.rect_filled(bar, 0.0, FILL);
+            }
+        }
     }
+
+    /// what the chip of the group selected says, as the trim's says its points: where the group starts and ends,
+    /// counted as the readout counts, and how many frames it shows on, both its ends among them. a drag says it as
+    /// it goes.
+    pub(super) fn group_chip(&self, model: &Model, timecode: bool) -> Option<Vec<(String, Color32)>> {
+        let (group, frames) = self.group?;
+        let (first, last) = self.grip.as_ref().filter(|grip| grip.group == group).map_or(frames, |grip| grip.now);
+        let point = |frame: usize| stamp(frame, model.first, model.clock, timecode).1;
+        Some(vec![(format!("group · {} ", point(first)), FG), ("to".to_string(), DIM), (format!(" {}", point(last)), FG), (format!(" · {} f", last + 1 - first), DIM)])
+    }
+}
+
+/// what is said of notes read from a file that says they were made on another version of the clip's file (its size
+/// or its time was another then): they are shown, labeled, until a change makes them this version's.
+pub(super) fn earlier_chip(model: &Model) -> Option<Vec<(String, Color32)>> {
+    let earlier = model.marks.is_some_and(|marks| marks.earlier && !marks.groups().is_empty());
+    earlier.then(|| vec![("notes made on an earlier version of this file".to_string(), FG)])
 }
 
 /// draws marks: `place` puts the file's pixels in the target and `scale` of the target's pixels make one of the
@@ -792,8 +952,8 @@ mod tests {
     #[test]
     fn the_select_tool_moves_and_scales_the_mark_taken_and_no_other() {
         let mut marks = Marks::default();
-        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
-        marks.add(0, boxed((300.0, 200.0), (400.0, 250.0)));
+        marks.add(0, None, boxed((200.0, 100.0), (260.0, 160.0)), 1, 1);
+        marks.add(0, None, boxed((300.0, 200.0), (400.0, 250.0)), 1, 1);
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         ui.markup.tool = Tool::Select;
@@ -828,7 +988,7 @@ mod tests {
     fn an_ink_in_the_row_recolors_the_mark_selected() {
         let mut marks = Marks::default();
         let text = Mark { shape: Shape::Text(file((200.0, 100.0)), "note".into(), 1.0), ink: INKS[0] };
-        marks.add(0, text.clone());
+        marks.add(0, None, text.clone(), 1, 1);
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         ui.markup.tool = Tool::Select;
@@ -855,7 +1015,7 @@ mod tests {
     fn a_texts_corner_grows_its_letters() {
         let mut marks = Marks::default();
         let text = Mark { shape: Shape::Text(file((200.0, 100.0)), "note".into(), 1.0), ink: INKS[0] };
-        marks.add(0, text.clone());
+        marks.add(0, None, text.clone(), 1, 1);
         let mut grips = Rect::NOTHING;
         with_painter(|painter| grips = grip_box(&Seen::of(painter, &text, &placing(&model()), 1.0)));
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
@@ -876,8 +1036,8 @@ mod tests {
     #[test]
     fn delete_takes_the_mark_selected_and_escape_lets_go_of_it_first() {
         let mut marks = Marks::default();
-        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
-        marks.add(0, boxed((300.0, 200.0), (400.0, 250.0)));
+        marks.add(0, None, boxed((200.0, 100.0), (260.0, 160.0)), 1, 1);
+        marks.add(0, None, boxed((300.0, 200.0), (400.0, 250.0)), 1, 1);
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         ui.markup.tool = Tool::Select;
@@ -900,7 +1060,7 @@ mod tests {
     #[test]
     fn drawing_lets_go_of_the_mark_selected() {
         let mut marks = Marks::default();
-        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
+        marks.add(0, None, boxed((200.0, 100.0), (260.0, 160.0)), 1, 1);
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         let pass = |ui: &mut Ui, steps: &[Step]| drive_with(ui, Model { marks: Some(&marks), ..model() }, steps);
@@ -920,10 +1080,10 @@ mod tests {
     fn a_right_click_on_a_mark_opens_its_menu_and_each_item_does_what_it_says() {
         let mut marks = Marks::default();
         let text = Mark { shape: Shape::Text(file((300.0, 200.0)), "note".into(), 1.0), ink: INKS[0] };
-        marks.add(0, boxed((200.0, 100.0), (260.0, 160.0)));
-        marks.add(0, text.clone());
-        marks.add(0, Mark { shape: Shape::Circle(file((380.0, 150.0)), file((440.0, 210.0))), ink: INKS[0] });
-        marks.add(0, Mark { shape: Shape::Pen(vec![file((380.0, 250.0)), file((420.0, 260.0)), file((460.0, 250.0))]), ink: INKS[0] });
+        marks.add(0, None, boxed((200.0, 100.0), (260.0, 160.0)), 1, 1);
+        marks.add(0, None, text.clone(), 1, 1);
+        marks.add(0, None, Mark { shape: Shape::Circle(file((380.0, 150.0)), file((440.0, 210.0))), ink: INKS[0] }, 1, 1);
+        marks.add(0, None, Mark { shape: Shape::Pen(vec![file((380.0, 250.0)), file((420.0, 260.0)), file((460.0, 250.0))]), ink: INKS[0] }, 1, 1);
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.toggle_markup();
         let pass = |ui: &mut Ui, steps: &[Step]| drive_with(ui, Model { marks: Some(&marks), ..model() }, steps);
@@ -939,11 +1099,19 @@ mod tests {
         };
         assert!(pass(&mut ui, &right_click((200.0, 130.0))).is_empty());
         assert!(ui.markup.menu.is_some() && ui.commands.is_none() && ui.mark_selected(), "the box's menu, not the player's");
+        assert_eq!(ui.group_selected(), Some(0), "and its group is selected with it");
         let at = row(&ui, 0.0);
         assert_eq!(pass(&mut ui, &click(at)), vec![Action::Change(0, 0, None)], "delete");
         assert!(ui.markup.menu.is_none());
+        // the four share a group, so each has "own range" under what else its menu holds: it asks for a group of the
+        // mark's own, and the mark is then the last of the frame's, in the clip's second group, both still selected
         pass(&mut ui, &right_click((200.0, 130.0)));
-        let at = swatch(&ui, 1.0, 1.0);
+        let at = row(&ui, 1.0);
+        assert_eq!(pass(&mut ui, &click(at)[..3]), vec![Action::OwnRange(0, 0)], "own range");
+        assert_eq!((ui.markup.selected.as_ref().map(|(frame, index, _)| (*frame, *index)), ui.markup.group), (Some((0, 3)), Some((1, (0, 0)))));
+        ui.escape();
+        pass(&mut ui, &right_click((200.0, 130.0)));
+        let at = swatch(&ui, 2.0, 1.0);
         let colored = pass(&mut ui, &click(at));
         assert_eq!(colored, vec![Action::Change(0, 0, Some(Mark { ink: INKS[1], ..boxed((200.0, 100.0), (260.0, 160.0)) }))], "an ink");
         // text has "edit text" under delete
@@ -972,9 +1140,147 @@ mod tests {
             let at = row(&ui, 0.0);
             assert_eq!(pass(&mut ui, &click(at)), vec![Action::Change(0, index, None)], "delete, for mark {index}");
         }
+        // a mark alone in its group has its own range already: no such row
+        let mut alone = Marks::default();
+        alone.add(0, None, boxed((200.0, 100.0), (260.0, 160.0)), 1, 1);
+        drive_with(&mut ui, Model { marks: Some(&alone), ..model() }, &right_click((200.0, 130.0)));
+        assert_eq!(ui.markup.menu_rect.expect("the menu is drawn").height(), boxed_height - 24.0);
+        ui.escape();
         // off every mark, the player's own
         pass(&mut ui, &right_click((560.0, 200.0)));
         assert!(ui.markup.menu.is_none() && ui.commands.is_some());
+    }
+
+    /// a clip of 150 frames on frame 82, with these notes. its timebar is as wide as the window: frame f is 640 × f
+    /// / 149 along it, and a group's bar is 9 to 11 up from the window's bottom edge, a second lane's 12 to 14
+    fn clip(marks: &Marks) -> Model<'_> {
+        Model { frame: 82, frames: 150, marks: Some(marks), ..model() }
+    }
+
+    fn along(frame: usize) -> f32 {
+        640.0 * frame as f32 / 149.0
+    }
+
+    /// a group of one box, over these frames
+    fn grouped(frames: (usize, usize)) -> crate::markup::Group {
+        crate::markup::Group { frames, marks: vec![boxed((200.0, 100.0), (260.0, 160.0))] }
+    }
+
+    /// a press on a group's bar on the timebar selects the group and goes nowhere in the clip; a drag on an end of
+    /// the bar moves that end to the frame under the pointer, and on its middle the whole range as far as the pointer
+    /// went; the release asks for the range, once. a press on the track under it goes there as ever, and the group
+    /// stays selected; escape lets go of it. all of it with markup mode off or on.
+    #[test]
+    fn a_groups_bar_is_selected_by_a_press_and_dragged_by_its_ends_and_its_middle() {
+        for markup in [false, true] {
+            let mut marks = Marks::of(vec![grouped((55, 129))], false);
+            let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+            if markup {
+                ui.toggle_markup();
+            }
+            // the pointer on the bar brings the controls up: a pass for them to be asked for, one for them to be there
+            let up = [(along(90), 350.0, None), (along(90), 350.0, None)];
+            drive_with(&mut ui, clip(&marks), &up);
+            assert_eq!(ui.group_selected(), None);
+            assert_eq!(drive_with(&mut ui, clip(&marks), &click((along(90), 350.0))), vec![], "a press on the bar is no seek");
+            assert_eq!(ui.group_selected(), Some(0));
+            for (from, to, range) in [(129, 100, (55, 100)), (55, 40, (40, 100)), (70, 80, (50, 110)), (110, 149, (50, 149)), (50, 120, (120, 149))] {
+                // up to the release: the player sets the range before the next pass
+                let asked = drive_with(&mut ui, clip(&marks), &drag((along(from), 350.0), (along(to), 350.0))[..5]);
+                assert_eq!(asked, vec![Action::Range(0, range)], "markup {markup}: a drag from frame {from} to {to}");
+                marks.set_range(0, range, 150);
+                drive_with(&mut ui, clip(&marks), &up[..1]);
+                assert_eq!(ui.markup.group, Some((0, range)), "still selected, as it is now");
+            }
+            let seeks = drive_with(&mut ui, clip(&marks), &click((along(10), 357.0)));
+            assert!(!seeks.is_empty() && seeks.iter().all(|asked| *asked == Action::Seek(10)), "the track is the timebar's: {seeks:?}");
+            assert_eq!(ui.group_selected(), Some(0));
+            // the groups changed under it (an undo): it is let go
+            assert!(marks.undo());
+            drive_with(&mut ui, clip(&marks), &up[..1]);
+            assert_eq!(ui.group_selected(), None);
+            drive_with(&mut ui, clip(&marks), &click((along(120), 350.0)));
+            assert!(ui.group_selected() == Some(0) && ui.escape() && ui.group_selected().is_none(), "escape lets go of it");
+            assert_eq!(ui.markup(), markup, "and leaves markup mode as it was");
+        }
+    }
+
+    /// the bars as drawn: 2 high and 1 over the track at its thickest, from a frame before the group's in to a frame
+    /// past its out as the timebar's head is 2 wide, in the track's lit gray; a group that overlaps another a lane
+    /// higher; the one selected white, with a stem at each end.
+    #[test]
+    fn a_group_is_a_thin_bar_over_the_track_and_one_that_overlaps_a_lane_higher() {
+        let marks = Marks::of(vec![grouped((55, 129)), grouped((100, 140))], false);
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.ctx.tessellation_options_mut(|options| options.feathering = false);
+        drive_with(&mut ui, clip(&marks), &[(320.0, 100.0, None)]);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // the corners of what is drawn in a color above the track's own rows, each once
+        let drawn = |ui: &mut Ui| {
+            ui.pointer_move(320.0, 100.0);
+            let mut out = ui.run(&super::super::Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(clip(&marks)), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &super::super::tests::DEFAULTS });
+            out.textures.clear();
+            let meshes = out.primitives.iter().filter_map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => Some(mesh),
+                _ => None,
+            });
+            let corners: Vec<(Color32, (i32, i32))> = meshes.flat_map(|mesh| &mesh.vertices).filter(|v| (340.0..352.0).contains(&v.pos.y)).map(|v| (v.color, (v.pos.x.round() as i32, v.pos.y.round() as i32))).collect();
+            move |color: Color32| {
+                let mut of: Vec<(i32, i32)> = corners.iter().filter(|(c, _)| *c == color).map(|(_, at)| *at).collect();
+                of.sort();
+                of.dedup();
+                of
+            }
+        };
+        let plain = drawn(&mut ui);
+        assert_eq!(plain(super::super::FILL), [(235, 349), (235, 351), (429, 346), (429, 348), (555, 349), (555, 351), (602, 346), (602, 348)]);
+        assert_eq!(plain(Color32::WHITE), [], "nothing selected, and the head starts lower");
+        ui.markup.group = Some((1, (100, 140)));
+        let selected = drawn(&mut ui);
+        assert_eq!(selected(super::super::FILL), [(235, 349), (235, 351), (555, 349), (555, 351)]);
+        assert_eq!(selected(Color32::WHITE), [(429, 346), (429, 348), (431, 346), (600, 346), (602, 346), (602, 348)], "its bar, and the top of a stem at each end");
+    }
+
+    /// a mark drawn is its group's: the group it went into is selected once it is there, a group the next mark joins
+    /// while its range holds the frame, whichever group is newer. drawing does not let go of the group, and the chip
+    /// says its range as the trim's says its points.
+    #[test]
+    fn a_mark_drawn_selects_its_group_and_the_next_joins_the_group_selected() {
+        let mut marks = Marks::of(vec![grouped((0, 100)), grouped((60, 120))], false);
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.toggle_markup();
+        let drawn = drive_with(&mut ui, clip(&marks), &drag((300.0, 100.0), (360.0, 160.0)));
+        let [Action::Mark(82, mark)] = &drawn[..] else { panic!("{drawn:?}") };
+        // as the player does it: into the group selected, or the newest that covers the frame
+        marks.add(82, ui.group_selected(), mark.clone(), 180, 150);
+        assert_eq!(marks.groups()[1].marks.len(), 2, "no group was selected: the newest that covers frame 82");
+        drive_with(&mut ui, clip(&marks), &[(300.0, 200.0, None)]);
+        assert_eq!(ui.markup.group, Some((1, (60, 120))), "the group it went into is selected");
+        // the older group selected, on its bar: the next mark joins it, and it stays selected through the drawing
+        ui.markup.group = Some((0, (0, 100)));
+        let drawn = drive_with(&mut ui, clip(&marks), &drag((300.0, 200.0), (360.0, 260.0)));
+        let [Action::Mark(82, mark)] = &drawn[..] else { panic!("{drawn:?}") };
+        marks.add(82, ui.group_selected(), mark.clone(), 180, 150);
+        assert_eq!((marks.groups()[0].marks.len(), marks.groups()[1].marks.len()), (2, 2));
+        drive_with(&mut ui, clip(&marks), &[(300.0, 200.0, None)]);
+        assert_eq!(ui.group_selected(), Some(0));
+        let said: String = ui.markup.group_chip(&clip(&marks), false).expect("a chip").into_iter().map(|(words, _)| words).collect();
+        assert_eq!(said, "group · 000000 to 000100 · 101 f");
+        // shift with [ and ] are the group's in markup mode, and the trim's outside it
+        assert_eq!(ui.group_for_keys(), Some(0));
+        ui.group_ranged(marks.set_end(0, true, 90).expect("a group"));
+        drive_with(&mut ui, clip(&marks), &[(300.0, 200.0, None)]);
+        assert_eq!(ui.markup.group, Some((0, (0, 90))), "its out set at a frame, it stays selected");
+        ui.toggle_markup();
+        assert_eq!((ui.group_selected(), ui.group_for_keys()), (Some(0), None));
+    }
+
+    /// notes read from a file that says they were made on another version of the clip's file are shown, and labeled.
+    #[test]
+    fn notes_made_on_an_earlier_version_of_the_file_say_so() {
+        let said = |marks: &Marks| earlier_chip(&clip(marks)).map(|parts| parts.into_iter().map(|(words, _)| words).collect::<String>());
+        assert_eq!(said(&Marks::of(vec![grouped((0, 9))], true)).as_deref(), Some("notes made on an earlier version of this file"));
+        assert_eq!((said(&Marks::of(vec![grouped((0, 9))], false)), said(&Marks::of(Vec::new(), true)), earlier_chip(&model())), (None, None, None));
     }
 
     /// a drag on the picture draws with the tool, on the frame on screen, in the file's pixels; it does not move the

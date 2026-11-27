@@ -1,9 +1,9 @@
-//! markup: shapes and text drawn on one frame of one clip (fig. 19). a mark is kept in the file's own pixels, so it
-//! stays on the picture through zoom, pan, mirror, flip and rotate. marks last until their tab closes; the saved image
-//! is the record. pure rules, the same on every system: the controls draw what is here.
+//! markup: shapes and text drawn on a clip (fig. 19). a mark is kept in the file's own pixels, so it stays on the
+//! picture through zoom, pan, mirror, flip and rotate, and it belongs to a group, which gives it the range of frames
+//! it shows on. a clip's groups are its notes, which `crate::notes` keeps between runs (adr 0010). pure rules, the
+//! same on every system: the controls draw what is here.
 
 use crate::view::Look;
-use std::collections::BTreeMap;
 
 /// the inks: red, orange, yellow, green, blue, indigo, violet, then white, black and gray (the owner's ask,
 /// 2026-11-25). the design's red, yellow and white are as it has them, the rest from the same family of bright system
@@ -169,78 +169,197 @@ pub fn smooth(points: &[Point], strength: f32, on_screen: impl Fn(Point) -> (f32
         .collect()
 }
 
-/// the marks of one clip, by frame
-#[derive(Clone, Debug, Default)]
-pub struct Marks(BTreeMap<usize, Frame>);
+/// a group: a range of frames, its out frame kept as a trim's is, and the marks in it. each of them shows on every
+/// frame of the range.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Group {
+    pub frames: (usize, usize),
+    pub marks: Vec<Mark>,
+}
 
-/// one frame's marks, what they were before each change to them, the last change last, and what undo took back, the
-/// last taken last
+impl Group {
+    pub fn covers(&self, frame: usize) -> bool {
+        (self.frames.0..=self.frames.1).contains(&frame)
+    }
+}
+
+/// which part of a group's bar on the timebar a drag has hold of
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Part {
+    In,
+    Out,
+    Whole,
+}
+
+/// a group's range as a drag on its bar leaves it: an end follows the pointer to `to` and never passes the other; the
+/// whole range moves as far as the pointer went from `from`, its length kept, and stops at the clip's ends. `last` is
+/// the clip's last frame.
+pub fn dragged(was: (usize, usize), part: Part, from: usize, to: usize, last: usize) -> (usize, usize) {
+    match part {
+        Part::In => (to.min(was.1), was.1),
+        Part::Out => (was.0, to.clamp(was.0, last.max(was.0))),
+        Part::Whole => {
+            let start = (was.0 + to).saturating_sub(from).min(last.saturating_sub(was.1 - was.0));
+            (start, start + was.1 - was.0)
+        }
+    }
+}
+
+/// how many frames a new group lasts: `seconds` of the clip at `fps`, and one frame at least (a still's one)
+pub fn lasting(seconds: f32, fps: f64) -> usize {
+    ((seconds as f64 * fps).round() as usize).max(1)
+}
+
+/// which lane of the timebar each group's bar goes in, so that bars whose ranges overlap do not cover each other: the
+/// lowest that is clear of the groups before it, and the last of `most` when none is
+pub fn lanes(groups: &[Group], most: usize) -> Vec<usize> {
+    let mut lanes: Vec<usize> = Vec::with_capacity(groups.len());
+    for (i, group) in groups.iter().enumerate() {
+        let taken = |lane: usize| (0..i).any(|j| lanes[j] == lane && groups[j].frames.0 <= group.frames.1 && group.frames.0 <= groups[j].frames.1);
+        let lane = (0..most.saturating_sub(1)).find(|lane| !taken(*lane)).unwrap_or(most.saturating_sub(1));
+        lanes.push(lane);
+    }
+    lanes
+}
+
+/// the notes on one clip: its groups, the first made first; what they were before each change, the last change last;
+/// and what undo took back, the last taken last
 #[derive(Clone, Debug, Default)]
-struct Frame {
-    marks: Vec<Mark>,
-    before: Vec<Vec<Mark>>,
-    after: Vec<Vec<Mark>>,
+pub struct Marks {
+    groups: Vec<Group>,
+    before: Vec<Vec<Group>>,
+    after: Vec<Vec<Group>>,
+    /// how many times they have changed: what has been sent to be saved is known by it
+    changes: u64,
+    /// read from a file that says they were made on another version of the clip's file. a change makes them this
+    /// version's
+    pub earlier: bool,
 }
 
 impl Marks {
-    /// the marks on a frame, the first drawn first
-    pub fn on(&self, frame: usize) -> &[Mark] {
-        self.0.get(&frame).map_or(&[], |f| &f.marks)
+    /// notes as they were read
+    pub fn of(groups: Vec<Group>, earlier: bool) -> Marks {
+        Marks { groups, earlier, ..Marks::default() }
     }
 
-    /// a change to a frame's marks, which undo can take back. what undo took back before can no longer be brought back
-    fn change_to(&mut self, frame: usize, marks: Vec<Mark>) {
-        let f = self.0.entry(frame).or_default();
-        if marks != f.marks {
-            f.before.push(std::mem::replace(&mut f.marks, marks));
-            f.after.clear();
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    /// the marks that show on a frame: those of every group whose range holds it, group by group, the first drawn
+    /// first
+    pub fn on(&self, frame: usize) -> Vec<&Mark> {
+        self.groups.iter().filter(|group| group.covers(frame)).flat_map(|group| &group.marks).collect()
+    }
+
+    /// where the mark at `index` among those on a frame is kept: its group, and its place in it
+    fn place(&self, frame: usize, index: usize) -> Option<(usize, usize)> {
+        let covering = self.groups.iter().enumerate().filter(|(_, group)| group.covers(frame));
+        covering.flat_map(|(g, group)| (0..group.marks.len()).map(move |m| (g, m))).nth(index)
+    }
+
+    /// the group of the mark at `index` among those on a frame
+    pub fn group_of(&self, frame: usize, index: usize) -> Option<usize> {
+        self.place(frame, index).map(|(group, _)| group)
+    }
+
+    /// the group a mark drawn on `frame` goes into: the one selected, when its range holds the frame; else the newest
+    /// whose range does. none starts a group of its own
+    pub fn home(&self, frame: usize, selected: Option<usize>) -> Option<usize> {
+        let covers = |group: &usize| self.groups.get(*group).is_some_and(|g| g.covers(frame));
+        selected.filter(covers).or_else(|| self.groups.iter().rposition(|g| g.covers(frame)))
+    }
+
+    /// a change to the groups, which undo can take back. a group left with no marks goes. what undo took back before
+    /// can no longer be brought back
+    fn change_to(&mut self, mut groups: Vec<Group>) {
+        groups.retain(|group| !group.marks.is_empty());
+        if groups != self.groups {
+            self.before.push(std::mem::replace(&mut self.groups, groups));
+            self.after.clear();
+            (self.changes, self.earlier) = (self.changes + 1, false);
         }
     }
 
-    pub fn add(&mut self, frame: usize, mark: Mark) {
-        let mut marks = self.on(frame).to_vec();
-        marks.push(mark);
-        self.change_to(frame, marks);
+    /// a mark drawn on `frame`: it joins the group `home` names, or starts one there that lasts `lasting` frames, and
+    /// no further than the last of the clip's `frames`
+    pub fn add(&mut self, frame: usize, selected: Option<usize>, mark: Mark, lasting: usize, frames: usize) {
+        let mut groups = self.groups.clone();
+        match self.home(frame, selected) {
+            Some(group) => groups[group].marks.push(mark),
+            None => groups.push(Group { frames: (frame, (frame + lasting.max(1) - 1).min(frames.saturating_sub(1)).max(frame)), marks: vec![mark] }),
+        }
+        self.change_to(groups);
     }
 
-    /// the mark at `index` on a frame made `to` (moved, scaled, another ink, its text typed again), or taken off
+    /// the mark at `index` among those on a frame made `to` (moved, scaled, another ink, its text typed again), or
+    /// taken off
     pub fn change(&mut self, frame: usize, index: usize, to: Option<Mark>) {
-        let mut marks = self.on(frame).to_vec();
-        if index >= marks.len() {
+        let Some((group, at)) = self.place(frame, index) else { return };
+        let mut groups = self.groups.clone();
+        match to {
+            Some(mark) => groups[group].marks[at] = mark,
+            None => _ = groups[group].marks.remove(at),
+        }
+        self.change_to(groups);
+    }
+
+    /// the mark at `index` among those on a frame gets a range of its own: it moves into a new group with the range
+    /// it had, to be set from there. one alone in its group has its own already
+    pub fn own_range(&mut self, frame: usize, index: usize) {
+        let Some((group, at)) = self.place(frame, index).filter(|(group, _)| self.groups[*group].marks.len() > 1) else { return };
+        let mut groups = self.groups.clone();
+        let mark = groups[group].marks.remove(at);
+        groups.push(Group { frames: groups[group].frames, marks: vec![mark] });
+        self.change_to(groups);
+    }
+
+    /// a group's range set, as a drag on its bar leaves it: never backwards, and no further than the last of the
+    /// clip's `frames`
+    pub fn set_range(&mut self, group: usize, (first, last): (usize, usize), frames: usize) {
+        if group >= self.groups.len() {
             return;
         }
-        match to {
-            Some(mark) => marks[index] = mark,
-            None => _ = marks.remove(index),
-        }
-        self.change_to(frame, marks);
+        let mut groups = self.groups.clone();
+        let last = last.min(frames.saturating_sub(1));
+        groups[group].frames = (first.min(last), last);
+        self.change_to(groups);
     }
 
-    /// takes back the last change to a frame's marks: a mark drawn, changed or taken off, or the frame cleared. false
-    /// when there was none.
-    pub fn undo(&mut self, frame: usize) -> bool {
-        let Some(f) = self.0.get_mut(&frame) else { return false };
-        let Some(was) = f.before.pop() else { return false };
-        f.after.push(std::mem::replace(&mut f.marks, was));
+    /// a group's in (or, with `out`, its out) set at `frame`, as the trim's keys set its points: the other end comes
+    /// along when it would be left behind, so a group is never backwards. returns its range then
+    pub fn set_end(&mut self, group: usize, out: bool, frame: usize) -> Option<(usize, usize)> {
+        let was = self.groups.get(group)?.frames;
+        let frames = if out { (was.0.min(frame), frame) } else { (frame, was.1.max(frame)) };
+        self.set_range(group, frames, usize::MAX);
+        Some(frames)
+    }
+
+    /// takes back the last change: a mark drawn, changed or taken off, a range set, a clear. false when there was none.
+    pub fn undo(&mut self) -> bool {
+        let Some(was) = self.before.pop() else { return false };
+        self.after.push(std::mem::replace(&mut self.groups, was));
+        self.changes += 1;
         true
     }
 
-    /// brings back the last change undo took back from a frame's marks. false when there was none.
-    pub fn redo(&mut self, frame: usize) -> bool {
-        let Some(f) = self.0.get_mut(&frame) else { return false };
-        let Some(next) = f.after.pop() else { return false };
-        f.before.push(std::mem::replace(&mut f.marks, next));
+    /// brings back the last change undo took back. false when there was none.
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.after.pop() else { return false };
+        self.before.push(std::mem::replace(&mut self.groups, next));
+        self.changes += 1;
         true
     }
 
-    /// takes every mark off a frame.
-    pub fn clear(&mut self, frame: usize) {
-        self.change_to(frame, Vec::new());
-    }
-
-    /// the frames that carry marks, in order: the timebar puts a tick at each.
-    pub fn frames(&self) -> impl Iterator<Item = usize> + '_ {
-        self.0.iter().filter(|(_, f)| !f.marks.is_empty()).map(|(frame, _)| *frame)
+    /// takes off the group selected, or with none every group that shows on a frame.
+    pub fn clear(&mut self, frame: usize, selected: Option<usize>) {
+        let selected = selected.filter(|group| *group < self.groups.len());
+        let kept = |(i, group): &(usize, &Group)| selected.map_or(!group.covers(frame), |s| s != *i);
+        self.change_to(self.groups.iter().enumerate().filter(kept).map(|(_, group)| group.clone()).collect());
     }
 }
 
@@ -288,24 +407,164 @@ mod tests {
 
     const RED: [u8; 3] = INKS[0];
 
+    /// a mark as the tests draw it
+    fn mark(x: f32) -> Mark {
+        Mark::start(Tool::Rectangle, (x, x), RED)
+    }
+
+    /// the marks on a frame, as their own copies
+    fn on(marks: &Marks, frame: usize) -> Vec<Mark> {
+        marks.on(frame).into_iter().cloned().collect()
+    }
+
+    /// a mark drawn on a frame no group covers starts a group there that lasts the settings' seconds (3 by default:
+    /// 75 frames of a clip at 25 a second, in 55 and out 129 as a trim counts) and no further than the clip's last
+    /// frame; a still's group is its one frame. the mark shows on every frame of the range and on no other.
     #[test]
-    fn marks_sit_on_their_frame_and_the_last_drawn_is_taken_back_first() {
+    fn a_mark_starts_a_group_that_lasts_three_seconds_and_no_further_than_the_clip() {
+        let seconds = crate::settings::Settings::default().note_seconds;
+        assert_eq!((seconds, lasting(seconds, 25.0), lasting(seconds, 24000.0 / 1001.0), lasting(0.5, 60.0)), (3.0, 75, 72, 30));
+        assert_eq!(lasting(seconds, 0.0), 1, "a still has no rate, and one frame");
         let mut marks = Marks::default();
-        let mark = |x: f32| Mark::start(Tool::Rectangle, (x, x), RED);
-        marks.add(5, mark(1.0));
-        marks.add(5, mark(2.0));
-        marks.add(9, mark(3.0));
-        assert_eq!(marks.on(5), [mark(1.0), mark(2.0)]);
-        assert!(marks.on(6).is_empty());
-        assert_eq!(marks.frames().collect::<Vec<_>>(), [5, 9]);
-        assert!(marks.undo(5));
-        assert_eq!(marks.on(5), [mark(1.0)]);
-        assert!(marks.undo(5) && marks.on(5).is_empty());
-        // a frame with no marks left carries no tick
-        assert_eq!(marks.frames().collect::<Vec<_>>(), [9]);
-        assert!(!marks.undo(5), "nothing to take back");
-        marks.clear(9);
-        assert_eq!(marks.frames().count(), 0);
+        marks.add(55, None, mark(1.0), 75, 150);
+        assert_eq!(marks.groups(), [Group { frames: (55, 129), marks: vec![mark(1.0)] }]);
+        assert_eq!((on(&marks, 54), on(&marks, 55), on(&marks, 129), on(&marks, 130)), (vec![], vec![mark(1.0)], vec![mark(1.0)], vec![]));
+        marks.add(140, None, mark(2.0), 75, 150);
+        assert_eq!(marks.groups()[1].frames, (140, 149), "cut at the clip's last frame");
+        let mut still = Marks::default();
+        still.add(0, None, mark(1.0), lasting(seconds, 0.0), 1);
+        assert_eq!(still.groups()[0].frames, (0, 0));
+    }
+
+    /// a mark drawn on a frame a group covers joins it, the newest of several; with a group selected it joins that
+    /// one, when its range holds the frame; and only on a frame no group covers does it start one.
+    #[test]
+    fn a_mark_joins_the_group_that_covers_its_frame_the_newest_or_the_one_selected() {
+        let mut marks = Marks::default();
+        marks.add(10, None, mark(1.0), 20, 100);
+        marks.add(40, None, mark(2.0), 20, 100);
+        marks.set_range(1, (20, 59), 100);
+        assert_eq!(marks.groups().iter().map(|g| g.frames).collect::<Vec<_>>(), [(10, 29), (20, 59)]);
+        assert_eq!((marks.home(15, None), marks.home(25, None), marks.home(25, Some(0)), marks.home(45, Some(0)), marks.home(70, Some(0))), (Some(0), Some(1), Some(0), Some(1), None));
+        marks.add(25, None, mark(3.0), 20, 100);
+        assert_eq!(marks.groups()[1].marks, [mark(2.0), mark(3.0)], "the newest that covers it");
+        marks.add(25, Some(0), mark(4.0), 20, 100);
+        assert_eq!(marks.groups()[0].marks, [mark(1.0), mark(4.0)], "the one selected");
+        marks.add(45, Some(0), mark(5.0), 20, 100);
+        assert_eq!(marks.groups()[1].marks.len(), 3, "the one selected does not hold the frame: the one that does");
+        marks.add(70, Some(0), mark(6.0), 20, 100);
+        assert_eq!((marks.groups().len(), marks.groups()[2].frames), (3, (70, 89)), "no group covers it: a new one");
+        // the marks on a frame are every covering group's, group by group
+        assert_eq!(on(&marks, 25), [mark(1.0), mark(4.0), mark(2.0), mark(3.0), mark(5.0)]);
+        assert_eq!((marks.group_of(25, 1), marks.group_of(25, 2), marks.group_of(25, 5)), (Some(0), Some(1), None));
+    }
+
+    /// a drag on a group's bar: an end follows the pointer and stops at the other end, the out at the clip's last
+    /// frame too; the middle moves the whole range as far as the pointer went, its length kept, between the clip's
+    /// ends.
+    #[test]
+    fn a_groups_end_dragged_resizes_it_and_its_middle_moves_it() {
+        let was = (55, 129);
+        assert_eq!(dragged(was, Part::In, 55, 40, 149), (40, 129));
+        assert_eq!(dragged(was, Part::In, 55, 140, 149), (129, 129), "the in never passes the out");
+        assert_eq!(dragged(was, Part::Out, 129, 100, 149), (55, 100));
+        assert_eq!(dragged(was, Part::Out, 129, 20, 149), (55, 55), "nor the out the in");
+        assert_eq!(dragged(was, Part::Out, 129, 400, 149), (55, 149), "nor the clip's last frame");
+        assert_eq!(dragged(was, Part::Whole, 90, 100, 149), (65, 139));
+        assert_eq!(dragged(was, Part::Whole, 90, 20, 149), (0, 74), "it stops at the clip's first frame");
+        assert_eq!(dragged(was, Part::Whole, 90, 149, 149), (75, 149), "and at its last");
+        let mut marks = Marks::default();
+        marks.add(55, None, mark(1.0), 75, 150);
+        marks.set_range(0, (65, 400), 150);
+        assert_eq!(marks.groups()[0].frames, (65, 149));
+        assert!(marks.undo() && marks.groups()[0].frames == (55, 129), "a range set is a step undo takes back");
+    }
+
+    /// a group's in and out set at the frame on screen, as shift with [ and ] set a trim's: the other end comes along
+    /// when it would be left behind.
+    #[test]
+    fn a_groups_in_and_out_are_set_at_a_frame_and_it_is_never_backwards() {
+        let mut marks = Marks::default();
+        marks.add(55, None, mark(1.0), 75, 150);
+        assert_eq!(marks.set_end(0, false, 60), Some((60, 129)));
+        assert_eq!(marks.set_end(0, true, 100), Some((60, 100)));
+        assert_eq!(marks.set_end(0, false, 120), Some((120, 120)), "an in past the out takes the out along");
+        assert_eq!(marks.set_end(0, true, 30), Some((30, 30)), "an out before the in takes the in along");
+        assert_eq!((marks.groups()[0].frames, marks.set_end(3, true, 30)), ((30, 30), None));
+    }
+
+    /// "own range" moves a mark into a new group with the range it had, which is then set by itself; a mark alone in
+    /// its group has its own already. a group left with no marks goes.
+    #[test]
+    fn a_mark_gets_a_range_of_its_own_in_a_new_group() {
+        let mut marks = Marks::default();
+        marks.add(10, None, mark(1.0), 20, 100);
+        marks.add(12, None, mark(2.0), 20, 100);
+        marks.own_range(12, 1);
+        assert_eq!(marks.groups(), [Group { frames: (10, 29), marks: vec![mark(1.0)] }, Group { frames: (10, 29), marks: vec![mark(2.0)] }]);
+        marks.own_range(12, 1);
+        assert_eq!(marks.groups().len(), 2, "alone in its group: nothing to do");
+        marks.set_range(1, (40, 50), 100);
+        assert_eq!((on(&marks, 12), on(&marks, 45)), (vec![mark(1.0)], vec![mark(2.0)]));
+        marks.change(45, 0, None);
+        assert_eq!(marks.groups().len(), 1, "its last mark taken off, the group goes");
+    }
+
+    /// bars whose ranges overlap go in lanes, the lowest that is clear; past the lanes there are, in the last.
+    #[test]
+    fn groups_that_overlap_take_lanes() {
+        let group = |frames| Group { frames, marks: vec![mark(1.0)] };
+        let groups = [group((0, 10)), group((5, 20)), group((11, 30)), group((8, 9)), group((40, 50))];
+        assert_eq!(lanes(&groups, 3), [0, 1, 0, 2, 0]);
+        assert_eq!(lanes(&groups, 2), [0, 1, 0, 1, 0]);
+    }
+
+    /// every change to a clip's notes is a step undo takes back, the last first, and redo brings back: a mark drawn,
+    /// changed, taken off, a clear. a change that changes nothing, or names no mark, is no step. a new change ends
+    /// what could be brought back. each step counts as a change, so it is saved.
+    #[test]
+    fn undo_takes_back_each_change_the_last_first_and_redo_brings_it_back() {
+        let mut marks = Marks::default();
+        let (a, b, c) = (mark(1.0), Mark { shape: Shape::Text((5.0, 5.0), "b".into(), 1.0), ink: RED }, mark(3.0));
+        let white = Mark { ink: INKS[7], ..b.clone() };
+        marks.add(0, None, a.clone(), 1, 100);
+        marks.add(0, None, b.clone(), 1, 100);
+        marks.add(4, None, a.clone(), 1, 100);
+        marks.change(0, 1, Some(white.clone()));
+        marks.change(0, 1, Some(white.clone()));
+        marks.change(0, 0, None);
+        marks.change(0, 7, None);
+        marks.clear(0, None);
+        assert!(on(&marks, 0).is_empty() && !marks.redo(), "nothing taken back yet");
+        assert_eq!(marks.changes(), 6);
+        for was in [vec![white.clone()], vec![a.clone(), white.clone()], vec![a.clone(), b.clone()]] {
+            assert!(marks.undo());
+            assert_eq!((on(&marks, 0), on(&marks, 4)), (was, vec![a.clone()]));
+        }
+        assert!(marks.undo() && on(&marks, 4).is_empty(), "the mark on another frame was drawn before those changes");
+        assert!(marks.undo() && marks.undo() && marks.groups().is_empty() && !marks.undo(), "nothing more to take back");
+        assert!(marks.redo() && marks.redo());
+        assert_eq!(on(&marks, 0), [a.clone(), b.clone()]);
+        marks.add(0, None, c.clone(), 1, 100);
+        assert!(!marks.redo(), "a new change ends what could be brought back");
+        assert_eq!(on(&marks, 0), [a.clone(), b.clone(), c.clone()]);
+        marks.clear(0, None);
+        assert!(marks.undo() && on(&marks, 0).len() == 3 && marks.redo() && on(&marks, 0).is_empty(), "a clear is brought back too");
+        assert_eq!(marks.changes(), 18, "undo and redo are changes too: what is saved follows them");
+    }
+
+    /// clear takes off every group that shows on the frame on screen, or with a group selected that group alone;
+    /// notes read from a file made on an earlier version of the clip's file are this version's once they change.
+    #[test]
+    fn clear_takes_the_groups_on_a_frame_or_the_one_selected() {
+        let group = |frames, x| Group { frames, marks: vec![mark(x)] };
+        let mut marks = Marks::of(vec![group((0, 10), 1.0), group((5, 20), 2.0), group((30, 40), 3.0)], true);
+        assert!(marks.earlier && marks.changes() == 0);
+        marks.clear(7, Some(2));
+        assert_eq!(marks.groups(), [group((0, 10), 1.0), group((5, 20), 2.0)]);
+        assert!(!marks.earlier);
+        marks.clear(7, None);
+        assert!(marks.groups().is_empty());
     }
 
     /// the inks are the rainbow, then white, black and gray (the owner's ask, 2026-11-25): ten, the design's red,
@@ -321,63 +580,6 @@ mod tests {
                 assert!(apart > 60.0, "{} and {} are {apart:.0} apart", hex(*a), hex(*b));
             }
         }
-    }
-
-    /// redo brings back what undo took back, a step at a time, and a new change ends what could be brought back; one
-    /// frame's steps are its own.
-    #[test]
-    fn redo_brings_back_what_undo_took_and_a_new_change_ends_it() {
-        let mut marks = Marks::default();
-        let mark = |x: f32| Mark::start(Tool::Rectangle, (x, x), RED);
-        let (a, b, c) = (mark(1.0), mark(2.0), mark(3.0));
-        let white = Mark { ink: INKS[7], ..b.clone() };
-        marks.add(0, a.clone());
-        marks.add(0, b.clone());
-        marks.change(0, 1, Some(white.clone()));
-        marks.add(4, c.clone());
-        assert!(!marks.redo(0), "nothing taken back yet");
-        assert!(marks.undo(0) && marks.undo(0));
-        assert_eq!(marks.on(0), [a.clone()]);
-        assert!(marks.redo(0));
-        assert_eq!(marks.on(0), [a.clone(), b.clone()]);
-        assert!(marks.redo(0));
-        assert_eq!(marks.on(0), [a.clone(), white.clone()]);
-        assert!(!marks.redo(0), "all brought back");
-        assert!(marks.undo(0) && marks.undo(0));
-        marks.add(0, c.clone());
-        assert!(!marks.redo(0), "a new change ends what could be brought back");
-        assert_eq!(marks.on(0), [a.clone(), c.clone()]);
-        marks.clear(0);
-        assert!(marks.undo(0) && marks.on(0) == [a.clone(), c.clone()]);
-        assert!(marks.redo(0) && marks.on(0).is_empty(), "a clear is brought back too");
-        assert!(marks.undo(4) && marks.on(4).is_empty() && marks.redo(4));
-        assert_eq!(marks.on(4), [c]);
-    }
-
-    /// every change to a frame's marks is a step undo takes back, the last first: a mark drawn, changed, taken off,
-    /// or the frame cleared. a change that changes nothing, or names no mark, is no step; another frame is left alone.
-    #[test]
-    fn undo_takes_back_each_change_to_a_frame_the_last_first() {
-        let mut marks = Marks::default();
-        let a = Mark::start(Tool::Rectangle, (1.0, 1.0), RED);
-        let b = Mark { shape: Shape::Text((5.0, 5.0), "b".into(), 1.0), ink: RED };
-        let white = Mark { ink: INKS[3], ..b.clone() };
-        marks.add(0, a.clone());
-        marks.add(0, b.clone());
-        marks.add(4, a.clone());
-        marks.change(0, 1, Some(white.clone()));
-        marks.change(0, 1, Some(white.clone()));
-        marks.change(0, 0, None);
-        marks.change(0, 7, None);
-        marks.clear(0);
-        assert!(marks.on(0).is_empty());
-        assert_eq!(marks.frames().collect::<Vec<_>>(), [4], "a cleared frame carries no tick");
-        for was in [vec![white.clone()], vec![a.clone(), white.clone()], vec![a.clone(), b.clone()], vec![a.clone()], vec![]] {
-            assert!(marks.undo(0));
-            assert_eq!(marks.on(0), was);
-        }
-        assert!(!marks.undo(0), "nothing more to take back");
-        assert_eq!(marks.on(4), [a]);
     }
 
     /// a move and a scale made on screen are so in the window's pixels, whatever the turn and the pixels' shape as

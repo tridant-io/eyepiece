@@ -27,7 +27,9 @@ $env:APPDATA = if ($AppData) { $AppData } else { Join-Path $env:TEMP "eyepiece-s
 $env:EYEPIECE_CACHE = Join-Path $env:APPDATA 'os-cache'
 $env:EYEPIECE_INSTANCE = "shot-$PID"
 New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'eyepiece') | Out-Null
-Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value (@('mute = on', 'play_on_open = off') + @($Settings -split '\|' | Where-Object { $_ }))
+# marks drawn for a picture are notes, which are saved beside their clip (adr 0010): not here, where the clip is the
+# owner's footage. -Settings 'notes_beside = on' turns it back on, for a clip in a folder of the caller's own
+Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value (@('mute = on', 'play_on_open = off', 'notes_beside = off') + @($Settings -split '\|' | Where-Object { $_ }))
 $p = if ($Open) { Start-Process $Exe -ArgumentList "`"$Open`"" -PassThru } else { Start-Process $Exe -PassThru }
 $hwnd = [IntPtr]::Zero
 foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $hwnd = $p.MainWindowHandle; break } }

@@ -297,7 +297,7 @@ pub struct Model<'a> {
     /// where screenshots go, as the menu names it
     pub shots_to: &'a str,
     pub extras: Extras,
-    /// the marks drawn on the clip, by frame
+    /// the clip's notes: its marks, in their groups
     pub marks: Option<&'a Marks>,
 }
 
@@ -348,12 +348,17 @@ pub enum Action {
     BrowsePlayed,
     Shot(Shot),
     Extras(Extras),
-    /// a mark drawn on this frame of the clip; every mark taken off the frame on screen
+    /// a mark drawn on this frame of the clip: it joins the group selected or the one that covers the frame, or
+    /// starts one there. the group selected taken off, or with none every group that shows on the frame on screen
     Mark(usize, Mark),
     ClearMarks,
-    /// the mark at this place among this frame's marks, changed (moved, scaled, inked, its text typed again) or, with
-    /// none, taken off
+    /// the mark at this place among those on this frame, changed (moved, scaled, inked, its text typed again) or,
+    /// with none, taken off
     Change(usize, usize, Option<Mark>),
+    /// the group at this place among the clip's groups shows from this frame to this one, both kept
+    Range(usize, (usize, usize)),
+    /// the mark at this place among those on this frame moves into a group of its own, with the range it had
+    OwnRange(usize, usize),
     /// this text to the clipboard
     Copy(String),
     /// how loud, 0 to 1; and mute, or sound again
@@ -395,7 +400,8 @@ pub struct Output {
     pub hovered: Option<usize>,
     /// the pointer is where a drag would draw a mark: it is shown as a cross
     pub cross: bool,
-    /// the pointer is on an edge of the browser that resizes a part: it is shown as a two-way arrow
+    /// the pointer is on an edge of the browser that resizes a part, or on an end of a group's bar on the timebar: it
+    /// is shown as a two-way arrow
     pub resize: bool,
     /// the pointer is on a toast that offers to reveal a file: it stays up until the pointer leaves
     pub toast_held: bool,
@@ -758,10 +764,10 @@ impl Ui {
         over
     }
 
-    /// escape: drops the markup text being typed, or else closes the open menu, or else lets go of the mark selected,
-    /// or else ends markup mode. false when there was nothing of ours to close.
+    /// escape: drops the markup text being typed, or else closes the open menu, or else lets go of the mark and the
+    /// group selected, or else ends markup mode. false when there was nothing of ours to close.
     pub fn escape(&mut self) -> bool {
-        if self.markup.drop_text() || self.markup.close_menu() | self.menu.take().is_some() | self.commands.take().is_some() || self.markup.let_go().is_some() {
+        if self.markup.drop_text() || self.markup.close_menu() | self.menu.take().is_some() | self.commands.take().is_some() || self.markup.let_go_all() {
             return true;
         }
         let was = self.markup.on;
@@ -789,6 +795,23 @@ impl Ui {
     /// lets go of the mark selected in markup mode, to take it off: its frame and its place among the frame's marks.
     pub fn take_selected_mark(&mut self) -> Option<(usize, usize)> {
         self.markup.on.then(|| self.markup.let_go()).flatten()
+    }
+
+    /// the group selected, by its place among the clip's groups: a mark drawn joins it, clear takes it off, and in
+    /// markup mode shift with [ and ] set its in and out.
+    pub fn group_selected(&self) -> Option<usize> {
+        self.markup.group()
+    }
+
+    /// the group that shift with [ and ] set the in and out of: the one selected, in markup mode. outside it, and with
+    /// none selected, the keys are the trim's.
+    pub fn group_for_keys(&self) -> Option<usize> {
+        self.markup.on.then(|| self.markup.group()).flatten()
+    }
+
+    /// the group selected shows over this range now: its keys set it, and it stays selected.
+    pub fn group_ranged(&mut self, frames: (usize, usize)) {
+        self.markup.group_ranged(frames);
     }
 
     /// help comes up on its keys page (`?`), in place of any menu.
@@ -912,7 +935,7 @@ impl Ui {
         self.moved = false;
         // under a panel the strip stays up, though the bar steps aside: the pointer shows, and the mac's buttons stay
         let shown = self.shown || self.panel.is_some();
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: screen.browsing && self.browser.over_edge(), toast_held: self.toast_held }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: (screen.browsing && self.browser.over_edge()) | self.markup.over_end(), toast_held: self.toast_held }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -967,6 +990,7 @@ impl Ui {
     /// a clip is up: the picture takes the pointer, and the controls come and go over it.
     fn clip(&mut self, ui: &mut egui::Ui, screen: &Screen, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let full = ui.max_rect();
+        self.markup.settle(model);
         // the picture, under everything else. a plain click on it plays or pauses. a drag moves the
         // window while the whole frame is in view, and the picture when it is larger than the window. a double click
         // fills the display with it, or puts the window back (the owner's word, in place of the design's fit and
@@ -1075,8 +1099,12 @@ impl Ui {
         }
         let mut left = full.left() + 10.0;
         let linear = model.linear.then(|| vec![("linear".to_string(), FG), (" · shown through srgb".to_string(), DIM)]);
-        for parts in [trim_chip(model, self.timecode), seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)]), linear].into_iter().flatten() {
+        for parts in [trim_chip(model, self.timecode), self.markup.group_chip(model, self.timecode), seam_chip(model), speed_chip(model), model.look.label().map(|look| vec![(look, FG)]), linear].into_iter().flatten() {
             left = chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0, MONO_MEDIUM).right() + 8.0;
+        }
+        // a sentence, so in the type sentences are set in
+        if let Some(parts) = markup::earlier_chip(model) {
+            chip(ui, Pos2::new(left, top), Align2::LEFT_TOP, &parts, 1.0, SANS);
         }
         self.zoom_chip(ui, Pos2::new(full.right() - 10.0, top), model, now);
         // with the controls away, what a key did is said at the lower left for a moment (the design's fig. 09): the
@@ -1843,7 +1871,8 @@ impl Ui {
 
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
     /// in loop analysis it is the round: the clip's last seconds, the seam marked in the middle, its first seconds.
-    /// a trim has a marker on each of its points, and the track outside it is dimmed.
+    /// a trim has a marker on each of its points, and the track outside it is dimmed. each group of marks is a thin
+    /// bar over the track (`Markup::bars`).
     /// `over` is the top of the bar, which the box naming the frame under the pointer stands above.
     fn timebar(&mut self, ui: &mut egui::Ui, area: Rect, over: f32, model: &Model, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
@@ -1883,7 +1912,7 @@ impl Ui {
                 painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, track.top() - 4.0), Pos2::new(x + 1.0, track.bottom())), 0.0, AMBER);
             }
             if let Some(marks) = model.marks {
-                markup::ticks(&painter, area, track, last, marks);
+                self.markup.bars(ui, area, track, last, marks, actions);
             }
             // the trim's markers: a stem as wide as the head and one taller, with a foot turned into the trim
             for (x, into) in [(trim.0, 1.0), (trim.1, -1.0)].into_iter().filter_map(|(at, into)| Some((x_of(at?), into))) {

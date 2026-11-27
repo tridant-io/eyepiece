@@ -69,8 +69,20 @@ a line across the top of the picture that states a problem and stays until it is
 _Avoid_: toast, error dialog
 
 **markup**:
-shapes and text drawn on one frame of one clip, to be saved as an image. marks last until the tab closes.
-_Avoid_: annotation, notes, review comments
+shapes and text drawn on a clip, and the mode they are drawn in. each is a mark; marks are kept in groups, and a clip's groups are its notes.
+_Avoid_: annotation, review comments
+
+**group**:
+a range of frames of a clip, in to out with the out frame kept as a trim's is, and the marks that show on every frame of it, while playing too. every mark belongs to one. a thin bar on the timebar, which a drag resizes and moves.
+_Avoid_: annotation group, layer, selection, range alone (a group has a range; it is not one)
+
+**notes**:
+a clip's groups of marks as they are kept between runs, in its folder's `eyepiece.yaml`.
+_Avoid_: annotations, comments, markup (that is the drawing and its mode), note for a toast
+
+**eyepiece.yaml**:
+the one file in a folder that holds the notes on the folder's clips, and for each a log of the exports made from it (adr 0010). eyepiece's own file, not media: it is read again before each save, written whole and swapped in, and its last version kept as `eyepiece.yaml.previous`. notes that cannot be beside their clip are kept the same way in eyepiece's own folder, where its settings are.
+_Avoid_: sidecar, project file, metadata file
 
 **the bar**:
 the single row of controls and the timebar at the bottom of the window, shown on hover.
@@ -96,5 +108,6 @@ _Avoid_: dialog, modal (the update's modal is another thing), window, preference
 
 - **read-only** means the app never writes to media. **look-only** means the app does not even open files on a network folder. a local folder is read-only but not look-only.
 - **strip** alone is the row of tabs at the top of the window. the design's section 06 also calls the frames made ready for the timebar a strip: that is always the **timebar strip**.
-- a **mark** is markup drawn on a frame. the two **markers** on the timebar are the trim's in point and out point, and are not marks.
+- a **mark** is markup drawn on a clip, shown over its group's range. the two **markers** on the timebar are the trim's in point and out point, and are not marks; the thin **bars** over the track are the groups.
+- a **trim** is the part of a clip that plays in loop one. a group's **range** is the frames its marks show on. shift with [ and ] set the trim's points, and a group's in and out only in markup mode with the group selected.
 - **panel** alone is settings or help. the code and the design also say "the metadata panel" for the file's facts over the bar: that one is always named in full.

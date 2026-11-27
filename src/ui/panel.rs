@@ -287,7 +287,10 @@ impl Ui {
                 panel.custom = false;
             }
             4 => (s.browser_start, s.cache_limit) = (d.browser_start, d.cache_limit),
-            5 => (s.screenshot_folder, s.screenshot_caption, s.screenshot_guides, s.screenshot_markup, s.pen_smoothing) = (d.screenshot_folder, d.screenshot_caption, d.screenshot_guides, d.screenshot_markup, d.pen_smoothing),
+            5 => {
+                (s.screenshot_folder, s.screenshot_caption, s.screenshot_guides, s.screenshot_markup, s.pen_smoothing) = (d.screenshot_folder, d.screenshot_caption, d.screenshot_guides, d.screenshot_markup, d.pen_smoothing);
+                (s.notes_beside, s.note_seconds) = (d.notes_beside, d.note_seconds);
+            }
             _ => {}
         }
     }
@@ -570,6 +573,10 @@ fn screenshots(ui: &mut egui::Ui, s: &mut Settings, shows: Option<PathBuf>, acti
     if let Some((_, Got::Slid(to))) = rows.row(ui, "smoothing", "smooth pen strokes", words("as they are drawn. all the way left is off"), &smoothing) {
         s.pen_smoothing = (to * 100.0).round() / 100.0;
     }
+    if let Some(to) = typed(rows.row(ui, "note-seconds", "a new group of marks lasts", words("seconds from the frame it is drawn on, 0.5 to 60"), &[Part::Field(format!("{:.1}", s.note_seconds), "s", 46.0, number)])) {
+        s.note_seconds = to.clamp(0.5, 60.0);
+    }
+    toggle(rows.row(ui, "notes-beside", "save notes beside the clip", words("in its folder's eyepiece.yaml. off: in eyepiece's own folder"), &[Part::Switch(s.notes_beside)]), &mut s.notes_beside);
     rows.group(ui, "always");
     rows.fact(ui, "never beside the media, never over an earlier one", "clip.f000742.png, then clip.f000742 (2).png");
     rows.fact(ui, "16 bits a channel when the file is deeper than 8", "a copy to the clipboard is the frame alone, 8 bits");

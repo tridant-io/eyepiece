@@ -1,5 +1,6 @@
 //! what is saved between runs: one small text file of `key = value` lines that a person can read and edit. speed,
-//! zoom and pan, mirror, flip and rotate, markup and which tabs were open are not saved, on purpose (plan, section 09).
+//! zoom and pan, mirror, flip and rotate and which tabs were open are not saved, on purpose (plan, section 09). a
+//! clip's notes are not kept here but beside the clip (`crate::notes`).
 
 use std::fs;
 use std::io::{self, Write};
@@ -55,6 +56,10 @@ pub struct Settings {
     pub screenshot_markup: bool,
     /// how much a pen's line is smoothed as it is drawn, 0 (off) to 1
     pub pen_smoothing: f32,
+    /// notes are saved in the clip's folder, in its eyepiece.yaml (adr 0010); off, in eyepiece's own folder
+    pub notes_beside: bool,
+    /// how long a new group of marks lasts from the frame it is drawn on, in seconds, 0.5 to 60
+    pub note_seconds: f32,
     pub browser_folder: Option<PathBuf>,
     /// the folders the browser last opened files from, the newest first
     pub browser_recent: Vec<PathBuf>,
@@ -113,6 +118,8 @@ impl Default for Settings {
             screenshot_markup: true,
             // gentle: a hand's jitter goes, a wave drawn on purpose stays (the owner's "not too much", 2026-11-25)
             pen_smoothing: 0.3,
+            notes_beside: true,
+            note_seconds: 3.0,
             browser_folder: None,
             browser_recent: Vec::new(),
             browser_view: crate::browse::View::Both,
@@ -188,7 +195,7 @@ impl Settings {
     }
 
     /// every value as it is written, in the file's order
-    fn pairs(&self) -> [(&'static str, String); 37] {
+    fn pairs(&self) -> [(&'static str, String); 39] {
         let wxh = |(w, h): (u32, u32)| format!("{w}x{h}");
         let path = |p: &Option<PathBuf>| p.as_ref().map_or(String::new(), |p| p.to_string_lossy().into_owned());
         let recent: Vec<_> = self.browser_recent.iter().map(|p| p.to_string_lossy()).collect();
@@ -214,6 +221,8 @@ impl Settings {
             ("screenshot_guides", word(&SWITCH, self.screenshot_guides)),
             ("screenshot_markup", word(&SWITCH, self.screenshot_markup)),
             ("pen_smoothing", self.pen_smoothing.to_string()),
+            ("notes_beside", word(&SWITCH, self.notes_beside)),
+            ("note_seconds", self.note_seconds.to_string()),
             ("browser_folder", path(&self.browser_folder)),
             ("browser_start", path(&self.browser_start)),
             ("browser_recent", recent.join(" | ")),
@@ -262,6 +271,8 @@ impl Settings {
             "screenshot_guides" => self.screenshot_guides = pick(&SWITCH, v)?,
             "screenshot_markup" => self.screenshot_markup = pick(&SWITCH, v)?,
             "pen_smoothing" => self.pen_smoothing = number(v, 0.0, 1.0)?,
+            "notes_beside" => self.notes_beside = pick(&SWITCH, v)?,
+            "note_seconds" => self.note_seconds = number(v, 0.5, 60.0)?,
             "browser_folder" => self.browser_folder = folder(v),
             "browser_start" => self.browser_start = folder(v),
             // a bar cannot be in a windows path
@@ -408,6 +419,8 @@ mod tests {
             screenshot_guides: true,
             screenshot_markup: false,
             pen_smoothing: 0.75,
+            notes_beside: false,
+            note_seconds: 1.5,
             browser_folder: Some(PathBuf::from(r"D:\delivery 2026-11-20\wall")),
             browser_recent: vec![PathBuf::from(r"D:\delivery 2026-11-20\wall"), PathBuf::from(r"\\nas\renders = out\totems")],
             browser_view: crate::browse::View::List,
