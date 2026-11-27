@@ -5,7 +5,7 @@
 use super::brand::{self, Art};
 use super::icons::{self, Icon};
 use super::widgets::{self, CHOSEN, ON_CHOSEN};
-use super::{dotted, font, keys, text_top, Action, Screen, Ui, ACCENT, DIM, FG, FILL, HOVER, LINE, MONO, MONO_MEDIUM, SANS, SOLID, STRIP, TRACK};
+use super::{dotted, font, keys, text_top, Action, Screen, Ui, ACCENT, DIM, FG, FILL, HOVER, LINE, MONO, MONO_MEDIUM, PRESSED, SANS, SOLID, STRIP, TRACK};
 use crate::media::clip;
 use crate::settings::{Chroma, Loop, Opens, Settings};
 use egui::text::{CCursor, LayoutJob, TextFormat};
@@ -170,14 +170,17 @@ impl Ui {
         for (i, name) in panel.pages().iter().enumerate() {
             // a page's name: 12.5 at 1.3, 6 above and below, 1 between
             let item = Rect::from_min_size(Pos2::new(side.left(), y), Vec2::new(SIDE - 1.0, 28.0));
-            if ui.interact(item, ui.scope_id().with(("panel-page", i)), Sense::click()).clicked() {
+            let response = ui.interact(item, ui.scope_id().with(("panel-page", i)), Sense::click());
+            if response.clicked() {
                 panel.page = i;
             }
+            // lit under the pointer as the strip's buttons are (the owner's ask, 2026-11-27)
             let on = i == panel.page;
-            if on {
-                painter.rect_filled(item, 0.0, PAGE_ON);
+            let fill = if response.is_pointer_button_down_on() { Some(PRESSED) } else if response.hovered() { Some(HOVER) } else { on.then_some(PAGE_ON) };
+            if let Some(fill) = fill {
+                painter.rect_filled(item, 0.0, fill);
             }
-            let color = if on { FG } else { DIM };
+            let color = if on || response.hovered() { FG } else { DIM };
             painter.galley(Pos2::new(item.left() + 14.0, text_top(&painter, font(SANS, 12.5), item.center().y)), painter.layout_no_wrap(name.to_string(), font(SANS, 12.5), color), color);
             y += 29.0;
         }
@@ -189,8 +192,14 @@ impl Ui {
         let title = painter.layout_no_wrap(panel.pages()[panel.page].to_string(), font("sans-semibold", 14.0), FG);
         painter.galley(Pos2::new(head.left() + 20.0, text_top(&painter, font("sans-semibold", 14.0), head.center().y)), title, FG);
         let mark = Rect::from_center_size(Pos2::new(head.right() - 8.0 - 14.0, head.center().y), Vec2::splat(28.0));
-        let closed = ui.interact(mark, ui.scope_id().with("panel-close"), Sense::click()).clicked();
-        icons::draw(&painter, mark, Icon::Close, DIM);
+        let close = ui.interact(mark, ui.scope_id().with("panel-close"), Sense::click());
+        let closed = close.clicked();
+        // lit under the pointer as a tab's close mark is
+        let lit = if close.is_pointer_button_down_on() { Some(PRESSED) } else { close.hovered().then_some(HOVER) };
+        if let Some(fill) = lit {
+            painter.rect_filled(mark, 3.0, fill);
+        }
+        icons::draw(&painter, mark, Icon::Close, if lit.is_some() { Color32::WHITE } else { DIM });
         let mut right = mark.left() - 8.0;
         for key in if panel.which == Which::Help { &["?", "esc"][..] } else { &["esc"] }.iter().rev() {
             right = widgets::key_cap(ui, Pos2::new(right, head.center().y), key, false, DIM).left() - 8.0;

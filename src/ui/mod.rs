@@ -3923,6 +3923,31 @@ pub(super) mod tests {
         assert!(ui.commands.is_some() && room.contains_rect(ui.commands_rect), "{:?} is not inside {room:?}", ui.commands_rect);
     }
 
+    /// a panel's close mark and its pages light under the pointer, as the strip's buttons do (the owner's ask,
+    /// 2026-11-27). in 640 x 360 the panel is 16 to 624 across and 48 to 344 down: its close mark's middle is 22 in
+    /// from its right in the 44 of its head, and its second page is 109 to 137 down in the 176 of its sidebar
+    #[test]
+    fn a_panels_close_mark_and_pages_light_under_the_pointer() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.ctx.tessellation_options_mut(|options| options.feathering = false);
+        drive(&mut ui, &[(400.0, 250.0, None)]);
+        ui.show_help();
+        let lit = |ui: &mut Ui, x: f32, y: f32| {
+            let mut count = 0;
+            for _ in 0..2 {
+                ui.pointer_move(x, y);
+                let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
+                out.textures.clear();
+                let meshes = out.primitives.into_iter().filter_map(|p| if let egui::epaint::Primitive::Mesh(mesh) = p.primitive { Some(mesh) } else { None });
+                count = meshes.flat_map(|mesh| mesh.vertices).filter(|v| v.color == HOVER).count();
+            }
+            count
+        };
+        let away = lit(&mut ui, 400.0, 250.0);
+        assert!(lit(&mut ui, 602.0, 70.0) > away, "the close mark");
+        assert!(lit(&mut ui, 100.0, 123.0) > away, "a page not shown");
+    }
+
     /// a press outside a panel closes it and does nothing else; a press in it does not close it; the next press
     /// does what it does. in the least window, 640 x 360, the panel is the window less 16 each side, under the strip:
     /// 16 to 624 across and 48 to 344 down.
