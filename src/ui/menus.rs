@@ -206,11 +206,11 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
         }
         // a copy cannot change the picture: what include does is said, as it is no burn-in
         let row = widgets::row(ui, 15.6);
-        if widgets::switch(ui, "trim-notes", row, model.copy_notes, "include annotations", "", false) {
+        if widgets::switch(ui, "trim-notes", row, model.copy_notes, "include notes", "", false) {
             actions.push(Action::CopyNotes(!model.copy_notes));
         }
         if model.copy_notes {
-            widgets::note(ui, "annotations go with the new file as notes.");
+            widgets::note(ui, "notes go with the new file.");
         }
         // a new file beside the clip is the default. in its place is offered only where the original can go to a bin
         let mut choices = vec![("save new file", "", true)];

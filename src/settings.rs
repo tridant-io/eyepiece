@@ -60,7 +60,7 @@ pub struct Settings {
     pub notes_beside: bool,
     /// how long a new group of marks lasts from the frame it is drawn on, in seconds, 0.5 to 60
     pub note_seconds: f32,
-    /// a saved copy takes the clip's groups on its frames as notes of its own (the owner's "include annotations",
+    /// a saved copy takes the clip's groups on its frames as notes of its own ("include notes",
     /// 2026-11-26); off, it has none
     pub copy_notes: bool,
     pub browser_folder: Option<PathBuf>,

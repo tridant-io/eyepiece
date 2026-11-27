@@ -612,7 +612,7 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
 # frames. the clip is the tests' own copy in a folder of their own, as a save writes beside it. in the window it opens
 # in (640 x 360) the trim button's middle is 355 in from the right, and the menu's save new file 58 from the left and
 # 86 up. the clip has a mark on frames 9 to 12, in its folder's eyepiece.yaml: the copy is logged there on the clip,
-# and with include annotations on (as it is at first) the mark goes with the copy as its notes, from its frame 1 to 4
+# and with include notes on (as it is at first) the mark goes with the copy as its notes, from its frame 1 to 4
 Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
 $trims = Join-Path $env:APPDATA 'trims'
 New-Item -ItemType Directory -Force $trims | Out-Null

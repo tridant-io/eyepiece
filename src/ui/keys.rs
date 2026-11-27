@@ -73,8 +73,8 @@ const fn unkeyed(name: &'static str, does: Unkeyed) -> Command {
 fn shown_name(c: &Command, trimmed: bool, notes: bool) -> Option<&'static str> {
     match c.does {
         Some(Unkeyed::SaveWithoutSound) if trimmed => Some("save the trim without sound"),
-        Some(Unkeyed::CopyNotes) if notes => Some("exclude annotations from a copy"),
-        Some(Unkeyed::CopyNotes) => Some("include annotations in a copy"),
+        Some(Unkeyed::CopyNotes) if notes => Some("exclude notes from a copy"),
+        Some(Unkeyed::CopyNotes) => Some("include notes in a copy"),
         _ => c.name,
     }
 }
@@ -152,7 +152,7 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("set in / out, a group's in markup", "set out", "shift ]", Key::BracketRight, SHIFT),
             both("clear in and out", "clear in and out", "shift backspace", Key::Backspace, SHIFT),
             unkeyed("save the clip without sound", Unkeyed::SaveWithoutSound),
-            unkeyed("annotations: include / exclude", Unkeyed::CopyNotes),
+            unkeyed("notes: include / exclude", Unkeyed::CopyNotes),
         ],
     ),
     (
@@ -423,7 +423,7 @@ mod tests {
             unkeyed,
             [
                 ([Some("save the clip without sound"), Some("save the trim without sound"), Some("save the clip without sound")], ""),
-                ([Some("exclude annotations from a copy"), Some("exclude annotations from a copy"), Some("include annotations in a copy")], ""),
+                ([Some("exclude notes from a copy"), Some("exclude notes from a copy"), Some("include notes in a copy")], ""),
             ]
         );
     }

@@ -3234,7 +3234,7 @@ pub(super) mod tests {
         let prompt = ui.menu_rect;
         assert_eq!(drive_with(&mut ui, trimmed(None), &click(prompt.right() - 30.0, prompt.bottom() - 12.0 - 15.0)), vec![Action::Save { trim: true, sound: true, replace: true }]);
         assert!(ui.menu.is_none());
-        // include annotations, over the buttons: a click asks for the setting the other way, and the menu stays. with
+        // include notes, over the buttons: a click asks for the setting the other way, and the menu stays. with
         // it on, a line under it says what it does for a copy, which is no burn-in: the menu is that much taller
         let mut tall = Vec::new();
         for on in [true, false] {
