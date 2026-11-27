@@ -158,7 +158,7 @@ impl Meta {
         let rate = match length {
             Some((seconds, _)) if n > 0 => {
                 let stored: u64 = samples.iter().filter(|s| !s.hidden).map(|s| s.size as u64).sum();
-                row("bit rate", format!("{} · the picture alone · {} with all else in the file", bit_rate(stored, seconds), bit_rate(file.len(), seconds)), Tone::Plain)
+                row("bit rate", bit_rates(stored, file.len(), seconds), Tone::Plain)
             }
             _ => row("bit rate", "not worked out: the picture has no one length to take it over", Tone::Assumed),
         };
@@ -229,7 +229,7 @@ fn still_facts(path: &str) -> Result<Meta, String> {
             picture.push(row("missing", format!("{} frames have no file: {}{more}", run.missing.len(), first.join(", ")), Tone::Fault));
         }
         picture.push(match image.rate {
-            Some((n, d)) => row("frame rate", format!("{n}/{d} · {}", decimal(n as f64 / d as f64, 3)), Tone::Plain),
+            Some(rate) => row("frame rate", crate::media::clip::rate_said(rate), Tone::Plain),
             // the rate it plays at is the player's to say (the metadata panel's "plays at"): the setting's, or one set
             None => row("frame rate", "none in file", Tone::Assumed),
         });
@@ -358,7 +358,7 @@ fn color_row([primaries, transfer, matrix]: [i32; 3], height: usize) -> Row {
 
 fn rate_row(t: &Timeline) -> Row {
     match (t.rate(), t.derived()) {
-        (Some((n, d)), _) => row("frame rate", format!("{n}/{d} · {}", decimal(n as f64 / d as f64, 3)), Tone::Plain),
+        (Some(rate), _) => row("frame rate", crate::media::clip::rate_said(rate), Tone::Plain),
         (None, Some(fps)) => row("frame rate", format!("{} · derived: the file rounds its frames' times to its clock", decimal(fps, 3)), Tone::Assumed),
         (None, None) if t.frames() == 0 => row("frame rate", "not listed up front in this kind of file", Tone::Plain),
         (None, None) if t.frames() == 1 => row("frame rate", "still: one frame", Tone::Plain),
@@ -514,6 +514,12 @@ fn bit_rate(bytes: u64, seconds: f64) -> String {
     format!("{v:.places$} {}", ["b/s", "kb/s", "Mb/s", "Gb/s"][unit])
 }
 
+/// the picture's bit rate, and the whole file's where that says more (the owner's word, 2026-11-27: in few words).
+fn bit_rates(picture: u64, file: u64, seconds: f64) -> String {
+    let (picture, file) = (bit_rate(picture, seconds), bit_rate(file, seconds));
+    if picture == file { picture } else { format!("picture {picture} · file {file}") }
+}
+
 /// a file size in decimal units to three figures, and in bytes.
 fn size(bytes: u64) -> String {
     let mut v = bytes as f64;
@@ -571,7 +577,9 @@ mod tests {
         assert_eq!([bit_rate(125_000, 1.0), bit_rate(1_250_000, 0.5), bit_rate(999, 8.0), bit_rate(23_000_000_000, 10.0)], ["1.00 Mb/s", "20.0 Mb/s", "999 b/s", "18.4 Gb/s"]);
         let m = read("hap_64.mov");
         let (said, tone) = get(&m, "bit rate");
-        assert!(tone == Tone::Plain && said.contains("b/s · the picture alone · "), "{said}");
+        assert!(tone == Tone::Plain && said.starts_with("picture ") && said.contains("b/s · file "), "{said}");
+        // in few words (the owner's word, 2026-11-27): the file's rate only where it says more than the picture's
+        assert_eq!([bit_rates(125_000, 125_100, 1.0), bit_rates(125_000, 250_000, 1.0)], ["1.00 Mb/s", "picture 1.00 Mb/s · file 2.00 Mb/s"]);
         assert_eq!(get(&read("h264_vfr_64.mp4"), "bit rate").1, Tone::Assumed);
     }
 
@@ -634,7 +642,7 @@ mod tests {
 
         let m = read("hapq_64.mov");
         // the file's own ratio, unreduced, then its decimal
-        assert_eq!(get(&m, "frame rate"), ("60000/1001 · 59.94", Tone::Plain));
+        assert_eq!(get(&m, "frame rate"), ("59.94", Tone::Plain));
         assert_eq!(get(&m, "duration"), ("0:00:00.050", Tone::Plain));
         assert_eq!(get(&m, "codec"), ("hap q · HapY · 4 chunks", Tone::Plain));
         assert_eq!(get(&m, "bit depth"), ("8-bit · bc3 scaled ycocg", Tone::Plain));
@@ -649,7 +657,7 @@ mod tests {
     fn frames_an_edit_list_hides_are_counted_apart() {
         let m = read("h264_cut_320.mp4");
         assert_eq!(get(&m, "frames"), ("18 · numbered 0 to 17 · 24 stored, 6 hidden by an edit list", Tone::Plain));
-        assert_eq!(get(&m, "frame rate"), ("15360/512 · 30", Tone::Plain));
+        assert_eq!(get(&m, "frame rate"), ("30", Tone::Plain));
         assert_eq!(get(&m, "duration"), ("0:00:00.600", Tone::Plain));
         assert_eq!(get(&m, "codec"), ("h.264 · avc1", Tone::Plain));
         assert_eq!(get(&m, "bit depth"), ("8-bit · 4:2:0", Tone::Plain));
@@ -715,7 +723,7 @@ mod tests {
     #[test]
     fn audio_off_by_a_frame_or_more_is_a_fault_and_timecode_is_read() {
         let m = read("av_tc_64.mov");
-        assert_eq!(get(&m, "frame rate"), ("30000/1001 · 29.97", Tone::Plain));
+        assert_eq!(get(&m, "frame rate"), ("29.97", Tone::Plain));
         assert_eq!(get(&m, "timecode"), ("01:00:00;00 · drop-frame", Tone::Plain));
         let audio: Vec<_> = m.groups.iter().flatten().filter(|r| r.label == "audio").map(|r| (r.value.as_str(), r.tone)).collect();
         // the first track is 0.4 ms shorter than the picture; the second 0.1 s, three frames
@@ -740,7 +748,7 @@ mod tests {
         assert_eq!(get(&m, "container"), ("webm · .webm", Tone::Plain));
         assert_eq!((get(&m, "codec").0, get(&m, "frames").0), ("vp9", "12 · numbered 0 to 11"));
         let m = read("h264_frag_64.mp4");
-        assert_eq!((get(&m, "frames").0, get(&m, "frame rate").0), ("12 · numbered 0 to 11", "15360/512 · 30"));
+        assert_eq!((get(&m, "frames").0, get(&m, "frame rate").0), ("12 · numbered 0 to 11", "30"));
     }
 
     #[test]
@@ -752,7 +760,8 @@ mod tests {
         assert_eq!(rate_row(&t).tone, Tone::Fault);
         assert_eq!(duration_row(&t).value, "not one length: the frames' lengths vary");
         let t = Timeline { time_base: (1, 2997), times: (0..3).map(|i| i * 100).collect() };
-        assert_eq!(rate_row(&t).value, "2997/100 · 29.97");
+        // exactly 29.97, which is not the 29.97 that means 30000/1001: its ratio says so
+        assert_eq!(rate_row(&t).value, "29.97 · 2997/100");
         // 216,000 frames at 60000/1001 last 3603.6 s; 215,784 last 3599.99640 s, which rounds to the nearest millisecond
         let t = Timeline::even((1, 60000), 216_000, 1001);
         assert_eq!(duration_row(&t).value, "1:00:03.600");

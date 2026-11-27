@@ -104,6 +104,15 @@ pub fn rate_name((n, d): (i64, i64)) -> String {
     meta::decimal(n as f64 / d as f64, 3)
 }
 
+/// a rate as people say it (the owner's word, 2026-11-27): its decimal, 30 or 29.97, with its ratio after it only where
+/// the decimal is not exactly that rate. 15360/512 is 30, and 29.97 is 30000/1001, but 2997/100 is not that 29.97.
+pub fn rate_said((n, d): (i64, i64)) -> String {
+    let common = gcd(n, d).max(1);
+    let (n, d) = (n / common, d / common);
+    let name = rate_name((n, d));
+    if d == 1 || typed_rate(&name) == Ok((n, d)) { name } else { format!("{name} · {n}/{d}") }
+}
+
 /// how a stream asks to be turned, when that is a quarter turn; otherwise it is shown as stored
 fn turn(input: &Input, video: &Video) -> Look {
     input.turn(video.index).and_then(|(degrees, mirror)| Look::upright(degrees, mirror)).unwrap_or_default()
@@ -418,8 +427,7 @@ impl Clip {
 
 fn rate_words(timeline: &Timeline, from: RateFrom) -> String {
     let text = match (timeline.rate(), timeline.derived()) {
-        (Some((n, 1)), _) => format!("{n} fps"),
-        (Some((n, d)), _) => format!("{n}/{d} fps"),
+        (Some(rate), _) => format!("{} fps", rate_said(rate)),
         (None, Some(fps)) => format!("{} fps derived", meta::decimal(fps, 3)),
         (None, None) if timeline.frames() < 2 => "still".to_string(),
         (None, None) => "variable rate".to_string(),
@@ -504,11 +512,11 @@ mod tests {
         let c = Clip::open(&media("hapq_64.mov")).expect("open");
         assert_eq!((c.name.as_str(), c.width, c.height, c.codec, c.timeline.frames()), ("hapq_64.mov", 64, 64, "hap q", 3));
         // the rate is the file's own ratio, not a rounded 59.94
-        assert_eq!(c.rate_text(), "60000/1001 fps");
+        assert_eq!(c.rate_text(), "59.94 fps");
         let c = Clip::open(&media("hapalpha_64.mov")).expect("open");
         assert_eq!((c.codec, c.timeline.frames()), ("hap alpha", 2));
         let c = Clip::open(&media("h264_64.mp4")).expect("open");
-        assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), ("h.264", 12, "15360/512 fps"));
+        assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), ("h.264", 12, "30 fps"));
         let c = Clip::open(&media("prores_64.mov")).expect("open");
         assert_eq!((c.codec, c.timeline.frames()), ("prores", 4));
     }
@@ -580,7 +588,7 @@ mod tests {
             let input = Input::open(&media(name)).unwrap();
             assert_eq!(input.samples(input.first_video().unwrap().index).len(), listed, "{name}");
         }
-        for (name, codec, rate) in [("h264_64.mkv", "h.264", "30 fps derived"), ("vp9_64.webm", "vp9", "30 fps derived"), ("h264_frag_64.mp4", "h.264", "15360/512 fps")] {
+        for (name, codec, rate) in [("h264_64.mkv", "h.264", "30 fps derived"), ("vp9_64.webm", "vp9", "30 fps derived"), ("h264_frag_64.mp4", "h.264", "30 fps")] {
             let c = Clip::open(&media(name)).unwrap_or_else(|e| panic!("{e}"));
             assert_eq!((c.codec, c.timeline.frames(), c.rate_text().as_str()), (codec, 12, rate), "{name}");
         }
@@ -720,7 +728,7 @@ mod tests {
     fn frames_an_edit_list_hides_are_not_frames_of_the_clip() {
         let cut = Clip::open(&media("h264_cut_320.mp4")).expect("open");
         assert_eq!(cut.timeline.frames(), 18);
-        assert_eq!(cut.rate_text(), "15360/512 fps");
+        assert_eq!(cut.rate_text(), "30 fps");
         let whole = frames("h264_320.mp4", &(0..24).collect::<Vec<_>>());
         let order = [0, 17, 9, 1, 16, 2, 17, 0];
         let got = frames("h264_cut_320.mp4", &order);
@@ -776,14 +784,14 @@ mod tests {
             std::fs::copy(media("still_float.exr"), file).unwrap();
         }
         let mut c = Clip::open(files[1].to_str().unwrap()).expect("open");
-        assert_eq!((c.name.as_str(), c.timeline.frames(), c.first_frame, c.rate_text().as_str()), ("shot.[0001-0002].exr", 2, 1, "30000/1001 fps"));
+        assert_eq!((c.name.as_str(), c.timeline.frames(), c.first_frame, c.rate_text().as_str()), ("shot.[0001-0002].exr", 2, 1, "29.97 fps"));
         // whatever the rate for sequences is, and set to another and back to its own
-        assert_eq!(Clip::open_stills(files[0].to_str().unwrap(), (25, 1)).expect("open").rate_text(), "30000/1001 fps");
+        assert_eq!(Clip::open_stills(files[0].to_str().unwrap(), (25, 1)).expect("open").rate_text(), "29.97 fps");
         assert_eq!((c.rate_from, c.own_rate), (RateFrom::File, Some((30000, 1001))));
         c.set_rate((25, 1), RateFrom::Set);
         assert_eq!(c.rate_text(), "25 fps set");
         c.set_rate((30000, 1001), RateFrom::File);
-        assert_eq!(c.rate_text(), "30000/1001 fps");
+        assert_eq!(c.rate_text(), "29.97 fps");
         drop(c);
         for file in &files {
             std::fs::remove_file(file).unwrap();
@@ -801,17 +809,27 @@ mod tests {
         // opened while the rate for sequences is another
         assert_eq!(Clip::open_stills(&media("seq.0002.png"), (25, 1)).expect("open").rate_text(), "25 fps assumed");
         c.set_rate((30000, 1001), RateFrom::Set);
-        assert_eq!((c.timeline.frames(), c.missing.as_slice(), c.rate_text().as_str()), (5, [2].as_slice(), "30000/1001 fps set"));
+        assert_eq!((c.timeline.frames(), c.missing.as_slice(), c.rate_text().as_str()), (5, [2].as_slice(), "29.97 fps set"));
         assert_eq!(c.clock, Some(Timecode::counted(30)));
         c.set_rate((25, 1), RateFrom::Set);
         assert_eq!((c.timeline.rate(), c.timeline.fps(), c.rate_text().as_str()), (Some((25, 1)), 25.0, "25 fps set"));
         assert_eq!(c.clock.map(|clock| clock.at(4)), Some("00:00:00:04".to_string()));
         let mut video = Clip::open(&media("hapq_64.mov")).expect("open");
         video.set_rate((25, 1), RateFrom::Set);
-        assert_eq!(video.rate_text(), "60000/1001 fps");
+        assert_eq!(video.rate_text(), "59.94 fps");
         let mut still = Clip::open(&media("still_8bit.png")).expect("open");
         still.set_rate((25, 1), RateFrom::Set);
         assert_eq!(still.rate_text(), "still");
+    }
+
+    /// a rate is said as people say it, its ratio after only where its decimal is not exactly it (the owner's word,
+    /// 2026-11-27: "idk what the first two numbers mean")
+    #[test]
+    fn a_rate_is_said_as_its_decimal_and_its_ratio_only_where_that_is_not_exact() {
+        let said = [((15360, 512), "30"), ((24, 1), "24"), ((25, 2), "12.5"), ((30000, 1001), "29.97"), ((24000, 1001), "23.976"), ((2997, 100), "29.97 · 2997/100"), ((1000000, 33333), "30 · 1000000/33333")];
+        for (rate, words) in said {
+            assert_eq!(rate_said(rate), words, "{rate:?}");
+        }
     }
 
     /// a rate typed for a sequence: a number, decimals allowed, or a ratio, from 1 to 240 frames a second. a decimal

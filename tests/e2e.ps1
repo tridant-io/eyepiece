@@ -224,7 +224,7 @@ Stop-Player
 Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
 # ---- hap: our own lane, and everything about the window
 Start-Player (Join-Path $media 'hapq_64.mov')
-Assert-Title 'hap q opens on frame 0 and reads the file exactly' '^hapq_64\.mov . 0 / 3 . 64 . 64 . hap q . 60000/1001 fps$'
+Assert-Title 'hap q opens on frame 0 and reads the file exactly' '^hapq_64\.mov . 0 / 3 . 64 . 64 . hap q . 59.94 fps$'
 # the window's class carries the icon linked into the exe (-14 is GCLP_HICON): what the taskbar shows for it
 Confirm-That 'the window carries the program''s icon' ([EyepieceE2e]::GetClassLongPtrW($script:h, -14) -ne [IntPtr]::Zero) 'the window''s class has no icon'
 # round the picture area, what is seen of the window (9 is DWMWA_EXTENDED_FRAME_BOUNDS) is the system's line and
@@ -398,7 +398,7 @@ $before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
 Confirm-That 'playing while minimized does not spin a core' ($used -lt 0.5) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 [void][EyepieceE2e]::ShowWindow($script:h, 9); Start-Sleep -Milliseconds 400
 Send-Key 0x20
-Assert-Title 'plays and pauses on a real frame, none unshowable' '^hapq_64\.mov . [0-2] / 3 . 64 . 64 . hap q . 60000/1001 fps( . \d+ late)?$'
+Assert-Title 'plays and pauses on a real frame, none unshowable' '^hapq_64\.mov . [0-2] / 3 . 64 . 64 . hap q . 59.94 fps( . \d+ late)?$'
 $before = Get-Cpu; Start-Sleep -Seconds 2; $used = (Get-Cpu) - $before
 Confirm-That 'standing still uses no cpu' ($used -lt 0.05) "used $([math]::Round($used, 2)) s of cpu in 2 s"
 # what is kept between runs: the grid, switched on, is there when the player starts again
@@ -417,7 +417,7 @@ Send-Key 0x46 8; Assert-Frame 'h.264: eight steps back, across a key frame' 15 2
 Send-Key 0x47 2; Assert-Frame 'h.264: and forward again, across it' 17 24 'hardware'
 Send-Key 0x24; Assert-Frame 'h.264: home goes to the first frame' 0 24 'hardware'
 Send-Key 0x20; Start-Sleep -Milliseconds 1500; Send-Key 0x20
-Assert-Title 'h.264 plays and pauses on a real frame, none unshowable' '^h264_320\.mp4 . \d+ / 24 . .*, hardware . 15360/512 fps( . \d+ late)?$'
+Assert-Title 'h.264 plays and pauses on a real frame, none unshowable' '^h264_320\.mp4 . \d+ / 24 . .*, hardware . 30 fps( . \d+ late)?$'
 # the timebar's picture (fig. 04) while a clip with long groups plays, when no frame of it is read: the timebar strip's,
 # made while the clip stood still. the window is tall, so the picture's place, 82 to 172 up from the bottom, is over
 # black and not over the clip
@@ -1240,7 +1240,7 @@ Confirm-That 'and the mute is kept' ((Get-Content -LiteralPath $settings) -conta
 # ---- files that do not list all their frames up front: their packets are counted on opening. mkv and webm keep
 # milliseconds, so their rate is derived; the fragmented mp4's table stops at its first fragment; and frames of two
 # lengths. each has 12 frames with a key frame every 4: steps cross them, and play runs to the end and back again
-foreach ($clip in @(@('h264_64.mkv', '30 fps derived'), @('h264_frag_64.mp4', '15360/512 fps'), @('vp9_64.webm', '30 fps derived'), @('h264_vfr_64.mp4', 'variable rate'))) {
+foreach ($clip in @(@('h264_64.mkv', '30 fps derived'), @('h264_frag_64.mp4', '30 fps'), @('vp9_64.webm', '30 fps derived'), @('h264_vfr_64.mp4', 'variable rate'))) {
     $file = $clip[0]; $n = [regex]::Escape($file); $r = [regex]::Escape($clip[1])
     Start-Player (Join-Path $media $file)
     Assert-Title "$file opens on frame 0 of all 12, at $($clip[1])" "^$n . 0 / 12 . 64 . 64 . .* . $r$"
