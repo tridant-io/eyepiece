@@ -520,7 +520,7 @@ impl View {
             trim: self.transport.trim(),
             // the tab's and the window's: `run` fills them in
             cut: None,
-            network: false,
+            no_replace: None,
             saving: None,
             sequence: matches!(self.clip.lane, Lane::Stills(_)) && self.clip.timeline.frames() > 1,
             speed: self.transport.speed(),
@@ -979,12 +979,13 @@ fn trimmed(v: &View) -> Option<(usize, usize)> {
     (mark_in.is_some() || mark_out.is_some()).then(|| (mark_in.unwrap_or(0), mark_out.unwrap_or(v.clip.timeline.frames().saturating_sub(1))))
 }
 
-/// how a copy of `frames` of the file at `path` is cut, read in the background.
-fn plan_off(path: String, frames: (usize, usize), wake: &Sender<Event>) -> Loaded<Cut> {
+/// how a copy of `frames` of the file at `path` is cut, and why it could not take the file's place, if it could not,
+/// read in the background.
+fn plan_off(path: String, frames: (usize, usize), wake: &Sender<Event>) -> Loaded<(Cut, Option<String>)> {
     let (reader, arriving) = mpsc::channel();
     let wake = wake.clone();
     std::thread::spawn(move || {
-        let _ = reader.send(copy::plan(&path, frames, &AtomicBool::new(false)));
+        let _ = reader.send(copy::plan(&path, frames, &AtomicBool::new(false)).map(|cut| (cut, save::replace_refused(Path::new(&path)))));
         let _ = wake.send(Event::Wake);
     });
     Loaded::Reading(arriving)
@@ -1921,7 +1922,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     };
     // how a copy of the trim up would be cut, read once its menu opens: of which file and frames, and what was read;
     // and the copy being saved, one at a time
-    let mut planned: Option<(String, (usize, usize), Loaded<Cut>)> = None;
+    let mut planned: Option<(String, (usize, usize), Loaded<(Cut, Option<String>)>)> = None;
     let mut saving: Option<Saving> = None;
     let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open, noted: HashMap::new(), keeper };
     tabs.read_notes();
@@ -2322,24 +2323,23 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Some(Loaded::Failed(why)) => Facts::Failed(why),
                 Some(Loaded::Reading(_)) | None => Facts::Reading,
             };
-            // what the trim's menu shows: how a copy of the trim is cut, once read, and whether the file is where a
-            // copy cannot take its place
+            // what the trim's menu shows: how a copy of the trim is cut, once read, and why a copy cannot take the
+            // file's place, where it cannot
             let copied = |v: &View| {
-                let cut = planned.as_ref().filter(|(path, frames, _)| tab.path.as_ref() == Some(path) && trimmed(v) == Some(*frames)).and_then(|(_, _, cut)| match cut {
-                    Loaded::Ready(cut) => Some(Ok(cut)),
-                    Loaded::Failed(why) => Some(Err(why.as_str())),
-                    Loaded::Reading(_) => None,
-                });
-                let network = trimmed(v).is_some() && tab.path.as_deref().is_some_and(|p| browse::volume_of(Path::new(p)) == browse::Volume::Network);
-                (cut, network)
+                let read = planned.as_ref().filter(|(path, frames, _)| tab.path.as_ref() == Some(path) && trimmed(v) == Some(*frames)).map(|(_, _, read)| read);
+                match read {
+                    Some(Loaded::Ready((cut, refused))) => (Some(Ok(cut)), refused.as_deref()),
+                    Some(Loaded::Failed(why)) => (Some(Err(why.as_str())), None),
+                    Some(Loaded::Reading(_)) | None => (None, None),
+                }
             };
             let screen = Screen {
                 tabs: tabs.all.iter().map(Tab::name).collect(),
                 places: tabs.all.iter().map(|t| t.played.as_ref().map(|p| ui::Place { folder: &p.title, at: p.at, count: p.items.len(), clip: t.clip_name() })).collect(),
                 current: tabs.up,
                 clip: tab.view.as_ref().map(|v| {
-                    let (cut, network) = copied(v);
-                    Model { marks: tabs.marks(tab), cut, network, saving: saving.as_ref().map(|s| (s.name.as_str(), s.part())), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }
+                    let (cut, no_replace) = copied(v);
+                    Model { marks: tabs.marks(tab), cut, no_replace, saving: saving.as_ref().map(|s| (s.name.as_str(), s.part())), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }
                 }),
                 error: tab.error.as_deref(),
                 opening: opening.as_deref().filter(|_| tab.view.is_none() && tab.error.is_none()),

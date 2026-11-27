@@ -186,15 +186,19 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
         if !exact {
             widgets::note(ui, "an exact cut of a long-gop file needs an encode, which is not built yet.");
         }
+        // what of the clip's tracks the copy leaves out, said before it is saved
+        if let Some(left) = &cut.left {
+            widgets::note(ui, &format!("{left}."));
+        }
         if cut.sound > 0 {
             let row = widgets::row(ui, 15.6);
             if widgets::switch(ui, "trim-sound", row, *sound, "keep sound", "", false) {
                 *sound = !*sound;
             }
         }
-        // a new file beside the clip is the default. in its place is offered where the original can go to a bin
+        // a new file beside the clip is the default. in its place is offered only where the original can go to a bin
         let mut choices = vec![("save new file", "", true)];
-        if !model.network {
+        if model.no_replace.is_none() {
             choices.push(("replace original…", "", false));
         }
         match widgets::buttons(ui, "trim-save", &choices) {
@@ -202,8 +206,8 @@ pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode
             Some(_) => *confirming = true,
             None => {}
         }
-        if model.network {
-            widgets::note(ui, &format!("replace original is not offered on a network volume: it has no {BIN}."));
+        if let Some(why) = model.no_replace {
+            widgets::note(ui, &format!("replace original is not offered: {why}."));
         }
     })
 }

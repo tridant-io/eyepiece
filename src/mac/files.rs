@@ -27,7 +27,14 @@ pub fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
-/// moves `file` to the trash, where it can be put back from. Err, with the file where it was, when it cannot go there.
+/// why `file` cannot go to the trash, known before anything is asked: nothing here. the system's trash fails rather
+/// than deleting what it cannot take (`trash`).
+pub fn refusal(_file: &Path) -> Option<String> {
+    None
+}
+
+/// moves `file` to the trash, where it can be put back from. Err, with the file where it was, when it cannot go there:
+/// the system never deletes it in its place.
 pub fn trash(file: &Path) -> Result<(), String> {
     use objc2_foundation::{NSFileManager, NSString, NSURL};
     let url = NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));

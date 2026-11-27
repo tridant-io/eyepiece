@@ -33,6 +33,9 @@ pub struct Cut {
     pub last: usize,
     /// how many tracks of sound the clip has, which a copy keeps or leaves out
     pub sound: usize,
+    /// what a copy leaves out of the clip's tracks, said in full ("subtitles and data tracks are not kept"), when it
+    /// leaves out any
+    pub left: Option<String>,
     /// where in the file the picture kept starts and ends, for how far a copy has got
     bytes: (u64, u64),
     /// the key frame decoding starts at, by its place among the stored samples, and the frame it is: before the
@@ -56,7 +59,7 @@ impl Cut {
     /// a cut of these frames of a clip with this many tracks of sound, for the controls' tests
     #[cfg(test)]
     pub fn of(first: usize, last: usize, sound: usize) -> Cut {
-        Cut { first, last, sound, bytes: (0, 0), key: 0, key_frame: first as i64, seek: 0, end: 0, from: 0, to: 0 }
+        Cut { first, last, sound, left: None, bytes: (0, 0), key: 0, key_frame: first as i64, seek: 0, end: 0, from: 0, to: 0 }
     }
 }
 
@@ -187,6 +190,14 @@ pub fn check(written: &str, path: &str, cut: &Cut, sound: bool, stop: &AtomicBoo
     Ok((!differs.is_empty()).then(|| differs.join(", ")))
 }
 
+/// the kinds of track a copy leaves out, said: "subtitles and data tracks are not kept". None for none.
+fn not_kept(mut kinds: Vec<&str>) -> Option<String> {
+    let verb = if kinds == ["the timecode track"] { "is" } else { "are" };
+    let last = kinds.pop()?;
+    let all = if kinds.is_empty() { last.to_string() } else { format!("{} and {last}", kinds.join(", ")) };
+    Some(format!("{all} {verb} not kept"))
+}
+
 /// how many tracks of sound the clip at `path` has that a copy can keep or leave out.
 pub fn sound_tracks(path: &str) -> Result<usize, String> {
     Ok(sound_streams(&Input::open(path)?).len())
@@ -293,7 +304,33 @@ impl Source {
         let first = key_frame.max(0) as usize;
         let last = (walk.latest.max(first as i64) as usize).min(frames - 1);
         let bytes = (self.samples[key].pos, self.samples[end].pos + self.samples[end].size as u64);
-        Ok(Cut { first, last, sound: sound_streams(&self.input).len(), bytes, key, key_frame, seek, end, from: self.times[first], to: self.times[last] + self.length(last) })
+        let mut cut = Cut { first, last, sound: sound_streams(&self.input).len(), left: None, bytes, key, key_frame, seek, end, from: self.times[first], to: self.times[last] + self.length(last) };
+        cut.left = self.left_out(&cut);
+        Ok(cut)
+    }
+
+    /// the clip's tracks a copy leaves out, in words: all but its picture and its sound. a timecode track is made
+    /// again, from the first frame's timecode, where the copy has one.
+    fn left_out(&self, cut: &Cut) -> Option<String> {
+        let timecode = self.timecode(cut).is_some();
+        let mut kinds: Vec<&str> = Vec::new();
+        for i in (0..self.input.streams()).filter(|&i| i != self.video) {
+            let par = unsafe { &*(**(*self.input.ctx).streams.add(i)).codecpar };
+            let kind = match par.codec_type {
+                ffi::AVMediaType::AVMEDIA_TYPE_AUDIO if par.codec_id != ffi::AVCodecID::AV_CODEC_ID_NONE => continue,
+                ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => "sound tracks ffmpeg cannot read",
+                ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => "other picture tracks",
+                ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => "subtitles",
+                ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT => "attachments",
+                _ if par.codec_tag == u32::from_le_bytes(*b"tmcd") && timecode => continue,
+                _ if par.codec_tag == u32::from_le_bytes(*b"tmcd") => "the timecode track",
+                _ => "data tracks",
+            };
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        not_kept(kinds)
     }
 
     /// the timecode a copy's first frame is called by: the file's own at that frame. a file with none gets none, as
@@ -957,6 +994,19 @@ pub(crate) mod tests {
         let later = Cut { first: 5, last: 8, ..cut.clone() };
         assert_eq!(check(&at(&dir, "four.mov"), &at(&dir, "av_tc_64.mov"), &later, false, &stop), Ok(Some("timecode 01:00:00;04, 01:00:00;05 asked, 2 sound tracks, 0 asked".to_string())));
         tidy(&dir);
+    }
+
+    /// what a copy leaves out of a clip's tracks is said, in one line: here the test clips have none to leave (a
+    /// timecode track is made again), and the words for those that would
+    #[test]
+    fn what_a_copy_leaves_out_is_said() {
+        for name in ["av_tc_64.mov", "tone48_stereo.mkv", "h264_320.mp4"] {
+            assert_eq!(plan(&media(name).to_string_lossy(), (0, 1), &AtomicBool::new(false)).unwrap().left, None, "{name}");
+        }
+        assert_eq!(not_kept(vec!["subtitles", "data tracks"]).as_deref(), Some("subtitles and data tracks are not kept"));
+        assert_eq!(not_kept(vec!["other picture tracks", "subtitles", "attachments"]).as_deref(), Some("other picture tracks, subtitles and attachments are not kept"));
+        assert_eq!(not_kept(vec!["the timecode track"]).as_deref(), Some("the timecode track is not kept"));
+        assert_eq!(not_kept(vec![]), None);
     }
 
     /// the walk's end with frames stored out of order: shown 0 3 1 2 6 4 5 as stored, the end after 4 is after 5, where

@@ -57,7 +57,7 @@ impl Saving {
         let worker = std::thread::Builder::new()
             .name("saving".into())
             .spawn(move || {
-                let _ = tell.send(save(&ask, &so_far, &stopped, files::trash));
+                let _ = tell.send(save(&ask, &so_far, &stopped, (replace_refused, files::trash)));
                 let _ = wake.send(Event::Wake);
             })
             .ok();
@@ -86,6 +86,15 @@ impl Drop for Saving {
             let _ = worker.join();
         }
     }
+}
+
+/// why a copy cannot take the place of the clip at `path`, known before anything is written: the clip could not go
+/// to a bin, where it can be put back from (a network volume has none). None when it can.
+pub fn replace_refused(path: &Path) -> Option<String> {
+    if browse::volume_of(path) == Volume::Network {
+        return Some(format!("a network volume has no {BIN}"));
+    }
+    files::refusal(path)
 }
 
 /// the copy's `n`th name to try: the clip's name, what it keeps of it, and a number from the second on.
@@ -123,13 +132,15 @@ fn take_name(ask: &Ask, written: &Path) -> Result<PathBuf, String> {
 }
 
 /// writes the copy `ask` names, checks it, and gives it its name, or puts it in the clip's place with `trash` taking
-/// the clip. `done` follows how far it has got, in millionths, and setting `stop` ends it.
-fn save(ask: &Ask, done: &AtomicU64, stop: &AtomicBool, trash: impl Fn(&Path) -> Result<(), String>) -> Done {
+/// the clip, unless `refuse` says up front why the clip cannot go (`replace_refused`): then both are kept. `done`
+/// follows how far it has got, in millionths, and setting `stop` ends it.
+fn save(ask: &Ask, done: &AtomicU64, stop: &AtomicBool, (refuse, trash): (impl Fn(&Path) -> Option<String>, impl Fn(&Path) -> Result<(), String>)) -> Done {
     let folder = ask.path.parent().unwrap_or(Path::new("."));
     let first = name(ask, 1);
     if !ask.sound && !ask.trim && copy::sound_tracks(&ask.path.to_string_lossy()).is_ok_and(|tracks| tracks == 0) {
         return Done { said: "not saved · the clip has no sound to leave out".into(), file: None, replaced: None };
     }
+    let refused = ask.replace.then(|| refuse(&ask.path)).flatten();
     // written under a passing name of its own in the same folder, so it takes its final name in one step, and no file
     // with that name is ever half written
     let (passing, file) = match (1..1000).map(|n| folder.join(if n == 1 { format!("{first}.part") } else { format!("{first}.{n}.part") })).find_map(|p| match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
@@ -164,13 +175,15 @@ fn save(ask: &Ask, done: &AtomicU64, stop: &AtomicBool, trash: impl Fn(&Path) ->
             frames += &format!(", to {late} past the out point");
         }
     }
+    // and what of the clip's tracks it leaves out
+    if let Some(left) = &cut.left {
+        frames += &format!(" · {left}");
+    }
     // in the clip's place: only a copy that is what was asked, and only once the clip is in the bin
-    let mut held = None;
-    if ask.replace {
+    let mut held = refused;
+    if ask.replace && held.is_none() {
         held = Some(if let Some(differs) = &differs {
             format!("the copy is not as asked: {differs}")
-        } else if browse::volume_of(&ask.path) == Volume::Network {
-            format!("a network volume has no {BIN}")
         } else {
             match trash(&ask.path) {
                 Err(why) => format!("the original could not go to the {BIN}: {why}"),
@@ -207,8 +220,13 @@ mod tests {
         panic!("nothing is to go to the bin")
     }
 
+    /// a bin that takes the clip
+    fn fits(_: &Path) -> Option<String> {
+        None
+    }
+
     fn saved(ask: &Ask) -> Done {
-        save(ask, &AtomicU64::new(0), &AtomicBool::new(false), never)
+        save(ask, &AtomicU64::new(0), &AtomicBool::new(false), (fits, never))
     }
 
     #[test]
@@ -245,7 +263,7 @@ mod tests {
     #[test]
     fn a_copy_that_fails_is_set_aside() {
         let dir = scratch("failed", &["prores_64.mov"]);
-        let done = save(&ask(&dir, "prores_64.mov", (1, 2), true, true, false), &AtomicU64::new(0), &AtomicBool::new(true), never);
+        let done = save(&ask(&dir, "prores_64.mov", (1, 2), true, true, false), &AtomicU64::new(0), &AtomicBool::new(true), (fits, never));
         assert_eq!(done.file, Some(dir.join("prores_64_trim.mov.failed")));
         assert!(done.said.starts_with("not saved · stopped · what was written is kept as prores_64_trim.mov.failed"), "{}", done.said);
         assert!(!dir.join("prores_64_trim.mov").exists());
@@ -266,17 +284,29 @@ mod tests {
             binned.borrow_mut().push(file.to_path_buf());
             std::fs::rename(file, bin.join(file.file_name().unwrap())).map_err(|e| e.to_string())
         };
-        let done = save(&ask(&dir, "prores_64.mov", (1, 2), true, true, true), &AtomicU64::new(0), &AtomicBool::new(false), to_bin);
+        let done = save(&ask(&dir, "prores_64.mov", (1, 2), true, true, true), &AtomicU64::new(0), &AtomicBool::new(false), (fits, to_bin));
         assert_eq!(done, Done { said: format!("replaced prores_64.mov · 2 frames · the original is in the {BIN}"), file: Some(clip.clone()), replaced: Some(clip.clone()) });
         assert_eq!((binned.borrow().as_slice(), pictures(&clip.to_string_lossy())), ([clip.clone()].as_slice(), before[1..=2].to_vec()));
         assert_eq!(pictures(&bin.join("prores_64.mov").to_string_lossy()), before);
         // the bin refuses: the clip stays, and the copy is beside it
         let refuse = |_: &Path| Err("no bin here".to_string());
-        let done = save(&ask(&dir, "prores_64.mov", (0, 0), true, true, true), &AtomicU64::new(0), &AtomicBool::new(false), refuse);
+        let done = save(&ask(&dir, "prores_64.mov", (0, 0), true, true, true), &AtomicU64::new(0), &AtomicBool::new(false), (fits, refuse));
         assert_eq!(done.said, format!("not replaced · the original could not go to the {BIN}: no bin here · saved as prores_64_trim.mov"));
         assert_eq!((pictures(&clip.to_string_lossy()).len(), pictures(&dir.join("prores_64_trim.mov").to_string_lossy()).len()), (2, 1));
         std::fs::remove_file(bin.join("prores_64.mov")).unwrap();
         std::fs::remove_dir(&bin).unwrap();
+        tidy(&dir);
+    }
+
+    /// a clip whose bin cannot be shown to take it is never asked to go there: the copy is saved beside it, both are
+    /// kept, and the one line says why. what it leaves out of the clip's tracks is said too
+    #[test]
+    fn a_clip_the_bin_cannot_take_is_refused_up_front() {
+        let dir = scratch("refused", &["av_tc_64.mov"]);
+        let cannot = |_: &Path| Some("its drive's recycle bin cannot be confirmed to take it".to_string());
+        let done = save(&ask(&dir, "av_tc_64.mov", (4, 7), true, true, true), &AtomicU64::new(0), &AtomicBool::new(false), (cannot, never));
+        assert_eq!(done, Done { said: "not replaced · its drive's recycle bin cannot be confirmed to take it · saved as av_tc_64_trim.mov".into(), file: Some(dir.join("av_tc_64_trim.mov")), replaced: None });
+        assert_eq!((pictures(&dir.join("av_tc_64.mov").to_string_lossy()).len(), pictures(&dir.join("av_tc_64_trim.mov").to_string_lossy()).len()), (12, 4));
         tidy(&dir);
     }
 }

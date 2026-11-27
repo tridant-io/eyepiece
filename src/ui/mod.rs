@@ -271,8 +271,9 @@ pub struct Model<'a> {
     pub cut: Option<Result<&'a Cut, &'a str>>,
     /// a numbered run of stills: there is no copy of one to make yet
     pub sequence: bool,
-    /// the file is on a network volume, which has no recycle bin
-    pub network: bool,
+    /// why a copy cannot take the file's place, where it cannot: its original could not go to a bin (a network
+    /// volume has none)
+    pub no_replace: Option<&'a str>,
     /// a copy being saved: its name, and how far it has got, 0 to 1
     pub saving: Option<(&'a str, f32)>,
     pub speed: f64,
@@ -1243,6 +1244,10 @@ impl Ui {
             };
             // what a menu changes about the view is said by the chip
             self.view_changed |= actions.iter().any(|a| matches!(a, Action::Zoom(_)));
+            // a save started goes on in the note low in the window, which the trim's menu would stand over
+            if actions.iter().any(|a| matches!(a, Action::Save { .. })) {
+                self.menu = None;
+            }
         }
         self.tooltip(ui, full, bar.top(), now);
     }
@@ -2102,16 +2107,21 @@ fn toast(ui: &egui::Ui, full: Rect, said: &str, offer: Option<Offer>, actions: &
         job.append(" · ", 0.0, TextFormat { font_id: font(SANS, 12.5), color: DIM, ..Default::default() });
     }
     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
-    let galley = painter.layout_job(job);
     let words = link.as_ref().map(|(words, _)| painter.layout_no_wrap(words.to_string(), font(SANS, 12.5), FG));
-    let wide = galley.size().x + words.as_ref().map_or(0.0, |l| l.size().x);
+    let link_wide = words.as_ref().map_or(0.0, |l| l.size().x);
+    // no wider than the window, 16 in from its sides: longer words go on to more lines, the link after the last
+    job.wrap.max_width = (full.width() - 2.0 * 16.0 - 24.0 - link_wide).max(160.0);
+    let galley = painter.layout_job(job);
+    let (first, last) = (galley.rows.first().map_or(Rect::ZERO, |row| row.rect()), galley.rows.last().map_or(Rect::ZERO, |row| row.rect()));
+    let wide = galley.size().x.max(last.right() + link_wide);
     let rect = Align2::CENTER_BOTTOM.anchor_size(Pos2::new(full.center().x, full.bottom() - 64.0), Vec2::new(wide, galley.size().y) + Vec2::new(24.0, 18.0));
     painter.rect_filled(rect, 0.0, SOLID);
     painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
-    let at = Pos2::new(rect.left() + 12.0, text_top(&painter, font(SANS, 12.5), rect.center().y));
-    let after = at.x + galley.size().x;
+    // one line is centered by its figures; more, as a block
+    let at = Pos2::new(rect.left() + 12.0, text_top(&painter, font(SANS, 12.5), rect.center().y) - (galley.size().y - first.height()) / 2.0);
     painter.galley(at, galley, FG);
     let (Some((_, asked)), Some(words)) = (link, words) else { return false };
+    let (after, at) = (at.x + last.right(), Pos2::new(at.x, at.y + last.top()));
     let link_at = Pos2::new(after, at.y);
     let link_rect = Rect::from_min_size(Pos2::new(after, rect.top()), Vec2::new(words.size().x, rect.height()));
     dotted(&painter, font(SANS, 12.5), link_at, words.size().x, FG);
@@ -2513,7 +2523,7 @@ pub(super) mod tests {
             trim: (None, None),
             cut: None,
             sequence: false,
-            network: false,
+            no_replace: None,
             saving: None,
             speed: 1.0,
             shuttle: 0,
@@ -2926,11 +2936,11 @@ pub(super) mod tests {
     /// the trim's button (the owner's, 2026-11-26) stands on the bar while a clip of frames has a trim, and only then:
     /// lit as a button whose setting is on, never in the accent, which the bar never carries. its menu says how the
     /// copy is cut and saves it beside the clip, or, behind a prompt whose action is the accent, in its place; never in
-    /// its place on a network volume. a still has no trim, nor the button
+    /// its place where the original could not go to a bin. a still has no trim, nor the button
     #[test]
     fn the_trim_button_saves_the_trim_and_leaves_the_accent_to_its_menu() {
         let cut = Cut::of(8, 13, 2);
-        let trimmed = |network| Model { frames: 24, trim: (Some(11), Some(13)), cut: Some(Ok(&cut)), network, ..model() };
+        let trimmed = |no_replace| Model { frames: 24, trim: (Some(11), Some(13)), cut: Some(Ok(&cut)), no_replace, ..model() };
         // where along the bar's row a click opens which menu
         let opens = |model: &dyn Fn() -> Model<'static>| {
             let mut ui = Ui::new((640, 360), 1.0, false, None, None);
@@ -2944,7 +2954,7 @@ pub(super) mod tests {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         let mut on = Vec::new();
         for x in (200..640).step_by(4) {
-            drive_with(&mut ui, trimmed(false), &click(x as f32, 333.0));
+            drive_with(&mut ui, trimmed(None), &click(x as f32, 333.0));
             if ui.menu.take() == Some(Menu::Trim) {
                 on.push(x as f32);
             }
@@ -2960,7 +2970,7 @@ pub(super) mod tests {
         let colors = |ui: &mut Ui| {
             let pass = |ui: &mut Ui| {
                 ui.pointer_move(button, 333.0);
-                let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(trimmed(false)), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
+                let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(trimmed(None)), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
                 out.textures.clear();
                 out.primitives
             };
@@ -2971,37 +2981,44 @@ pub(super) mod tests {
         };
         assert!(!colors(&mut ui).contains(&ACCENT), "the accent on the bar");
         // the menu: the keep sound switch is on, in the accent. save new file saves beside the clip
-        drive_with(&mut ui, trimmed(false), &click(button, 333.0));
+        drive_with(&mut ui, trimmed(None), &click(button, 333.0));
         assert!(ui.menu == Some(Menu::Trim));
         assert!(colors(&mut ui).contains(&ACCENT));
         let menu = ui.menu_rect;
         let row = menu.bottom() - 12.0 - 15.0;
-        assert_eq!(drive_with(&mut ui, trimmed(false), &click(menu.left() + 30.0, row)), vec![Action::Save { trim: true, sound: true, replace: false }]);
+        assert_eq!(drive_with(&mut ui, trimmed(None), &click(menu.left() + 30.0, row)), vec![Action::Save { trim: true, sound: true, replace: false }]);
+        // and the menu goes: the save goes on in the note low in the window, which it would stand over
+        assert!(ui.menu.is_none());
+        drive_with(&mut ui, trimmed(None), &click(button, 333.0));
+        drive_with(&mut ui, trimmed(None), &[(button, 333.0, None)]);
         // replace original asks first, and its replace saves in the clip's place
-        assert_eq!(drive_with(&mut ui, trimmed(false), &click(menu.left() + 150.0, row)), vec![]);
+        assert_eq!(drive_with(&mut ui, trimmed(None), &click(menu.left() + 150.0, row)), vec![]);
         assert!(ui.trim_confirm);
         // (a menu whose words changed takes its new size a pass later)
-        drive_with(&mut ui, trimmed(false), &[(menu.left() + 150.0, row, None)]);
+        drive_with(&mut ui, trimmed(None), &[(menu.left() + 150.0, row, None)]);
         let prompt = ui.menu_rect;
-        assert_eq!(drive_with(&mut ui, trimmed(false), &click(prompt.right() - 30.0, prompt.bottom() - 12.0 - 15.0)), vec![Action::Save { trim: true, sound: true, replace: true }]);
-        // on a network volume only beside it
+        assert_eq!(drive_with(&mut ui, trimmed(None), &click(prompt.right() - 30.0, prompt.bottom() - 12.0 - 15.0)), vec![Action::Save { trim: true, sound: true, replace: true }]);
+        assert!(ui.menu.is_none());
+        // where the original could not go to a bin (a network volume, a bin that cannot be shown to take it), only
+        // beside it
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
-        drive_with(&mut ui, trimmed(true), &click(button, 333.0));
-        drive_with(&mut ui, trimmed(true), &[(button, 333.0, None)]);
+        let refused = Some("its drive's recycle bin cannot be confirmed to take it");
+        drive_with(&mut ui, trimmed(refused), &click(button, 333.0));
+        drive_with(&mut ui, trimmed(refused), &[(button, 333.0, None)]);
         let menu = ui.menu_rect;
         let mut asked = Vec::new();
         // across its foot, where its buttons and the note under them are
         for x in (menu.left() as i32 + 16..menu.right() as i32 - 16).step_by(12) {
             for y in (menu.bottom() as i32 - 70..menu.bottom() as i32 - 8).step_by(6) {
-                asked.extend(drive_with(&mut ui, trimmed(true), &click(x as f32, y as f32)));
-                assert!(!ui.trim_confirm, "replace offered on a network volume");
+                asked.extend(drive_with(&mut ui, trimmed(refused), &click(x as f32, y as f32)));
+                assert!(!ui.trim_confirm, "replace offered where the original cannot go to a bin");
                 ui.menu = Some(Menu::Trim);
             }
         }
         // (the switch is clicked on the way too, so the sound goes either way)
         assert!(asked.iter().any(|a| matches!(a, Action::Save { trim: true, replace: false, .. })) && asked.iter().all(|a| !matches!(a, Action::Save { replace: true, .. })), "{asked:?}");
         // a sequence has the button, and its menu saves nothing yet
-        let sequence = || Model { sequence: true, ..trimmed(false) };
+        let sequence = || Model { sequence: true, ..trimmed(None) };
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         drive_with(&mut ui, sequence(), &click(button, 333.0));
         drive_with(&mut ui, sequence(), &[(button, 333.0, None)]);
