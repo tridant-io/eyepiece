@@ -14,6 +14,7 @@ public static class EyepieceE2e {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern IntPtr GetClassLongPtrW(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
@@ -77,6 +78,11 @@ public static class EyepiecePicture {
   }
 }
 '@
+# the window is measured and pointed at in its own pixels, whatever the display's scale: a shell that knows nothing of
+# the scale (windows powershell is one) is told the window's size in pixels of 96 to the inch, and windows multiplies
+# the places it posts by the scale. on a display at 150% a place counted from the left then landed half as far again,
+# and one counted from the right or the bottom nowhere near (seen 2026-11-27). -4 is per monitor, version 2
+[void][EyepieceE2e]::SetThreadDpiAwarenessContext([IntPtr](-4))
 # the controls are driven by posted input, not the real pointer and keyboard: the player is told, so it listens only
 # to pointer messages that carry the tests' mark (0x8000) and to keys with no scan code, and takes what is held with
 # a key (1 shift, 2 alt, 4 control) from the message. a person using the machine meanwhile does not disturb it
