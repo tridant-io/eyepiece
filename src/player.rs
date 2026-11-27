@@ -574,6 +574,7 @@ impl View {
             Action::Step(by) => self.transport.step(*by),
             Action::Seek(frame) => self.transport.go(*frame as i64),
             Action::SeekPlace(place) => self.transport.go_place(*place),
+            Action::Trim(mark_in, mark_out) => self.transport.set_trim(*mark_in, *mark_out),
             Action::Hold(seconds) => {
                 if let Some(hold) = &mut self.hold {
                     hold.go(Duration::from_secs_f64(*seconds));
@@ -1918,8 +1919,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut asked_folder: Option<(Vec<std::path::PathBuf>, Instant)> = None;
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone(), playing_now.clone());
-    // the clip the spare reader has in hand for the timebar, and the frame last asked of it
-    let (mut time_of, mut time_asked): (Option<String>, Option<(String, usize)>) = (None, None);
+    // the clip the spare reader has in hand for the timebar, and the frame last asked of it, exactly or not
+    let (mut time_of, mut time_asked): (Option<String>, Option<(String, (usize, bool))>) = (None, None);
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
@@ -2628,7 +2629,7 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             // the timebar's pictures with it: nothing is answered from the clip that was. a clip counts once its first
             // frame is up, and then its timebar strip is made: behind everything else, and not of a clip of one frame
             let up = tabs.tab().path.clone().filter(|_| tabs.tab().view.as_ref().is_some_and(|v| v.shown.is_some()));
-            let asking = up.clone().zip(out.hovered);
+            let asking = up.clone().zip(out.hovered.map(|frame| (frame, out.exact)));
             if up != time_of {
                 spare.ask(Ask::Forget);
                 if let Some(path) = up.as_ref().filter(|_| tabs.view().is_some_and(|v| v.clip.timeline.frames() > 1)) {
@@ -2644,9 +2645,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     spare.ask(Ask::Seam(path.into()));
                 }
             }
-            // the timebar asks for the frame under the pointer, each time that is another frame
-            if let Some((path, frame)) = asking.clone().filter(|_| asking != time_asked) {
-                spare.ask(Ask::Frame { path: path.into(), frame, playing: tabs.view().is_some_and(|v| v.transport.playing()), exact: false });
+            // the timebar asks for the frame under the pointer, each time that is another frame; and for the frame of
+            // a marker of the trim exactly, though the same frame was asked for a moment ago as one near enough
+            if let Some((path, (frame, exact))) = asking.clone().filter(|_| asking != time_asked) {
+                spare.ask(Ask::Frame { path: path.into(), frame, playing: tabs.view().is_some_and(|v| v.transport.playing()), exact });
             }
             time_asked = asking;
         }
@@ -3143,6 +3145,53 @@ mod tests {
         let (_gpu, mut still) = view("still_8bit.png");
         still.key(Key::BracketLeft, shift, None, window);
         assert_eq!(still.transport.trim(), (None, None));
+    }
+
+    /// the trim's markers on the timebar are dragged to move its points (the owner's ask, 2026-11-27): the controls
+    /// over a real clip, what they ask done as the window does it. the timebar is as wide as the window, so frame f
+    /// of the 24 is 640 × f / 23 along it. the out marker dragged from frame 11 to 20, then the in marker from 8 past
+    /// the out, which stops it there: the clip has the trim as the button comes up, and stands on the frame it stood
+    /// on. a marker taken while the clip plays holds play, which goes on once it is let go
+    #[test]
+    fn a_trim_marker_dragged_on_the_timebar_moves_the_clips_trim() {
+        use crate::event::Button::Left;
+        let window = (640.0, 360.0);
+        let (_gpu, mut clip) = view("h264_320.mp4");
+        let mut settings = Settings::default();
+        clip.transport.set_trim(Some(8), Some(11));
+        clip.transport.go(5);
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let along = |frame: usize| 640.0 * frame as f32 / 23.0;
+        let mut pass = |clip: &mut View, frame: usize, button: Option<bool>| {
+            match button {
+                Some(down) => ui.pointer_button(Left, down, along(frame), 355.0),
+                None => ui.pointer_move(along(frame), 355.0),
+            }
+            let asked = {
+                let model = clip.model(window, None, &settings, Facts::Reading, "", (settings::Loop::One, false));
+                let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &settings });
+                out.textures.clear();
+                out.actions
+            };
+            for action in &asked {
+                clip.act(action, window, &mut settings);
+            }
+        };
+        for (from, to, trim) in [(11, 20, (Some(8), Some(20))), (8, 2, (Some(2), Some(20))), (2, 23, (Some(20), Some(20)))] {
+            for (frame, button) in [(from, None), (from, Some(true)), (to, None), (to, Some(false)), (to, None)] {
+                pass(&mut clip, frame, button);
+            }
+            assert_eq!((clip.transport.trim(), clip.transport.frame(), clip.transport.playing()), (trim, 5, false), "its marker on {from} dragged to {to}");
+        }
+        // playing, loop one is on the trim's in frame: the out marker taken, play stops, and starts again let go
+        clip.transport.set_trim(Some(8), Some(20));
+        clip.set_playing(true);
+        pass(&mut clip, 20, None);
+        pass(&mut clip, 20, Some(true));
+        assert!(!clip.playing(), "play goes on with a marker in hand");
+        pass(&mut clip, 16, None);
+        pass(&mut clip, 16, Some(false));
+        assert_eq!((clip.transport.trim(), clip.transport.frame(), clip.playing()), ((Some(8), Some(16)), 8, true));
     }
 
     /// a still that a played folder holds plays by its hold: play and pause go to the hold while the transport stands

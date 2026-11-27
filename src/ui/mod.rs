@@ -16,7 +16,7 @@ pub use markup::{caption, saved};
 pub use update::{Applying, Updates};
 
 use crate::event::{Key, Mods};
-use crate::markup::{Mark, Marks};
+use crate::markup::{Mark, Marks, Part};
 use crate::media::clip::{self, RateFrom};
 use crate::media::copy::Cut;
 use crate::media::meta::Meta;
@@ -181,6 +181,7 @@ pub enum Offer<'a> {
 }
 
 /// the facts for the metadata panel, which are read in the background.
+#[derive(Clone, Copy)]
 pub enum Facts<'a> {
     Reading,
     Ready(&'a Meta),
@@ -239,6 +240,7 @@ pub struct ListItem<'a> {
 }
 
 /// the clip on screen, as the controls show it.
+#[derive(Clone)]
 pub struct Model<'a> {
     pub frame: usize,
     pub frames: usize,
@@ -336,6 +338,8 @@ pub enum Action {
     Seek(usize),
     /// loop analysis: to this place in its round
     SeekPlace(usize),
+    /// the trim's in frame and its out frame, each set or not, as a drag on one of its markers left them
+    Trim(Option<usize>, Option<usize>),
     /// a held still: to this many seconds into its hold
     Hold(f64),
     Loop(Loop),
@@ -428,17 +432,42 @@ pub struct Output {
     pub copied: Option<String>,
     /// the strip and the bar are up
     pub shown: bool,
-    /// the frame under the pointer on the timebar: its picture is wanted
+    /// the frame under the pointer on the timebar: its picture is wanted. `exact` when it is a marker of the trim
+    /// that the pointer is on or has in hand: its picture is that very frame, not a key frame near it
     pub hovered: Option<usize>,
+    pub exact: bool,
     /// the pointer is where a drag would draw a mark: it is shown as a cross
     pub cross: bool,
-    /// the pointer is on an edge of the browser that resizes a part, or on an end of a group's bar on the timebar: it
-    /// is shown as a two-way arrow
+    /// the pointer is on an edge of the browser that resizes a part, or on an end of a group's bar or a marker of the
+    /// trim on the timebar: it is shown as a two-way arrow
     pub resize: bool,
     /// the pointer is on a toast that offers to reveal a file: it stays up until the pointer leaves
     pub toast_held: bool,
     /// the trim's menu is open: how a copy of the trim is cut is wanted
     pub trim_menu: bool,
+}
+
+/// a hold on a marker of the trim: its point; where along the window the pointer would put it on the clip's first
+/// frame (the timebar's left edge, moved by as far as the press was from the stem), the timebar's width and the
+/// clip's last frame; and the trim when it was taken and as the drag has it so far
+struct TrimGrip {
+    point: Part,
+    from: f32,
+    width: f32,
+    last: usize,
+    was: (Option<usize>, Option<usize>),
+    now: (Option<usize>, Option<usize>),
+}
+
+impl TrimGrip {
+    /// the pointer at `x`: the point goes to the frame it is over, and never past the other point
+    fn follow(&mut self, x: f32) {
+        let to = (((x - self.from) / self.width).clamp(0.0, 1.0) * self.last as f32).round() as usize;
+        self.now = match self.point {
+            Part::In => (Some(to.min(self.was.1.unwrap_or(self.last))), self.was.1),
+            _ => (self.was.0, Some(to.max(self.was.0.unwrap_or(0)))),
+        };
+    }
 }
 
 /// the menus that open over the bar
@@ -492,6 +521,10 @@ pub struct Ui {
     trim_confirm: bool,
     /// a press on the timebar stopped play, which starts again as the button comes up
     scrub_stopped: bool,
+    /// the marker of the trim a press took hold of, until the button comes up; and the pointer is on a marker or has
+    /// one in hand, so it is shown as a two-way arrow
+    trim_grip: Option<TrimGrip>,
+    at_marker: bool,
     /// why the rate last typed into a sequence's rate menu was refused, until the menu closes or a rate is taken
     rate_refused: Option<String>,
     /// the metadata panel: pinned open; or up while the pointer is on its button or on it. when the pointer came
@@ -517,9 +550,11 @@ pub struct Ui {
     buttons_room: Option<f32>,
     /// the keys held with the last press of a pointer button
     held: egui::Modifiers,
-    /// the frame under the pointer on the timebar; the pictures had for the timebar, each with the frame it is of and
-    /// its size: the clip's timebar strip, in order, and the one read last; and the one shown
+    /// the frame under the pointer on the timebar, or the frame of the trim's marker it is on or has in hand, whose
+    /// picture is wanted exactly; the pictures had for the timebar, each with the frame it is of and its size: the
+    /// clip's timebar strip, in order, and the one read last; and the one shown
     time_hover: Option<usize>,
+    time_exact: bool,
     time_strip: Vec<TimePicture>,
     time_read: Option<TimePicture>,
     time_picture: Option<(usize, egui::TextureHandle)>,
@@ -587,6 +622,8 @@ impl Ui {
             trim_sound: true,
             trim_confirm: false,
             scrub_stopped: false,
+            trim_grip: None,
+            at_marker: false,
             rate_refused: None,
             facts_pinned: false,
             facts_up: false,
@@ -603,6 +640,7 @@ impl Ui {
             buttons_room: None,
             held: egui::Modifiers::NONE,
             time_hover: None,
+            time_exact: false,
             time_strip: Vec::new(),
             time_read: None,
             time_picture: None,
@@ -981,9 +1019,15 @@ impl Ui {
             _ => None,
         });
         self.moved = false;
+        // a hold on a marker of the trim ends with the button: the timebar ends it there, and where there is no
+        // timebar in that pass (the browser came up) the trim stays as it was
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.trim_grip = None;
+        }
         // under a panel the strip stays up, though the bar steps aside: the pointer shows, and the mac's buttons stay
         let shown = self.shown || self.panel.is_some();
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: (screen.browsing && self.browser.over_edge()) | self.markup.over_end(), toast_held: self.toast_held, trim_menu: self.menu == Some(Menu::Trim) }
+        let resize = (screen.browsing && self.browser.over_edge()) | self.markup.over_end() | std::mem::take(&mut self.at_marker);
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, exact: self.time_exact, cross: self.cross, resize, toast_held: self.toast_held, trim_menu: self.menu == Some(Menu::Trim) }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -1038,6 +1082,16 @@ impl Ui {
     /// a clip is up: the picture takes the pointer, and the controls come and go over it.
     fn clip(&mut self, ui: &mut egui::Ui, screen: &Screen, model: &Model, now: f64, actions: &mut Vec<Action>) {
         let full = ui.max_rect();
+        // a marker of the trim in hand: the controls show the trim as the drag has it, in the pass the pointer moved
+        // in, and the clip takes it as the button comes up (`markers`). a hold whose trim is no longer the clip's is
+        // let go: a key set a point or another clip came up, and the marker is taken again as it stands then; or loop
+        // analysis took the markers off the timebar
+        self.trim_grip = self.trim_grip.take().filter(|grip| grip.was == model.trim && model.seam.is_none());
+        if let (Some(grip), Some(pointer)) = (&mut self.trim_grip, ui.ctx().pointer_latest_pos()) {
+            grip.follow(pointer.x);
+        }
+        let dragged = self.trim_grip.as_ref().map(|grip| Model { trim: grip.now, ..model.clone() });
+        let model = dragged.as_ref().unwrap_or(model);
         self.markup.settle(model);
         // the picture, under everything else. a plain click on it plays or pauses. a drag moves the
         // window while the whole frame is in view, and the picture when it is larger than the window. a double click
@@ -1865,7 +1919,7 @@ impl Ui {
         if timed {
             self.timebar(ui, Rect::from_min_max(Pos2::new(bar.left(), middle + TEXT_BUTTON / 2.0), bar.max), bar.top(), model, actions);
         } else {
-            self.time_hover = None;
+            (self.time_hover, self.time_exact) = (None, false);
         }
     }
 
@@ -1915,10 +1969,52 @@ impl Ui {
         chip(ui, corner, anchor, &[(does, FG), (key, DIM)], 1.0, family);
     }
 
+    /// the trim's markers on the timebar, as things to take hold of (the owner's ask, 2026-11-27): each takes the
+    /// pointer within `markup::END_REACH` of its stem, as an end of a group's bar does, down the whole height of the
+    /// timebar, and no further toward the other marker than half way to it. the pointer on one is the two-way arrow.
+    /// a press takes it, and goes nowhere in the clip; a drag moves its point a frame at a time, as far from the
+    /// pointer as the press was from the stem, so that a press alone moves nothing, and never past the other point;
+    /// the button coming up asks for the trim, once: set at every frame of a drag, the clip's own reader would be
+    /// sent after each new in frame, which play would start on. the groups' bars are laid out after the markers and
+    /// stand over them: where a bar passes a marker a press is the bar's in its lane and the marker's on the track
+    /// under it, which no bar reaches, so each can always be had.
+    /// returns the marker the pointer is on or has in hand, with where the pointer is, and how lit each is, 0 to 1.
+    fn markers(&mut self, ui: &egui::Ui, area: Rect, trim: (Option<usize>, Option<usize>), last: f32, actions: &mut Vec<Action>) -> (Option<(Part, Pos2)>, [f32; 2]) {
+        let x_of = |frame: usize| area.left() + area.width() * (frame as f32 / last).min(1.0);
+        let down = ui.input(|i| i.pointer.primary_down());
+        let between = trim.0.zip(trim.1).map(|(first, end)| (x_of(first) + x_of(end)) / 2.0);
+        let (mut on, mut lit) = (None, [0.0; 2]);
+        for (i, (point, frame)) in [(Part::In, trim.0), (Part::Out, trim.1)].into_iter().enumerate() {
+            let Some(x) = frame.map(x_of) else { continue };
+            let (left, right) = match point {
+                Part::In => (x - markup::END_REACH, between.map_or(x + markup::END_REACH, |half| half.min(x + markup::END_REACH))),
+                _ => (between.map_or(x - markup::END_REACH, |half| half.max(x - markup::END_REACH)), x + markup::END_REACH),
+            };
+            let marker = ui.interact(Rect::from_min_max(Pos2::new(left, area.top()), Pos2::new(right, area.bottom())), ui.scope_id().with(("trim-marker", i)), Sense::click_and_drag());
+            if down && marker.is_pointer_button_down_on() && self.trim_grip.is_none() {
+                if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+                    self.trim_grip = Some(TrimGrip { point, from: area.left() + origin.x - x, width: area.width(), last: last as usize, was: trim, now: trim });
+                }
+            }
+            let held = self.trim_grip.as_ref().is_some_and(|grip| grip.point == point);
+            if let Some(p) = if held { ui.ctx().pointer_latest_pos() } else { marker.hover_pos() } {
+                on = Some((point, p));
+            }
+            lit[i] = ui.ctx().animate_bool_with_time(marker.id.with("lit"), held || marker.hovered(), 0.1);
+        }
+        if let Some(grip) = self.trim_grip.take_if(|_| !down) {
+            if grip.now != grip.was {
+                actions.push(Action::Trim(grip.now.0, grip.now.1));
+            }
+        }
+        self.at_marker = on.is_some();
+        (on, lit)
+    }
+
     /// the timebar: the whole width of the window. it thickens under the pointer; a click or a drag goes there.
     /// in loop analysis it is the round: the clip's last seconds, the seam marked in the middle, its first seconds.
-    /// a trim has a marker on each of its points, and the track outside it is dimmed. each group of marks is a thin
-    /// bar over the track (`Markup::bars`).
+    /// a trim has a marker on each of its points, which a drag moves (`markers`), and the track outside it is dimmed.
+    /// each group of marks is a thin bar over the track (`Markup::bars`).
     /// `over` is the top of the bar, which the box naming the frame under the pointer stands above.
     fn timebar(&mut self, ui: &mut egui::Ui, area: Rect, over: f32, model: &Model, actions: &mut Vec<Action>) {
         let painter = ui.painter().clone();
@@ -1929,15 +2025,16 @@ impl Ui {
         };
         let along = |x: f32| ((x - area.left()) / area.width()).clamp(0.0, 1.0);
         let stop_at = |x: f32| (along(x) * last).round() as usize;
-        let scrubbing = response.is_pointer_button_down_on();
-        let thick = ui.ctx().animate_bool_with_time(ui.scope_id().with("thick"), response.hovered() || scrubbing, 0.1);
-        let height = TRACK_THIN + (TRACK_THICK - TRACK_THIN) * thick;
-        let track = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - height), area.max);
-        let head = area.left() + area.width() * model.held.map_or(at as f32 / last, |(held, of)| (held / of) as f32).min(1.0);
         // the trim: outside it the track is one dark gray, played or not, and between its points it is as it ever
         // is. loop analysis's round shows none: it is the trim's own out and in
         let x_of = |frame: usize| area.left() + area.width() * (frame as f32 / last).min(1.0);
         let trim = if model.seam.is_none() { model.trim } else { (None, None) };
+        let (on_marker, lit) = self.markers(ui, area, trim, last, actions);
+        let scrubbing = response.is_pointer_button_down_on();
+        let thick = ui.ctx().animate_bool_with_time(ui.scope_id().with("thick"), response.hovered() || scrubbing || on_marker.is_some(), 0.1);
+        let height = TRACK_THIN + (TRACK_THICK - TRACK_THIN) * thick;
+        let track = Rect::from_min_max(Pos2::new(area.left(), area.bottom() - height), area.max);
+        let head = area.left() + area.width() * model.held.map_or(at as f32 / last, |(held, of)| (held / of) as f32).min(1.0);
         let (kept_from, kept_to) = (trim.0.map_or(area.left(), x_of), trim.1.map_or(area.right(), x_of));
         for (from, to, color) in [(area.left(), kept_from, TRACK_OUTSIDE), (kept_to, area.right(), TRACK_OUTSIDE), (kept_from, kept_to, TRACK), (kept_from, head.min(kept_to), FILL)] {
             if to > from {
@@ -1960,19 +2057,27 @@ impl Ui {
             if let Some(marks) = model.marks {
                 self.markup.bars(ui, area, track, last, marks, actions);
             }
-            // the trim's markers: a stem as wide as the head and one taller, with a foot turned into the trim
-            for (x, into) in [(trim.0, 1.0), (trim.1, -1.0)].into_iter().filter_map(|(at, into)| Some((x_of(at?), into))) {
-                let top = track.top() - 5.0;
-                painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0, top), Pos2::new(x + 1.0, track.bottom())), 0.0, Color32::WHITE);
-                painter.rect_filled(Rect::from_two_pos(Pos2::new(x + into, top), Pos2::new(x + into * 5.0, top + 2.0)), 0.0, Color32::WHITE);
+            // the trim's markers: a stem as wide as the head and one taller, with a foot turned into the trim. one the
+            // pointer is on or has in hand is lit, as the bar's buttons are and never in the accent: on a plate of
+            // their gray, lighter in hand, its stem twice as wide and its foot reaching two further
+            for (i, (x, into)) in [(trim.0, 1.0), (trim.1, -1.0)].into_iter().enumerate().filter_map(|(i, (at, into))| Some((i, (x_of(at?), into)))) {
+                let (top, lit) = (track.top() - 5.0, lit[i]);
+                if lit > 0.0 {
+                    let plate = if self.trim_grip.as_ref().is_some_and(|grip| (grip.point == Part::In) == (i == 0)) { PRESSED } else { HOVER };
+                    painter.rect_filled(Rect::from_min_max(Pos2::new(x - markup::END_REACH, area.top()), Pos2::new(x + markup::END_REACH, area.bottom())), 0.0, plate.gamma_multiply(lit));
+                }
+                painter.rect_filled(Rect::from_min_max(Pos2::new(x - 1.0 - lit, top), Pos2::new(x + 1.0 + lit, track.bottom())), 0.0, Color32::WHITE);
+                painter.rect_filled(Rect::from_two_pos(Pos2::new(x + into * (1.0 + lit), top), Pos2::new(x + into * (5.0 + 2.0 * lit), top + 2.0)), 0.0, Color32::WHITE);
             }
         }
         painter.rect_filled(Rect::from_min_max(Pos2::new(head - 1.0, track.top() - 4.0), Pos2::new(head + 1.0, track.bottom())), 0.0, Color32::WHITE);
 
         // a press while playing plays on from where the button comes up (the owner's word, 2026-11-27): play stops
-        // while it is down, as for any scrub, and starts again after
+        // while it is down, as for any scrub, and starts again after. a marker of the trim in hand holds play the same
+        // way, with the frame on screen left where it is: its picture is the frame itself, which the reader does not
+        // decode beside a clip that plays (`spare::Ask::Frame`), and play goes on round the trim as the drag left it
         let pressed = scrubbing || response.clicked();
-        if pressed && model.playing && !self.scrub_stopped {
+        if (pressed || self.trim_grip.is_some()) && model.playing && !self.scrub_stopped {
             self.scrub_stopped = true;
             actions.push(Action::Play(false));
         }
@@ -1994,7 +2099,7 @@ impl Ui {
                 }
             }
         }
-        if self.scrub_stopped && !response.is_pointer_button_down_on() {
+        if self.scrub_stopped && !response.is_pointer_button_down_on() && self.trim_grip.is_none() {
             self.scrub_stopped = false;
             actions.push(Action::Play(true));
         }
@@ -2002,18 +2107,22 @@ impl Ui {
         // one of the clip's timebar strip and then the frame itself, or the key frame nearest it, once the spare
         // reader has read that. the design's box (fig. 04): its line, then the picture 160 by 90 two in from it and the
         // number in the 20 under the picture, with the frame's place in the trim when one is set. a held still has
-        // one frame, and no box
-        self.time_hover = response.hover_pos().filter(|_| model.seam.is_none() && model.held.is_none()).map(|p| stop_at(p.x));
-        if let (Some(p), Some(frame)) = (response.hover_pos(), self.time_hover) {
+        // one frame, and no box. on a marker of the trim, or with one in hand, the box is the marker's: its point's
+        // frame, wanted exactly, with what the trim keeps
+        let hover = match on_marker {
+            Some((point, p)) => (if point == Part::In { trim.0 } else { trim.1 }).map(|frame| (p, frame)),
+            None => response.hover_pos().filter(|_| model.seam.is_none() && model.held.is_none()).map(|p| (p, stop_at(p.x))),
+        };
+        (self.time_hover, self.time_exact) = (hover.map(|(_, frame)| frame), on_marker.is_some());
+        if let Some((p, frame)) = hover {
             let nearest = self.time_strip.iter().chain(&self.time_read).min_by_key(|(of, ..)| of.abs_diff(frame));
             if let Some((of, size, pixels)) = nearest.filter(|(of, ..)| self.time_picture.as_ref().is_none_or(|(shown, _)| shown != of)) {
                 self.time_picture = Some((*of, ui.ctx().load_texture("timebar picture", egui::ColorImage::from_rgb(*size, pixels), egui::TextureOptions::LINEAR)));
             }
-            let mut job = LayoutJob::default();
-            for (words, color) in hover_words(model, frame, self.timecode) {
-                job.append(&words, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 10.5), color, ..Default::default() });
-            }
-            let galley = painter.layout_job(job);
+            let galley = painter.layout_job(match on_marker {
+                Some((point, _)) => box_line(&marker_words(model, point, self.timecode), true),
+                None => box_line(&hover_words(model, frame, self.timecode), false),
+            });
             // as wide as its widest line wherever the pointer is, so it never jumps at the trim's edge (wider than the
             // design's when that line is: a timecode outside the trim)
             let widest = trimmed(model).map_or(galley.size().x, |(_, kept)| {
@@ -2325,6 +2434,24 @@ fn hover_words(model: &Model, frame: usize, timecode: bool) -> Vec<(String, Colo
         Some(_) if outside(model, frame) => vec![(format!("{number} · outside the trim"), DIM)],
         Some((first, kept)) => vec![(number, FG), (format!(" · {} of {kept}", frame - first + 1), DIM)],
     }
+}
+
+/// what the box over the timebar says of a marker of the trim that the pointer is on or has in hand: the point's
+/// name, its frame, and how many frames the trim keeps, counted as its chip counts them.
+fn marker_words(model: &Model, point: Part, timecode: bool) -> Vec<(String, Color32)> {
+    let (name, at) = if point == Part::In { ("in ", model.trim.0) } else { ("out ", model.trim.1) };
+    let kept = trimmed(model).map_or(0, |(_, kept)| kept);
+    vec![(name.to_string(), DIM), (stamp(at.unwrap_or_default(), model.first, model.clock, timecode).1, FG), (format!(" · {kept} f"), DIM)]
+}
+
+/// the box's line as it is set: numbers in mono, and with `named` its first word, a marker's name, in archivo.
+fn box_line(words: &[(String, Color32)], named: bool) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    for (i, (words, color)) in words.iter().enumerate() {
+        let font_id = if named && i == 0 { font(SANS, 11.5) } else { font(MONO_MEDIUM, 10.5) };
+        job.append(words, 0.0, TextFormat { font_id, color: *color, ..Default::default() });
+    }
+    job
 }
 
 /// whether a trim is set and a frame is outside it.
@@ -3524,6 +3651,206 @@ pub(super) mod tests {
         assert_eq!((to(TRACK_OUTSIDE), to(Color32::WHITE)), (vec![554, 640], vec![351, 353, 549, 553, 555]));
         // the head outside the trim: the track there stays dark, played or not
         assert_eq!((drawn(140, both)(FILL), drawn(10, both)(FILL)), (vec![236, 554], vec![]));
+    }
+
+    /// where a frame of the owner's sheet's clip, of 150 frames, is along a timebar 640 wide
+    fn along(frame: usize) -> f32 {
+        640.0 * frame as f32 / 149.0
+    }
+
+    /// that clip, standing on frame 82, with a trim
+    fn sheet(trim: (Option<usize>, Option<usize>)) -> Model<'static> {
+        Model { frame: 82, frames: 150, trim, ..model() }
+    }
+
+    /// the pointer at a place, two passes on (egui finds what is under the pointer by the pass before), and what the
+    /// second gave
+    fn rest_on(ui: &mut Ui, model: &dyn Fn() -> Model<'static>, x: f32, y: f32) -> Output {
+        drive_with(ui, model(), &[(x, y, None)]);
+        ui.pointer_move(x, y);
+        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
+        out.textures.clear();
+        out
+    }
+
+    /// a press at a place along the timebar's track, a drag through the middle to another, and the release, a pass
+    /// for each: the last two are the release and the pass after it
+    fn drag_along(from: f32, to: f32) -> [(f32, f32, Option<(crate::event::Button, bool)>); 6] {
+        use crate::event::Button::Left;
+        [(from, 355.0, None), (from, 355.0, Some((Left, true))), ((from + to) / 2.0, 355.0, None), (to, 355.0, None), (to, 355.0, Some((Left, false))), (to, 355.0, None)]
+    }
+
+    /// the trim's markers are there to be taken hold of (the owner's ask, 2026-11-27). with the pointer within 4 of
+    /// one, as near as takes an end of a group's bar, the pointer is the two-way arrow and the marker is lit: its stem
+    /// twice as wide and its foot reaching two further, on a plate of the light gray the bar's buttons light with,
+    /// never the accent. the other marker and the head stay as they are. off the markers, on the track or over the
+    /// picture, the pointer is the arrow and nothing is lit
+    #[test]
+    fn a_trim_marker_lights_under_the_pointer_which_turns_to_the_two_way_arrow() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        ui.ctx.tessellation_options_mut(|options| options.feathering = false);
+        let clip = || sheet((Some(55), Some(129)));
+        for (x, on) in [(along(55), true), (along(55) - 3.5, true), (along(55) + 3.5, true), (along(55) + 6.0, false), (along(129) - 3.5, true), (along(129) + 3.5, true), (along(129) - 6.0, false), (320.0, false)] {
+            assert_eq!(rest_on(&mut ui, &clip, x, 355.0).resize, on, "the pointer at {x}");
+        }
+        assert!(!rest_on(&mut ui, &clip, along(55), 300.0).resize, "over the picture, above the marker");
+        // what is drawn in the timebar's rows once a look has settled: for a color, where along them it is
+        let mut drawn = |x: f32| {
+            rest_on(&mut ui, &clip, x, 355.0);
+            std::thread::sleep(Duration::from_millis(200));
+            let out = rest_on(&mut ui, &clip, x, 355.0);
+            let meshes = out.primitives.iter().filter_map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => Some(mesh),
+                _ => None,
+            });
+            // (from a row under the foot of the bar's buttons, which end where the timebar starts)
+            let vertices: Vec<(Color32, i32)> = meshes.flat_map(|mesh| &mesh.vertices).filter(|v| v.pos.y >= 348.0).map(|v| (v.color, v.pos.x.round() as i32)).collect();
+            move |color: Color32| {
+                let mut along: Vec<i32> = vertices.iter().filter(|(of, _)| *of == color).map(|(_, x)| *x).collect();
+                along.sort();
+                along.dedup();
+                along
+            }
+        };
+        let (plain, on_in, on_out) = (drawn(320.0), drawn(along(55)), drawn(along(129)));
+        assert_eq!((plain(Color32::WHITE), plain(HOVER)), (vec![235, 237, 241, 351, 353, 549, 553, 555], vec![]));
+        assert_eq!((on_in(Color32::WHITE), on_in(HOVER)), (vec![234, 238, 243, 351, 353, 549, 553, 555], vec![232, 240]));
+        assert_eq!((on_out(Color32::WHITE), on_out(HOVER)), (vec![235, 237, 241, 351, 353, 547, 552, 556], vec![550, 558]));
+        for lit in [plain, on_in, on_out] {
+            assert_eq!(lit(ACCENT), [], "the accent on the bar");
+        }
+    }
+
+    /// a marker is dragged to move its point (the owner's ask, 2026-11-27). a press on one takes it and goes nowhere
+    /// in the clip; the marker then follows the pointer a frame at a time, as far from it as the press was from the
+    /// stem, so a press alone moves nothing, however many frames a pixel is; the in point never passes the out, nor
+    /// the out the in, and the out frame is kept; the clip takes the trim once, as the button comes up. a point alone
+    /// stops at the clip's end. the track beside a marker goes there as ever
+    #[test]
+    fn a_trim_marker_dragged_moves_its_point_and_goes_nowhere_in_the_clip() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let both = (Some(55), Some(129));
+        let drags = [
+            (both, 129, 140, vec![Action::Trim(Some(55), Some(140))]),
+            (both, 55, 40, vec![Action::Trim(Some(40), Some(129))]),
+            (both, 55, 140, vec![Action::Trim(Some(129), Some(129))]),
+            (both, 129, 10, vec![Action::Trim(Some(55), Some(55))]),
+            (both, 129, 149, vec![Action::Trim(Some(55), Some(149))]),
+            (both, 129, 129, vec![]),
+            ((Some(55), None), 55, 149, vec![Action::Trim(Some(149), None)]),
+            ((None, Some(129)), 129, 0, vec![Action::Trim(None, Some(0))]),
+        ];
+        for (trim, from, to, asked) in drags {
+            assert_eq!(drive_with(&mut ui, sheet(trim), &drag_along(along(from), along(to))), asked, "{trim:?}: its marker on {from} dragged to {to}");
+        }
+        // until the button comes up nothing is asked, and the controls show the trim as the drag has it: the track is
+        // dimmed up to the in point where the pointer has it, frame 40, which is 172 along
+        ui.ctx.tessellation_options_mut(|options| options.feathering = false);
+        assert_eq!(drive_with(&mut ui, sheet(both), &drag_along(along(55), along(40))[..3]), vec![]);
+        ui.pointer_move(along(40), 355.0);
+        let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(sheet(both)), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
+        out.textures.clear();
+        let meshes = out.primitives.iter().filter_map(|p| match &p.primitive {
+            egui::epaint::Primitive::Mesh(mesh) => Some(mesh),
+            _ => None,
+        });
+        let mut dimmed: Vec<i32> = meshes.flat_map(|mesh| &mesh.vertices).filter(|v| v.pos.y >= 350.0 && v.color == TRACK_OUTSIDE).map(|v| v.pos.x.round() as i32).collect();
+        dimmed.sort();
+        dimmed.dedup();
+        assert_eq!((out.actions, dimmed, out.resize), (vec![], vec![0, 172, 554, 640], true));
+        assert_eq!(drive_with(&mut ui, sheet(both), &drag_along(along(40), along(40))[4..]), vec![Action::Trim(Some(40), Some(129))]);
+        // a clip of 100 000 frames has 156 of them to a pixel: a press 3 off the stem and its release move nothing,
+        // and a drag 10 across moves the point by what 10 across holds
+        let long = || Model { frame: 0, frames: 100_000, trim: (Some(40_000), Some(60_000)), ..model() };
+        let stem = 640.0 * 40_000.0 / 99_999.0;
+        assert_eq!(drive_with(&mut ui, long(), &drag_along(stem + 3.0, stem + 3.0)), vec![]);
+        assert_eq!(drive_with(&mut ui, long(), &drag_along(stem + 3.0, stem + 13.0)), vec![Action::Trim(Some(41_562), Some(60_000))]);
+        // in and out on one frame: each marker is taken from its own side, and they come apart
+        let one = (Some(80), Some(80));
+        assert_eq!(drive_with(&mut ui, sheet(one), &drag_along(along(80) - 2.0, along(60) - 2.0)), vec![Action::Trim(Some(60), Some(80))]);
+        assert_eq!(drive_with(&mut ui, sheet(one), &drag_along(along(80) + 2.0, along(100) + 2.0)), vec![Action::Trim(Some(80), Some(100))]);
+        // beside a marker the track is the timebar's
+        let seeks = drive_with(&mut ui, sheet(both), &click(along(100), 355.0));
+        assert!(!seeks.is_empty() && seeks.iter().all(|asked| *asked == Action::Seek(100)), "{seeks:?}");
+    }
+
+    /// a marker taken while the clip plays holds play, as a press on the timebar does, and play goes on as the button
+    /// comes up, round the trim as the drag left it: the frame its picture is of is the frame itself, which the reader
+    /// does not decode beside a clip that plays (`spare::Ask::Frame`)
+    #[test]
+    fn a_trim_marker_taken_while_playing_holds_play_until_it_is_let_go() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let playing = |playing| Model { playing, ..sheet((Some(55), Some(129))) };
+        let steps = drag_along(along(129), along(140));
+        assert_eq!(drive_with(&mut ui, playing(true), &steps[..2]), vec![Action::Play(false)]);
+        assert_eq!(drive_with(&mut ui, playing(false), &steps[2..4]), vec![]);
+        assert_eq!(drive_with(&mut ui, playing(false), &steps[4..]), vec![Action::Trim(Some(55), Some(140)), Action::Play(true)]);
+    }
+
+    /// the box over the timebar is a marker's while the pointer is on it or has it in hand (the owner's ask,
+    /// 2026-11-27): the point's name, its frame, and the frames the trim keeps, counted as its chip counts them. the
+    /// name is a word, in archivo; the rest numbers, in mono. it is never wider than the widest the box says of a
+    /// frame, so the box keeps its width from the track onto a marker
+    #[test]
+    fn a_trim_markers_box_names_its_point_and_counts_the_trim() {
+        let said = |trim, point, timecode| marker_words(&Model { clock: Some(Timecode::counted(25)), ..sheet(trim) }, point, timecode);
+        let both = (Some(55), Some(129));
+        assert_eq!(said(both, Part::In, false), [("in ".to_string(), DIM), ("000055".to_string(), FG), (" · 75 f".to_string(), DIM)]);
+        assert_eq!(said(both, Part::Out, false), [("out ".to_string(), DIM), ("000129".to_string(), FG), (" · 75 f".to_string(), DIM)]);
+        assert_eq!(said(both, Part::Out, true)[1].0, "00:00:05:04");
+        // a point alone trims to the clip's end or start
+        assert_eq!((said((Some(55), None), Part::In, false)[2].0.as_str(), said((None, Some(129)), Part::Out, false)[2].0.as_str()), (" · 95 f", " · 130 f"));
+        let line = box_line(&said(both, Part::In, false), true);
+        let families: Vec<&FontFamily> = line.sections.iter().map(|section| &section.format.font_id.family).collect();
+        assert_eq!(families, [&FontFamily::Name(SANS.into()), &FontFamily::Name(MONO_MEDIUM.into()), &FontFamily::Name(MONO_MEDIUM.into())]);
+        assert!(box_line(&hover_words(&sheet(both), 75, false), false).sections.iter().all(|section| section.format.font_id.family == FontFamily::Name(MONO_MEDIUM.into())));
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let wide = |job: LayoutJob| ui.painter().layout_job(job).size().x;
+            for (frames, timecode) in [(150, false), (150, true), (10_000_000, false), (10_000_000, true)] {
+                let model = Model { frames, clock: Some(Timecode::counted(25)), trim: (Some(1), Some(frames - 2)), ..model() };
+                let outside = wide(box_line(&hover_words(&model, 0, timecode), false));
+                for point in [Part::In, Part::Out] {
+                    assert!(wide(box_line(&marker_words(&model, point, timecode), true)) <= outside, "{frames} frames, timecode {timecode}");
+                }
+            }
+            // and its numbers stand at the height a frame's do: the name, in its own type, makes the line no higher
+            let (of_frame, of_marker) = (ui.painter().layout_job(box_line(&hover_words(&sheet(both), 75, false), false)), ui.painter().layout_job(line.clone()));
+            let top = |galley: &egui::Galley, glyph: usize| galley.rows[0].row.glyphs[glyph].pos.y;
+            assert_eq!((of_marker.size().y, top(&of_marker, 3)), (of_frame.size().y, top(&of_frame, 0)));
+        });
+        out.textures_delta.clear();
+    }
+
+    /// a marker's picture is the frame it trims to (the owner's ask, 2026-11-27): on a marker and with one in hand the
+    /// frame wanted is the point's own, as the drag has it, and wanted exactly; on the track it is the frame under the
+    /// pointer, as near as the reader gives it. the nearest picture had shows at once, as for any frame, and the
+    /// frame itself takes its place when it is read
+    #[test]
+    fn a_trim_markers_picture_is_the_frame_it_trims_to() {
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let both = || sheet((Some(55), Some(129)));
+        for frame in [120, 0] {
+            ui.timebar_picture(frame, (2, 1), vec![frame as u8; 6], true);
+        }
+        let shown = |ui: &Ui| ui.time_picture.as_ref().map(|(of, _)| *of);
+        let wanted = |out: Output| (out.hovered, out.exact);
+        assert_eq!(wanted(rest_on(&mut ui, &both, along(70), 355.0)), (Some(70), false));
+        // 3 off the stem, the picture is still the point's
+        assert_eq!((wanted(rest_on(&mut ui, &both, along(55) + 3.0, 355.0)), shown(&ui)), ((Some(55), true), Some(0)));
+        ui.timebar_picture(55, (4, 2), vec![55; 24], false);
+        assert_eq!((wanted(rest_on(&mut ui, &both, along(55) + 3.0, 355.0)), shown(&ui)), ((Some(55), true), Some(55)));
+        // in hand: the frame the drag has the point on, whose nearest picture had is the one read for 55
+        let steps = drag_along(along(55), along(60));
+        drive_with(&mut ui, both(), &steps[..3]);
+        assert_eq!((wanted(rest_on(&mut ui, &both, along(60), 355.0)), shown(&ui)), ((Some(60), true), Some(55)));
+        ui.timebar_picture(60, (4, 2), vec![60; 24], false);
+        assert_eq!((wanted(rest_on(&mut ui, &both, along(60), 355.0)), shown(&ui)), ((Some(60), true), Some(60)));
+        // let go, the clip has the trim, and the pointer is still on the marker: the same frame, still exactly
+        assert_eq!(drive_with(&mut ui, both(), &steps[4..]), vec![Action::Trim(Some(60), Some(129))]);
+        let moved = || sheet((Some(60), Some(129)));
+        assert_eq!((wanted(rest_on(&mut ui, &moved, along(60), 355.0)), shown(&ui)), ((Some(60), true), Some(60)));
     }
 
     /// a clip that comes up with the controls away names itself, its size and its rate (fig. 09); a still has no

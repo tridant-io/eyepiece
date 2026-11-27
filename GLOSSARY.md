@@ -45,7 +45,7 @@ the line across the top of the browser that names every folder from the drive or
 _Avoid_: address bar, path bar, breadcrumbs (the bar is the control bar and nothing else)
 
 **trim**:
-the part of a clip from its in point to its out point, both frames kept: in 55, out 129 is 75 frames. loop one plays only the trim. it belongs to its tab's clip, is set by keys alone and its points are kept nowhere: they go when the tab closes or another clip takes its place. the trim's button on the bar saves a copy of it as a new file (adr 0009).
+the part of a clip from its in point to its out point, both frames kept: in 55, out 129 is 75 frames. loop one plays only the trim. it belongs to its tab's clip, is set by keys, or by dragging its markers on the timebar, and its points are kept nowhere: they go when the tab closes or another clip takes its place. the trim's button on the bar saves a copy of it as a new file (adr 0009).
 _Avoid_: selection, range, in-out, cut (a cut is where a played folder goes from one clip to the next)
 
 **in point**:
@@ -108,6 +108,6 @@ _Avoid_: dialog, modal (the update's modal is another thing), window, preference
 
 - **read-only** means the app never writes to media. **look-only** means the app does not even open files on a network folder. a local folder is read-only but not look-only.
 - **strip** alone is the row of tabs at the top of the window. the design's section 06 also calls the frames made ready for the timebar a strip: that is always the **timebar strip**.
-- a **mark** is markup drawn on a clip, shown over its group's range. the two **markers** on the timebar are the trim's in point and out point, and are not marks; the thin **bars** over the track are the groups.
+- a **mark** is markup drawn on a clip, shown over its group's range. the two **markers** on the timebar are the trim's in point and out point, and are not marks; the thin **bars** over the track are the groups. a marker is dragged to move its point, and is still a marker: a **handle** is a corner of a selected mark's bounds.
 - a **trim** is the part of a clip that plays in loop one. a group's **range** is the frames its marks show on. shift with [ and ] set the trim's points, and a group's in and out only in markup mode with the group selected.
 - **panel** alone is settings or help. the code and the design also say "the metadata panel" for the file's facts over the bar: that one is always named in full.
