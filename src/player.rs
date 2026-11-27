@@ -1919,8 +1919,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
     let mut asked_folder: Option<(Vec<std::path::PathBuf>, Instant)> = None;
     // a second reader of the clip on screen, for loop analysis
     let spare = pictures::start_spare(wake.clone(), playing_now.clone());
-    // the clip the spare reader has in hand for the timebar, and the frame last asked of it, exactly or not
-    let (mut time_of, mut time_asked): (Option<String>, Option<(String, (usize, bool))>) = (None, None);
+    // the clip the spare reader has in hand for the timebar, and the frame last asked of it: exactly or not, and
+    // while the clip played or not
+    let (mut time_of, mut time_asked): (Option<String>, Option<(String, (usize, bool, bool))>) = (None, None);
     let mut ui_painter = match UiPainter::new(&gpu) {
         Ok(p) => p,
         Err(e) => return window::set_title(window, &format!("eyepiece · the controls could not be set up: {e}")),
@@ -2629,7 +2630,8 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             // the timebar's pictures with it: nothing is answered from the clip that was. a clip counts once its first
             // frame is up, and then its timebar strip is made: behind everything else, and not of a clip of one frame
             let up = tabs.tab().path.clone().filter(|_| tabs.tab().view.as_ref().is_some_and(|v| v.shown.is_some()));
-            let asking = up.clone().zip(out.hovered.map(|frame| (frame, out.exact)));
+            let plays = tabs.view().is_some_and(|v| v.transport.playing());
+            let asking = up.clone().zip(out.hovered.map(|frame| (frame, out.exact, plays)));
             if up != time_of {
                 spare.ask(Ask::Forget);
                 if let Some(path) = up.as_ref().filter(|_| tabs.view().is_some_and(|v| v.clip.timeline.frames() > 1)) {
@@ -2645,10 +2647,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                     spare.ask(Ask::Seam(path.into()));
                 }
             }
-            // the timebar asks for the frame under the pointer, each time that is another frame; and for the frame of
-            // a marker of the trim exactly, though the same frame was asked for a moment ago as one near enough
-            if let Some((path, (frame, exact))) = asking.clone().filter(|_| asking != time_asked) {
-                spare.ask(Ask::Frame { path: path.into(), frame, playing: tabs.view().is_some_and(|v| v.transport.playing()), exact });
+            // the timebar asks for the frame under the pointer, each time that is another frame; and for the same
+            // frame again when it is wanted exactly, as a marker of the trim's is, or when play has stopped: of a clip
+            // with long groups nothing is read while it plays, and a marker taken in hand holds play
+            if let Some((path, (frame, exact, playing))) = asking.clone().filter(|_| asking != time_asked) {
+                spare.ask(Ask::Frame { path: path.into(), frame, playing, exact });
             }
             time_asked = asking;
         }
