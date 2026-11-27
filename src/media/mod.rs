@@ -2,6 +2,7 @@
 
 pub mod clip;
 pub mod color;
+pub mod copy;
 pub mod dec;
 pub mod ff;
 pub mod hap;

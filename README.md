@@ -14,7 +14,7 @@ a video review player for video professionals: extremely fast, lightweight, and 
 - **true frames and pixels.** a step is one frame of the file. at 100%, one video pixel is one display pixel.
 - **exact or labeled.** metadata comes from the file. anything assumed is labeled.
 - **no silent changes.** speed, zoom, mirror or a single channel leaves a chip on the picture.
-- **only what you need.** one window. no account, no library, no project files. it never writes beside your media.
+- **only what you need.** one window. no account, no library, no project files. it writes beside your media only when you save a trim, and never over a file.
 
 ## get it
 
@@ -38,7 +38,7 @@ download the [latest release](https://github.com/tridant-io/eyepiece/releases/la
 ### the window
 
 - **the strip** on top holds the tabs, help and settings. drag it to move the window.
-- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen; a still that a played folder holds for a time adds play, the loop, and a timebar and readout in seconds.
+- **the bar** at the bottom holds first frame, step and play, the readout, the menus, metadata, screenshot, sound and the timebar, and the trim's button while a trim is set. for a still it holds only the zoom, the view, metadata, screenshot and fullscreen; a still that a played folder holds for a time adds play, the loop, and a timebar and readout in seconds.
 - **chips** stay on the picture while it differs from the file.
 - the window takes the clip's shape, up to 90% of the screen.
 - **one window:** a file opened while eyepiece runs, or dropped on it, gets a tab of its own.
@@ -64,7 +64,21 @@ click or drag to go to a frame. hover for a picture of the frame under the point
 - **trim:** **shift+[** sets the in point at the frame on screen and **shift+]** the out point. the out frame is kept: in 55, out 129 is 75 frames. a point alone trims to the clip's end or start. **shift+backspace** clears both.
 - two markers stand on the timebar and the track outside the trim is dimmed. a chip names the trim, and the hover picture gives a frame's place in it.
 - with a trim set, loop one plays only the trim, and loop analysis plays its out into its in. steps and the timebar still reach every frame. loop off plays the whole clip, as does loop all on its way through a played folder.
-- a trim belongs to its clip and is saved nowhere: it goes when the tab closes or another clip takes its place. a still has none.
+- a trim's in and out belong to its clip and are kept nowhere: they go when the tab closes or another clip takes its place. a still has none. a copy of the trim is saved with its button, below.
+
+---
+
+### saving a trim
+
+- with a trim set, a **trim** button stands on the bar, left of the loop. its menu says what the trim keeps and how a copy of it is cut, and saves it.
+- a copy moves the file's own frames and sound into a new file of the same kind: nothing is re-encoded. where every frame is a key frame (prores, hap, notchlc) it is exactly the trim: **copy · exact**. with long groups (h.264, hevc) it starts at the key frame at or before the in point, and where frames are stored out of order it can end a frame or two past the out point; the menu names the frame it starts on and how many frames it keeps. an exact cut of those needs an encode, which is not built yet. image sequences are not saved yet.
+- **save new file** writes `<name>_trim.mov` beside the clip, never over a file: then `<name>_trim 2.mov`, and so on. **keep sound** off leaves the sound out: `<name>_trim_nosound.mov`.
+- **replace original…** asks first. the copy is written and checked, then the original goes to the recycle bin (the trash on macOS) and the copy takes its name, and the tab shows it. if the original cannot go to the bin (the bin is off, or the file is larger than it holds), both are kept and the note says so. it is not offered on a network volume, which has no recycle bin.
+- **save the trim without sound**, in the right-click menu, copies the trim without its sound, or with no trim set the whole clip: `<name>_nosound.mov`. it has no key.
+- the copy keeps the timecode of its first frame (drop-frame stays drop-frame), the rotation, the color tags and the creation time. its sound is copied packet for packet, never cut inside one, so it can end up to one packet past the picture: 21 ms for aac at 48 kHz.
+- it is fast: a whole 552 MB prores 422 hq clip without its sound took 0.78 s, written and on the disk, and 51 frames of it 0.30 s (measured on the Windows development machine, 2026-11-26, with the clip in the system's cache).
+- before it says saved, eyepiece reads the copy back its own way: its frames, how long they last, its timecode and its sound. if one is not what was asked, the note says what differs. a copy that fails or is stopped is kept as `<name>.failed`, never deleted.
+- a copy runs while you keep working. the note low in the window says how far it has got, and **stop** stops it. one copy is saved at a time.
 
 ---
 
@@ -253,6 +267,7 @@ on a Mac, command does what control does.
 | | backspace | 1× speed |
 | **trim** | shift+[ · shift+] | set in / set out, at the frame on screen |
 | | shift+backspace | clear in and out |
+| | trim button | save the trim: beside the clip, or in its place |
 | **view** | T | frames / timecode |
 | | I | pin metadata |
 | | D · C | grid · center lines |
@@ -310,7 +325,7 @@ in the browser, letters select names instead of running commands:
 
 - **the update check is all eyepiece sends.** at most once a day it asks GitHub for the latest release's manifest, with only `eyepiece/<version>` as its user agent: no account, id, file name or setting. a switch in settings turns it off, and a release is downloaded only when you press **update**.
 - on a network volume, the browser reads only the folder's listing until you open a file or ask.
-- what eyepiece keeps stays on your machine: its settings file, the preview cache and your screenshots. your notes are saved beside the clips they are on, in each folder's `eyepiece.yaml`, and go where the folder goes; a setting keeps them on your machine instead.
+- what eyepiece keeps stays on your machine: its settings file, the preview cache and your screenshots. your notes are saved beside the clips they are on, in each folder's `eyepiece.yaml`, and go where the folder goes; a setting keeps them on your machine instead. a trim you save is written beside its clip.
 
 ## build from source
 

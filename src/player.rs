@@ -12,6 +12,7 @@ use crate::event::{Event, Key, Mods};
 use crate::folder;
 use crate::markup::{self, Marks, Placing};
 use crate::media::clip::{Clip, Lane};
+use crate::media::copy::{self, Cut};
 use crate::media::hap::Tex;
 use crate::media::meta::Meta;
 use crate::media::watch::{Change, Watch};
@@ -19,9 +20,10 @@ use crate::notes;
 use crate::media::still::Samples;
 use crate::play::{Show, Transport};
 use crate::preview::spare::{Answer, Ask, Seam};
+use crate::save::{self, Saving};
 use crate::settings::{self, Settings};
 use crate::shot;
-use crate::ui::{self, Action, Extras, Facts, FolderList, ListItem, Model, Screen, Shot, Ui};
+use crate::ui::{self, Action, Extras, Facts, FolderList, ListItem, Model, Offer, Screen, Shot, Ui};
 use crate::view::{Channel, Framing, Guides, Look};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -516,6 +518,11 @@ impl View {
             seam: self.transport.seam_place(),
             seam_seconds: settings.loop_analysis_seconds as f64,
             trim: self.transport.trim(),
+            // the tab's and the window's: `run` fills them in
+            cut: None,
+            network: false,
+            saving: None,
+            sequence: matches!(self.clip.lane, Lane::Stills(_)) && self.clip.timeline.frames() > 1,
             speed: self.transport.speed(),
             shuttle: self.transport.shuttle_rate(),
             zoom_label: self.framing.label(window),
@@ -574,7 +581,7 @@ impl View {
             Action::Pan(by) => self.framing.pan(*by, window),
             Action::Look(look) => self.set_look(*look),
             Action::Key(..) | Action::GoClip(_) | Action::NewTab | Action::SelectTab(_) | Action::CloseTab(_) | Action::Open(_) | Action::OpenIn(..) | Action::Reveal(_) | Action::PlayFolder(_) | Action::PlayTree(..) | Action::PlayFiles(_) | Action::BrowsePlayed | Action::Loop(_) | Action::Browse(_) | Action::Shot(_) | Action::Copy(_) | Action::Volume(_) | Action::Mute | Action::Guides(_) | Action::Fullscreen | Action::MoveWindow | Action::Minimize | Action::ToggleMaximize | Action::Close | Action::Settings(_) | Action::OpenUrl(_) => {}
-            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::Range(..) | Action::OwnRange(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate => {}
+            Action::Extras(_) | Action::Mark(..) | Action::ClearMarks | Action::Change(..) | Action::Range(..) | Action::OwnRange(..) | Action::CheckUpdates | Action::StartUpdate | Action::StopUpdate | Action::Save { .. } | Action::StopSaving => {}
         }
     }
 
@@ -964,6 +971,39 @@ fn read_facts(path: &str, wake: &Sender<Event>) -> Loaded<Meta> {
         let _ = wake.send(Event::Wake);
     });
     Loaded::Reading(arriving)
+}
+
+/// the frames a clip's trim keeps, both ends among them, when one is set: a point alone trims to the clip's end or start.
+fn trimmed(v: &View) -> Option<(usize, usize)> {
+    let (mark_in, mark_out) = v.transport.trim();
+    (mark_in.is_some() || mark_out.is_some()).then(|| (mark_in.unwrap_or(0), mark_out.unwrap_or(v.clip.timeline.frames().saturating_sub(1))))
+}
+
+/// how a copy of `frames` of the file at `path` is cut, read in the background.
+fn plan_off(path: String, frames: (usize, usize), wake: &Sender<Event>) -> Loaded<Cut> {
+    let (reader, arriving) = mpsc::channel();
+    let wake = wake.clone();
+    std::thread::spawn(move || {
+        let _ = reader.send(copy::plan(&path, frames, &AtomicBool::new(false)));
+        let _ = wake.send(Event::Wake);
+    });
+    Loaded::Reading(arriving)
+}
+
+/// starts saving a copy of the clip in `tab`: of its trim when `trim` asks and one is set, else the whole clip; with
+/// its sound or without; beside it, or in its place. one copy is saved at a time. what to say when none is started.
+fn start_saving(saving: &mut Option<Saving>, tab: &Tab, (trim, sound, replace): (bool, bool, bool), wake: &Sender<Event>) -> Option<String> {
+    let (Some(path), Some(v)) = (&tab.path, &tab.view) else { return None };
+    if saving.is_some() {
+        return Some("a copy is being saved · wait for it, or stop it".into());
+    }
+    if matches!(v.clip.lane, Lane::Stills(_)) {
+        return Some("image sequences are not saved yet".into());
+    }
+    let kept = trimmed(v).filter(|_| trim);
+    let frames = kept.unwrap_or((0, v.clip.timeline.frames().saturating_sub(1)));
+    *saving = Some(Saving::start(save::Ask { path: path.into(), frames, trim: kept.is_some(), sound, replace }, wake.clone()));
+    None
 }
 
 /// something read in the background: on its way, here, or not to be had
@@ -1879,6 +1919,10 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         let wake = wake.clone();
         notes::Keeper::start(own, move || _ = wake.send(Event::Wake))
     };
+    // how a copy of the trim up would be cut, read once its menu opens: of which file and frames, and what was read;
+    // and the copy being saved, one at a time
+    let mut planned: Option<(String, (usize, usize), Loaded<Cut>)> = None;
+    let mut saving: Option<Saving> = None;
     let mut tabs = Tabs { all: vec![first], up: 0, closed: Vec::new(), hz, stragglers: Vec::new(), play_on_open: settings.play_on_open, noted: HashMap::new(), keeper };
     tabs.read_notes();
     // the file given at launch, opened before there were tabs, plays as any file opened does
@@ -2250,6 +2294,25 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             }
         }
         ui.set_updates(updating.state.clone());
+        if let Some((_, _, cut)) = &mut planned {
+            cut.poll();
+        }
+        // what came of a copy being saved: said, with its file to reveal. one that took a clip's place takes its trim
+        // with it, before the file's watch brings the copy up in its tab: what the trim kept is the clip now
+        if let Some(done) = saving.as_mut().and_then(Saving::take) {
+            saving = None;
+            if let Some(path) = &done.replaced {
+                for v in tabs.all.iter_mut().filter(|tab| tab.path.as_deref().map(Path::new) == Some(path.as_path())).filter_map(|tab| tab.view.as_mut()) {
+                    v.transport.set_trim(None, None);
+                }
+                planned = None;
+            }
+            toast = match done.file {
+                Some(file) => say_saved(done.said, file),
+                None => say(done.said),
+            };
+        }
+        let saving_line = saving.as_ref().map(|s| format!("saving {} · {}%", s.name, (s.part() * 100.0).floor()));
         let out = {
             let tab = &tabs.all[tabs.up];
             // a clip on its way: what to say of it once it is slow, and that one is coming at all
@@ -2259,11 +2322,25 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Some(Loaded::Failed(why)) => Facts::Failed(why),
                 Some(Loaded::Reading(_)) | None => Facts::Reading,
             };
+            // what the trim's menu shows: how a copy of the trim is cut, once read, and whether the file is where a
+            // copy cannot take its place
+            let copied = |v: &View| {
+                let cut = planned.as_ref().filter(|(path, frames, _)| tab.path.as_ref() == Some(path) && trimmed(v) == Some(*frames)).and_then(|(_, _, cut)| match cut {
+                    Loaded::Ready(cut) => Some(Ok(cut)),
+                    Loaded::Failed(why) => Some(Err(why.as_str())),
+                    Loaded::Reading(_) => None,
+                });
+                let network = trimmed(v).is_some() && tab.path.as_deref().is_some_and(|p| browse::volume_of(Path::new(p)) == browse::Volume::Network);
+                (cut, network)
+            };
             let screen = Screen {
                 tabs: tabs.all.iter().map(Tab::name).collect(),
                 places: tabs.all.iter().map(|t| t.played.as_ref().map(|p| ui::Place { folder: &p.title, at: p.at, count: p.items.len(), clip: t.clip_name() })).collect(),
                 current: tabs.up,
-                clip: tab.view.as_ref().map(|v| Model { marks: tabs.marks(tab), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }),
+                clip: tab.view.as_ref().map(|v| {
+                    let (cut, network) = copied(v);
+                    Model { marks: tabs.marks(tab), cut, network, saving: saving.as_ref().map(|s| (s.name.as_str(), s.part())), ..v.model(size, pixel_of(v), settings, facts, &shots_label, (tab.mode, tab.played.is_some())) }
+                }),
                 error: tab.error.as_deref(),
                 opening: opening.as_deref().filter(|_| tab.view.is_none() && tab.error.is_none()),
                 list: tab.played.as_ref().map(|played| FolderList {
@@ -2289,7 +2366,12 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 }),
                 browsing: tab.browsing(),
                 fullscreen,
-                toast: opening.as_deref().filter(|_| tab.view.is_some() || tab.error.is_some()).map(|said| (said, None)).or(toast.as_ref().map(|t| (t.said.as_str(), t.file.as_deref()))),
+                toast: opening
+                    .as_deref()
+                    .filter(|_| tab.view.is_some() || tab.error.is_some())
+                    .map(|said| (said, None))
+                    .or(toast.as_ref().map(|t| (t.said.as_str(), t.file.as_deref().map(Offer::Reveal))))
+                    .or(saving_line.as_deref().map(|said| (said, Some(Offer::Stop)))),
                 settings,
             };
             ui.run(&screen)
@@ -2305,6 +2387,13 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
         settings.pin_controls = ui.pinned();
         if let Some(text) = &out.copied {
             window::copy_text(text);
+        }
+        // the trim's menu is open: how a copy of the trim is cut is read off this thread, once for its file and frames
+        let tab = tabs.tab();
+        if let (true, Some(path), Some(frames)) = (out.trim_menu, tab.path.clone(), tab.view.as_ref().and_then(trimmed)) {
+            if planned.as_ref().is_none_or(|(of, asked, _)| (of, asked) != (&path, &frames)) {
+                planned = Some((path.clone(), frames, plan_off(path, frames, &wake)));
+            }
         }
         for action in &out.actions {
             match action {
@@ -2351,6 +2440,16 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 Action::Shot(what) => {
                     if let Some((v, marks)) = tabs.marked() {
                         shoot(v, marks, &gpu, *what, settings, scale, &wake);
+                    }
+                }
+                Action::Save { trim, sound, replace } => {
+                    if let Some(said) = start_saving(&mut saving, tabs.tab(), (*trim, *sound, *replace), &wake) {
+                        toast = say(said);
+                    }
+                }
+                Action::StopSaving => {
+                    if let Some(s) = &saving {
+                        s.stop();
                     }
                 }
                 Action::Extras(to) => (settings.screenshot_caption, settings.screenshot_guides, settings.screenshot_markup) = (to.caption, to.guides, to.markup),
@@ -2466,6 +2565,11 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
             }
             ui_due = Some(ui_due.map_or(t.until, |due| due.min(t.until)));
         }
+        // a copy being saved says how far it has got, a few times a second
+        if saving.is_some() {
+            let soon = Instant::now() + Duration::from_millis(250);
+            ui_due = Some(ui_due.map_or(soon, |due| due.min(soon)));
+        }
         // fullscreen with the controls away is the frame and nothing else: no pointer either. where a drag would
         // draw a mark the pointer is a cross, and stays
         let pointer_now = match (out.cross, fullscreen && !out.shown) {
@@ -2520,7 +2624,9 @@ fn play(window: Handle, events: Receiver<Event>, wake: Sender<Event>, first: Opt
                 (redraw, again) = (true, true);
                 // another file is up, or the same one changed: what the spare reader holds is the old one
                 time_of = None;
-                if !said.is_empty() {
+                // a copy that took this clip's place has said so already, and where the original went
+                let replaced = toast.as_ref().is_some_and(|t| t.file.is_some() && t.file.as_deref() == tabs.tab().path.as_deref().map(Path::new));
+                if !said.is_empty() && !replaced {
                     toast = say(said);
                 }
             }

@@ -45,7 +45,7 @@ the line across the top of the browser that names every folder from the drive or
 _Avoid_: address bar, path bar, breadcrumbs (the bar is the control bar and nothing else)
 
 **trim**:
-the part of a clip from its in point to its out point, both frames kept: in 55, out 129 is 75 frames. loop one plays only the trim. it belongs to its tab's clip, is set by keys alone and is saved nowhere: it goes when the tab closes or another clip takes its place.
+the part of a clip from its in point to its out point, both frames kept: in 55, out 129 is 75 frames. loop one plays only the trim. it belongs to its tab's clip, is set by keys alone and its points are kept nowhere: they go when the tab closes or another clip takes its place. the trim's button on the bar saves a copy of it as a new file (adr 0009).
 _Avoid_: selection, range, in-out, cut (a cut is where a played folder goes from one clip to the next)
 
 **in point**:

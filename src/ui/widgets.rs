@@ -1,5 +1,6 @@
 //! what the menus are made of, drawn to the design: a heading with its keys, a row of choices, a slider, a field, a
-//! switch. the accent color lives here and nowhere else: on sliders, switches and the field being typed into.
+//! switch. the accent color lives here and nowhere else: on sliders, switches, the field being typed into and the
+//! action a prompt asks you to confirm.
 
 use super::{font, text_top, ACCENT, AMBER, DIM, FG, HOVER, LINE, MONO, MONO_MEDIUM, SANS, SOLID, TRACK};
 use crate::media::meta::{Row, Tone};
@@ -182,6 +183,45 @@ pub fn buttons(ui: &mut egui::Ui, name: &str, items: &[(&str, &str, bool)]) -> O
         x = button.right() + 6.0;
     }
     clicked
+}
+
+/// a prompt's two buttons at its right: one that lets it go, and the one it asks you to confirm, in the accent (a
+/// popup's accent is its switch and the action it asks you to confirm: the owner's word, 2026-11-26). returns 0 for
+/// the first clicked, 1 for the one confirmed.
+pub fn confirm(ui: &mut egui::Ui, name: &str, cancel: &str, go: &str) -> Option<usize> {
+    let rect = row(ui, 30.0);
+    let painter = ui.painter().clone();
+    let (mut right, mut clicked) = (rect.right(), None);
+    for (i, label) in [(1, go), (0, cancel)] {
+        let color = if i == 1 { ON_CHOSEN } else { FG };
+        let galley = painter.layout_no_wrap(label.to_string(), font(SANS, 12.0), color);
+        let button = Rect::from_min_max(Pos2::new(right - 9.0 - galley.size().x - 9.0, rect.top()), Pos2::new(right, rect.bottom()));
+        let response = ui.interact(button, ui.scope_id().with((name, i)), Sense::click());
+        if i == 1 {
+            painter.rect_filled(button, 0.0, ACCENT);
+        } else {
+            if response.hovered() {
+                painter.rect_filled(button, 0.0, HOVER);
+            }
+            painter.rect_stroke(button, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
+        }
+        painter.galley(Pos2::new(button.left() + 9.0, text_top(&painter, font(SANS, 12.0), button.center().y)), galley, color);
+        if response.clicked() {
+            clicked = Some(i);
+        }
+        right = button.left() - 6.0;
+    }
+    clicked
+}
+
+/// a line of words in a menu, wrapped to its width.
+pub fn line(ui: &mut egui::Ui, text: &str, color: Color32) {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = ui.available_width();
+    job.append(text, 0.0, TextFormat { font_id: font(SANS, 12.0), color, line_height: Some(12.0 * 1.35), ..Default::default() });
+    let galley = ui.painter().layout_job(job);
+    let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    ui.painter().galley(rect.min, galley, color);
 }
 
 /// a slider in `rect`, standing at `at` (0 to 1), in `color`: the accent in a menu, plain on the bar. returns where

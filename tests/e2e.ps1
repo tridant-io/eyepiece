@@ -601,6 +601,33 @@ foreach ($made in $frame, (Join-Path $shots 'hapq_64.f000000 (2).png'), $view, $
     if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
 }
 
+# ---- saving a trim (the owner's button, 2026-11-26): with a trim set the bar has a trim button, left of the loop. its
+# menu says how a copy of the trim is cut, and save new file writes the copy beside the clip under a name of its own.
+# h264_320.mp4 has key frames at 0, 8 and 16: a trim from 11 to 13 is copied from the key frame at 8, so the copy has 6
+# frames. the clip is the tests' own copy in a folder of their own, as a save writes beside it. in the window it opens
+# in (640 x 360) the trim button's middle is 355 in from the right, and the menu's save new file 58 from the left and
+# 86 up
+Set-Content -LiteralPath $settings -Value 'mute = on', 'play_on_open = off', "browser_folder = $env:APPDATA"
+$trims = Join-Path $env:APPDATA 'trims'
+New-Item -ItemType Directory -Force $trims | Out-Null
+$trimmed = Join-Path $trims 'h264_320.mp4'
+Copy-Item -LiteralPath (Join-Path $media 'h264_320.mp4') -Destination $trimmed
+Start-Player $trimmed
+Assert-Frame 'a clip to trim is open' 0 24
+Send-Key 0x47 11; Send-Key 0xDB 1 1; Send-Key 0x47 2; Send-Key 0xDD 1 1
+Assert-Title 'a trim from 11 to 13 is set' ' . trim 11 to 13$'
+Click-At -355 -32; Start-Sleep -Milliseconds 800
+Click-At 58 -86
+$copy = Join-Path $trims 'h264_320_trim.mp4'
+Confirm-That 'save new file writes the trim beside the clip, named for it' (Wait-File $copy) "no $copy"
+Stop-Player
+Start-Player $copy
+Assert-Frame 'the copy is the frames from the key frame at 8 to 13' 0 6
+Stop-Player
+foreach ($made in $copy, $trimmed, $trims) {
+    if (Test-Path -LiteralPath $made) { Write-Host "removing $made"; Remove-Item -LiteralPath $made }
+}
+
 # ---- markup (fig. 19), and what a saved screenshot carries (figs 18, 20). E turns the pointer into a pen: a drag on
 # the picture draws a rectangle on the frame on screen, and control + Z takes it back. the screenshot menu's three
 # switches put the marks, the guides and a caption into a saved frame, and are kept between runs.

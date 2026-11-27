@@ -366,7 +366,7 @@ fn rate_row(t: &Timeline) -> Row {
 }
 
 /// shown frames × the frame duration, or the rate derived. the count of frames is the row above's to give.
-fn duration_row(t: &Timeline) -> Row {
+pub(super) fn duration_row(t: &Timeline) -> Row {
     let n = t.frames();
     let length = |ms: i128| format!("{}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
     let (value, tone) = match (t.step(), t.derived()) {

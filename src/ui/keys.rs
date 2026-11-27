@@ -23,26 +23,56 @@ struct Command {
     /// what its line of the table of keys says. entries one after another that say the same share a line, their keys
     /// side by side. None leaves it to the menu
     line: Option<&'static str>,
+    /// what a row of the menu with no key does
+    does: Option<Unkeyed>,
+}
+
+/// what the right-click menu does that no key does
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Unkeyed {
+    /// a copy of the trim, or of the whole clip with none set, without its sound
+    SaveWithoutSound,
+}
+
+/// a row of the right-click menu, chosen
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Chosen {
+    Key(Key, Mods),
+    Unkeyed(Unkeyed),
 }
 
 /// a command on the table of keys and in the menu
 const fn both(line: &'static str, name: &'static str, key: &'static str, k: Key, mods: Mods) -> Command {
-    Command { name: Some(name), key, send: Some((k, mods)), line: Some(line) }
+    Command { name: Some(name), key, send: Some((k, mods)), line: Some(line), does: None }
 }
 
 /// a command in the menu that the table leaves out
 const fn menu_only(name: &'static str, key: &'static str, k: Key, mods: Mods) -> Command {
-    Command { name: Some(name), key, send: Some((k, mods)), line: None }
+    Command { name: Some(name), key, send: Some((k, mods)), line: None, does: None }
 }
 
 /// another key for a command, or esc: on the table only
 const fn also(line: &'static str, key: &'static str, k: Key, mods: Mods) -> Command {
-    Command { name: None, key, send: Some((k, mods)), line: Some(line) }
+    Command { name: None, key, send: Some((k, mods)), line: Some(line), does: None }
 }
 
 /// what the table names and the menu cannot send: what the pointer does, and the arrows taken together
 const fn table_only(line: &'static str, key: &'static str) -> Command {
-    Command { name: None, key, send: None, line: Some(line) }
+    Command { name: None, key, send: None, line: Some(line), does: None }
+}
+
+/// a command in the menu that has no key (none is free that says it)
+const fn unkeyed(name: &'static str, does: Unkeyed) -> Command {
+    Command { name: Some(name), key: "", send: None, line: None, does: Some(does) }
+}
+
+/// the name a row of the menu shows: a copy without sound is of the trim when one is set (the owner's word,
+/// 2026-11-26), and says so
+fn shown_name(c: &Command, trimmed: bool) -> Option<&'static str> {
+    match c.does {
+        Some(Unkeyed::SaveWithoutSound) if trimmed => Some("save the trim without sound"),
+        _ => c.name,
+    }
 }
 
 /// the table: the menu's sections, in the order of the design's table of keys. the design's words, except where the
@@ -117,6 +147,7 @@ const SECTIONS: &[(&str, &[Command])] = &[
             both("set in / out, a group's in markup", "set in", "shift [", Key::BracketLeft, SHIFT),
             both("set in / out, a group's in markup", "set out", "shift ]", Key::BracketRight, SHIFT),
             both("clear in and out", "clear in and out", "shift backspace", Key::Backspace, SHIFT),
+            unkeyed("save the clip without sound", Unkeyed::SaveWithoutSound),
         ],
     ),
     (
@@ -228,8 +259,9 @@ pub fn line(key: Key, mods: Mods) -> Option<(String, String)> {
 /// when the room is too short. `opened` starts it at its top with the field empty and taking the keys, so typing at
 /// once finds; `find` is what has been typed. enter runs the first command found. over a `still` it leaves out
 /// what has to do with time, as the bar does, but for play and the loop over one a played folder has `held` for a
-/// time. returns where it was drawn, and the key of the row chosen.
-pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, find: &mut String, still: bool, held: bool) -> (Rect, Option<(Key, Mods)>) {
+/// time; `trimmed` says a trim is set. returns where it was drawn, and the row chosen.
+#[allow(clippy::too_many_arguments)]
+pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, find: &mut String, still: bool, held: bool, trimmed: bool) -> (Rect, Option<Chosen>) {
     let at = Pos2::new(corner.x.min(room.right() - last.width()).max(room.left()), corner.y.min(room.bottom() - last.height()).max(room.top()));
     let mut chosen = None;
     let drawn = widgets::menu(ui, "commands", at, Align2::LEFT_TOP, MENU_WIDTH, 1.0, |ui| {
@@ -253,12 +285,13 @@ pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, f
         ui.add_space(10.0);
         // what is typed finds a command by what it does or by its key
         let wanted = find.trim().to_lowercase();
-        let found = |c: &Command| c.name.is_some() && c.send.is_some() && (wanted.is_empty() || c.key.to_lowercase().contains(&wanted) || c.name.is_some_and(|n| n.contains(&wanted)));
+        let act = |c: &Command| c.send.map(|(key, mods)| Chosen::Key(key, mods)).or(c.does.map(Chosen::Unkeyed));
+        let found = |c: &Command| act(c).is_some() && shown_name(c, trimmed).is_some_and(|n| wanted.is_empty() || c.key.to_lowercase().contains(&wanted) || n.contains(&wanted));
         let kept = |c: &Command| held && (c.send == Some((Key::Space, NONE)) || c.send == Some((Key::R, NONE)));
         let timeless = |section: &str, c: &Command| still && (matches!(section, "play" | "loop and speed" | "trim" | "sound") || c.send == Some((Key::T, NONE))) && !kept(c);
         let shown: Vec<(&str, Vec<&Command>)> = SECTIONS.iter().map(|(section, commands)| (*section, commands.iter().filter(|c| found(c) && !timeless(section, c)).collect::<Vec<_>>())).filter(|(_, commands)| !commands.is_empty()).collect();
         if entered {
-            chosen = shown.first().and_then(|(_, commands)| commands.first()).and_then(|c| c.send);
+            chosen = shown.first().and_then(|(_, commands)| commands.first()).and_then(|c| act(c));
         }
         // the sections in two columns, split where the left holds about half the rows; a heading counts as one
         let weight: Vec<usize> = shown.iter().map(|(_, commands)| commands.len() + 2).collect();
@@ -290,17 +323,19 @@ pub fn menu(ui: &egui::Ui, corner: Pos2, room: Rect, last: Rect, opened: bool, f
                             widgets::heading(ui, section, &[]);
                             ui.add_space(4.0);
                             for c in commands {
-                                let (Some(name), Some(send)) = (c.name, c.send) else { continue };
+                                let (Some(name), Some(does)) = (shown_name(c, trimmed), act(c)) else { continue };
                                 let row = widgets::row(ui, MENU_ROW);
-                                let response = ui.interact(row, ui.scope_id().with(c.key), Sense::click());
+                                let response = ui.interact(row, ui.scope_id().with(name), Sense::click());
                                 if response.hovered() {
                                     ui.painter().rect_filled(row, 3.0, HOVER);
                                 }
                                 let galley = ui.painter().layout_no_wrap(name.to_string(), font(SANS, 12.0), FG);
                                 ui.painter().galley(Pos2::new(row.left() + 6.0, text_top(ui.painter(), font(SANS, 12.0), row.center().y)), galley, FG);
-                                widgets::key_cap(ui, Pos2::new(row.right() - 6.0, row.center().y), c.key, false, DIM);
+                                if !c.key.is_empty() {
+                                    widgets::key_cap(ui, Pos2::new(row.right() - 6.0, row.center().y), c.key, false, DIM);
+                                }
                                 if response.clicked() {
-                                    chosen = Some(send);
+                                    chosen = Some(does);
                                 }
                             }
                         }
@@ -374,7 +409,10 @@ mod tests {
             assert_eq!(shown(send), key, "{name}");
             assert_eq!(named(send.0, send.1), Some((name.to_string(), key.to_string())));
         }
-        assert!(commands().filter(|c| c.name.is_some()).all(|c| c.send.is_some()), "a row that sends nothing");
+        assert!(commands().filter(|c| c.name.is_some()).all(|c| c.send.is_some() != c.does.is_some()), "a row that sends nothing, or two things");
+        // one row has no key: no key free says it. it says whether it saves the trim or the whole clip
+        let unkeyed: Vec<_> = commands().filter(|c| c.does.is_some()).map(|c| (shown_name(c, false), shown_name(c, true), c.key)).collect();
+        assert_eq!(unkeyed, [(Some("save the clip without sound"), Some("save the trim without sound"), "")]);
     }
 
     /// the design's table (fig. 21, set as help's keys page in fig. 39 with control + , new), its words put right
@@ -404,7 +442,7 @@ mod tests {
                 for (text, font_id) in [(c.key, font(MONO_MEDIUM, 10.0)), (c.key, font(MONO_MEDIUM, 11.0)), (c.name.unwrap_or(""), font(SANS, 12.0)), (c.name.unwrap_or(""), font(MONO_MEDIUM, 11.0)), (c.line.unwrap_or(""), font(SANS, 12.0))] {
                     assert!(ui.ctx().fonts_mut(|f| f.has_glyphs(&font_id, text)), "{font_id:?} cannot draw {text}");
                 }
-                if let Some(name) = c.name {
+                for name in [shown_name(c, false), shown_name(c, true)].into_iter().flatten() {
                     let name_wide = ui.painter().layout_no_wrap(name.to_string(), font(SANS, 12.0), FG).size().x;
                     let cap_wide = ui.painter().layout_no_wrap(c.key.to_string(), font(MONO_MEDIUM, 10.0), DIM).size().x + 10.0;
                     // a row is one of the menu's two columns: the menu's border and padding are 26 and the columns are

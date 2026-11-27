@@ -3,12 +3,15 @@
 use super::widgets::{self, ROW};
 use super::{cut_middle, font, text_top, Action, Extras, Facts, FolderList, Menu, Model, Shot, ACCENT, AMBER, DIM, FG, HOVER, MONO, MONO_MEDIUM};
 use crate::event::{Key, Mods};
+use crate::save::BIN;
 use crate::settings::Loop;
 use crate::view::{Channel, Guides, Look, LADDER};
+use egui::text::{LayoutJob, TextFormat};
 use egui::{Align2, Color32, Pos2, Rect, Sense};
 
 const WIDTH: f32 = 268.0;
 const SHOT_WIDTH: f32 = 308.0;
+const TRIM_WIDTH: f32 = 308.0;
 const FACTS_WIDTH: f32 = 372.0;
 const LIST_WIDTH: f32 = 456.0;
 /// the ends of the speed slider (the transport holds speed to the same)
@@ -74,9 +77,11 @@ pub fn show(ui: &mut egui::Ui, menu: Menu, corner: Pos2, alpha: f32, model: &Mod
         Menu::Zoom => ("zoom-menu", WIDTH),
         Menu::View => ("view-menu", WIDTH),
         Menu::Shot => ("shot-menu", SHOT_WIDTH),
+        // the trim's keeps its switch and its prompt between passes: `trim` draws it
+        Menu::Trim => return Rect::NOTHING,
     };
     widgets::menu(ui, name, corner, Align2::RIGHT_BOTTOM, width, alpha, |ui| match menu {
-        Menu::List => {}
+        Menu::List | Menu::Trim => {}
         Menu::Loop => looping(ui, model, actions),
         Menu::Speed => speed(ui, model, actions),
         Menu::Zoom => zoom(ui, model, actions),
@@ -116,6 +121,89 @@ pub fn facts(ui: &mut egui::Ui, corner: Pos2, pivot: Align2, alpha: f32, room: f
                     }
                 });
             }
+        }
+    })
+}
+
+/// the trim's menu (the owner's button, 2026-11-26), standing over its button: what the trim keeps, as its chip says
+/// it; how a copy of it is cut, exactly or from the key frame before; and saving it as a new file beside the clip, or
+/// in the clip's place behind a prompt. `sound` is its keep sound switch and `confirming` whether its prompt is up.
+/// returns where it was drawn.
+pub fn trim(ui: &mut egui::Ui, corner: Pos2, alpha: f32, model: &Model, timecode: bool, (sound, confirming): (&mut bool, &mut bool), actions: &mut Vec<Action>) -> Rect {
+    widgets::menu(ui, "trim-menu", corner, Align2::RIGHT_BOTTOM, TRIM_WIDTH, alpha, |ui| {
+        if *confirming {
+            widgets::heading(ui, "replace the original", &[]);
+            widgets::line(ui, &format!("the original goes to the {BIN}, and the new file takes its name."), FG);
+            widgets::note(ui, "the new file is written and checked first. if it is not what was asked, both are kept.");
+            match widgets::confirm(ui, "trim-replace", "cancel", "replace") {
+                Some(1) => {
+                    actions.push(Action::Save { trim: true, sound: *sound, replace: true });
+                    *confirming = false;
+                }
+                Some(_) => *confirming = false,
+                None => {}
+            }
+            return;
+        }
+        widgets::heading(ui, "trim", &["shift [", "shift ]"]);
+        // what it keeps, as its chip says it
+        if let Some(parts) = super::trim_chip(model, timecode) {
+            let mut job = LayoutJob::default();
+            for (i, (text, color)) in parts.iter().enumerate() {
+                let text = if i == 0 { text.trim_start_matches("trim · ") } else { text };
+                job.append(text, 0.0, TextFormat { font_id: font(MONO_MEDIUM, 11.0), color: *color, ..Default::default() });
+            }
+            let galley = ui.painter().layout_job(job);
+            let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+            ui.painter().galley(rect.min, galley, FG);
+        }
+        // a sequence's frames are files of their own: a copy of them is not made yet
+        if model.sequence {
+            return widgets::note(ui, "image sequences are not saved yet.");
+        }
+        if let Some((name, part)) = model.saving {
+            widgets::line(ui, &format!("saving {name} · {}%", (part * 100.0).floor()), FG);
+            if widgets::buttons(ui, "trim-stop", &[("stop", "", false)]).is_some() {
+                actions.push(Action::StopSaving);
+            }
+            return;
+        }
+        let Some((from, kept)) = super::trimmed(model) else { return };
+        let cut = match model.cut {
+            None => return widgets::note(ui, "reading where its key frames are…"),
+            Some(Err(why)) => return widgets::note(ui, why),
+            Some(Ok(cut)) => cut,
+        };
+        // how it is cut: a copy starts at a key frame, and with frames stored out of order may end a frame or two on
+        let at = |frame| super::stamp(frame, model.first, model.clock, timecode).1;
+        let exact = (cut.first, cut.last) == (from, from + kept - 1);
+        let how = match (exact, cut.first == from) {
+            (true, _) => "copy · exact".to_string(),
+            (false, false) => format!("copy · starts at key frame {} · {} frames", at(cut.first), cut.frames()),
+            (false, true) => format!("copy · ends at {} · {} frames", at(cut.last), cut.frames()),
+        };
+        widgets::line(ui, &how, FG);
+        if !exact {
+            widgets::note(ui, "an exact cut of a long-gop file needs an encode, which is not built yet.");
+        }
+        if cut.sound > 0 {
+            let row = widgets::row(ui, 15.6);
+            if widgets::switch(ui, "trim-sound", row, *sound, "keep sound", "", false) {
+                *sound = !*sound;
+            }
+        }
+        // a new file beside the clip is the default. in its place is offered where the original can go to a bin
+        let mut choices = vec![("save new file", "", true)];
+        if !model.network {
+            choices.push(("replace original…", "", false));
+        }
+        match widgets::buttons(ui, "trim-save", &choices) {
+            Some(0) => actions.push(Action::Save { trim: true, sound: *sound, replace: false }),
+            Some(_) => *confirming = true,
+            None => {}
+        }
+        if model.network {
+            widgets::note(ui, &format!("replace original is not offered on a network volume: it has no {BIN}."));
         }
     })
 }

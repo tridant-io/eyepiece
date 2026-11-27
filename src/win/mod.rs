@@ -1,6 +1,7 @@
 //! windows: the window and the direct3d renderer, as the player (`crate::player`) knows them.
 
 mod d3d;
+pub mod files;
 mod instance;
 mod paint;
 mod swap;

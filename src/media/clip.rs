@@ -48,7 +48,13 @@ fn turn(input: &Input, video: &Video) -> Look {
 /// numbers a second when the track says), else counted from nothing. none without one rate to count by.
 fn clock(timeline: &Timeline, own: Option<(String, Option<u32>)>) -> Option<Timecode> {
     let rate = timeline.rate().map(|(n, d)| (n as f64 / d as f64).round() as u32).filter(|fps| *fps > 0)?;
-    Some(own.and_then(|(text, base)| Timecode::parse(&text, base.unwrap_or(rate), rate)).unwrap_or(Timecode::counted(rate)))
+    Some(own_clock(timeline, own).unwrap_or(Timecode::counted(rate)))
+}
+
+/// the file's own timecode as a clock, when it carries one that reads and the clip has one rate to count by.
+pub(super) fn own_clock(timeline: &Timeline, own: Option<(String, Option<u32>)>) -> Option<Timecode> {
+    let rate = timeline.rate().map(|(n, d)| (n as f64 / d as f64).round() as u32).filter(|fps| *fps > 0)?;
+    own.and_then(|(text, base)| Timecode::parse(&text, base.unwrap_or(rate), rate))
 }
 
 /// where a clip's frames come from.

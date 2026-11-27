@@ -623,7 +623,7 @@ fn what(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         ("what the file is", "a metadata panel read from the file; what it cannot say is labeled"),
         ("loops", "loop analysis plays the end into the start and measures the seam"),
         ("folders", "a browser with scrubbing previews; a folder played in order"),
-        ("review", "guides, mirror and rotate, markup, and screenshots with a caption"),
+        ("review", "guides, mirror and rotate, markup, screenshots with a caption, and trims saved as copies"),
         ("versions side by side", "two tabs of one size flip on the same frame, zoom and pan"),
     ];
     let width = ui.available_width();

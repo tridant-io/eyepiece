@@ -15,6 +15,7 @@ mod play;
 mod pictures;
 mod player;
 mod preview;
+mod save;
 mod settings;
 mod shot;
 mod timecode;

@@ -1,5 +1,6 @@
 //! macos: the window and the metal renderer, as the player (`crate::player`) knows them.
 
+pub mod files;
 mod instance;
 mod metal;
 mod paint;

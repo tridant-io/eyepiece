@@ -17,6 +17,7 @@ pub use update::{Applying, Updates};
 
 use crate::event::{Key, Mods};
 use crate::markup::{Mark, Marks};
+use crate::media::copy::Cut;
 use crate::media::meta::Meta;
 use crate::settings::{Loop, Settings};
 use crate::timecode::Timecode;
@@ -165,11 +166,17 @@ pub struct Screen<'a> {
     /// the browser is up: in a tab with nothing in it, or laid over the clip
     pub browsing: bool,
     pub fullscreen: bool,
-    /// what just happened, said low in the middle of the window for a moment, and the file it names, if any, which
-    /// it offers to reveal
-    pub toast: Option<(&'a str, Option<&'a Path>)>,
+    /// what just happened, said low in the middle of the window for a moment, and what it offers besides
+    pub toast: Option<(&'a str, Option<Offer<'a>>)>,
     /// what is kept between runs, which the settings panel shows and changes
     pub settings: &'a Settings,
+}
+
+/// what a toast offers besides its words: to reveal the file it names, or to stop the copy it follows
+#[derive(Clone, Copy)]
+pub enum Offer<'a> {
+    Reveal(&'a Path),
+    Stop,
 }
 
 /// the facts for the metadata panel, which are read in the background.
@@ -260,6 +267,14 @@ pub struct Model<'a> {
     pub seam_seconds: f64,
     /// the trim's in frame and its out frame, each set or not
     pub trim: (Option<usize>, Option<usize>),
+    /// how a copy of the trim is cut, once that has been read, or why there is none. None while it is read
+    pub cut: Option<Result<&'a Cut, &'a str>>,
+    /// a numbered run of stills: there is no copy of one to make yet
+    pub sequence: bool,
+    /// the file is on a network volume, which has no recycle bin
+    pub network: bool,
+    /// a copy being saved: its name, and how far it has got, 0 to 1
+    pub saving: Option<(&'a str, f32)>,
     pub speed: f64,
     /// negative in reverse, 0 when not shuttling
     pub shuttle: i32,
@@ -347,6 +362,10 @@ pub enum Action {
     /// lay the browser over the clip, on the folder the tab plays
     BrowsePlayed,
     Shot(Shot),
+    /// a copy of the clip: of its trim or the whole of it, with its sound or without, beside it or in its place
+    Save { trim: bool, sound: bool, replace: bool },
+    /// stop the copy being saved
+    StopSaving,
     Extras(Extras),
     /// a mark drawn on this frame of the clip: it joins the group selected or the one that covers the frame, or
     /// starts one there. the group selected taken off, or with none every group that shows on the frame on screen
@@ -405,6 +424,8 @@ pub struct Output {
     pub resize: bool,
     /// the pointer is on a toast that offers to reveal a file: it stays up until the pointer leaves
     pub toast_held: bool,
+    /// the trim's menu is open: how a copy of the trim is cut is wanted
+    pub trim_menu: bool,
 }
 
 /// the menus that open over the bar
@@ -417,6 +438,7 @@ enum Menu {
     Zoom,
     View,
     Shot,
+    Trim,
 }
 
 pub struct Ui {
@@ -450,6 +472,9 @@ pub struct Ui {
     menu: Option<Menu>,
     menu_rect: Rect,
     menu_button: Rect,
+    /// the trim menu's switch, keep sound, while the window is open; and its prompt to replace the original is up
+    trim_sound: bool,
+    trim_confirm: bool,
     /// the metadata panel: pinned open; or up while the pointer is on its button or on it. when the pointer came
     /// onto the button, when it left button and panel, and where the two were drawn
     facts_pinned: bool,
@@ -540,6 +565,8 @@ impl Ui {
             menu: None,
             menu_rect: Rect::NOTHING,
             menu_button: Rect::NOTHING,
+            trim_sound: true,
+            trim_confirm: false,
             facts_pinned: false,
             facts_up: false,
             facts_since: None,
@@ -935,7 +962,7 @@ impl Ui {
         self.moved = false;
         // under a panel the strip stays up, though the bar steps aside: the pointer shows, and the mac's buttons stay
         let shown = self.shown || self.panel.is_some();
-        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: (screen.browsing && self.browser.over_edge()) | self.markup.over_end(), toast_held: self.toast_held }
+        Output { actions, primitives: ctx.tessellate(out.shapes, out.pixels_per_point), textures: out.textures_delta, scale: out.pixels_per_point, again, copied, shown, hovered: self.time_hover, cross: self.cross , resize: (screen.browsing && self.browser.over_edge()) | self.markup.over_end(), toast_held: self.toast_held, trim_menu: self.menu == Some(Menu::Trim) }
     }
 
     fn draw(&mut self, ui: &mut egui::Ui, screen: &Screen, now: f64, actions: &mut Vec<Action>) {
@@ -982,8 +1009,8 @@ impl Ui {
         self.update_modal(ui, full, actions);
         // a folder's subfolders are walked before it plays, which on a share can take a while
         self.toast_held = false;
-        if let Some((said, file)) = screen.toast.or_else(|| self.browser.walking().then_some(("finding the videos in its subfolders…", None))) {
-            self.toast_held = toast(ui, full, said, file, actions);
+        if let Some((said, offer)) = screen.toast.or_else(|| self.browser.walking().then_some(("finding the videos in its subfolders…", None))) {
+            self.toast_held = toast(ui, full, said, offer, actions);
         }
     }
 
@@ -1171,10 +1198,14 @@ impl Ui {
             if opened {
                 self.commands_find.clear();
             }
-            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !framed(model), model.held.is_some());
+            let has_trim = trimmed(model).is_some();
+            let (drawn, chosen) = keys::menu(ui, at, room, self.commands_rect, opened, &mut self.commands_find, !framed(model), model.held.is_some(), has_trim);
             self.commands_rect = drawn;
-            if let Some((key, mods)) = chosen {
-                actions.push(Action::Key(key, mods));
+            if let Some(chosen) = chosen {
+                actions.push(match chosen {
+                    keys::Chosen::Key(key, mods) => Action::Key(key, mods),
+                    keys::Chosen::Unkeyed(keys::Unkeyed::SaveWithoutSound) => Action::Save { trim: has_trim, sound: false, replace: false },
+                });
                 self.commands = None;
             }
         }
@@ -1207,6 +1238,7 @@ impl Ui {
                     self.menu = None;
                     Rect::NOTHING
                 }
+                (Menu::Trim, _) => menus::trim(ui, corner, alpha, model, self.timecode, (&mut self.trim_sound, &mut self.trim_confirm), actions),
                 _ => menus::show(ui, menu, corner, alpha, model, actions),
             };
             // what a menu changes about the view is said by the chip
@@ -1796,18 +1828,32 @@ impl Ui {
         }) {
             let galley = painter.layout_no_wrap(label, font(MONO_MEDIUM, 11.5), FG);
             let rect = place(galley.size().x + 2.0 * PAD + if icon.is_some() { 16.0 + 6.0 } else { 0.0 }, TEXT_BUTTON);
-            let button = text_button(ui, rect, name, icon, galley, self.menu == Some(menu));
+            let button = text_button(ui, rect, name, icon, galley, if self.menu == Some(menu) { Lit::Open } else { Lit::No });
             if button.clicked() {
                 self.toggle_menu(menu, rect);
             }
             self.hint(&button, tip);
+        }
+        // the trim's, while a clip of frames has one set, left of the loop: lit as a button whose setting is on, never
+        // in the accent, which the bar never carries (the owner's word, 2026-11-26). its menu saves the trim
+        if framed && trimmed(model).is_some() {
+            let galley = painter.layout_no_wrap("trim".to_string(), font(MONO_MEDIUM, 11.5), FG);
+            let rect = place(galley.size().x + 2.0 * PAD, TEXT_BUTTON);
+            let button = text_button(ui, rect, "trim", None, galley, Lit::Active);
+            if button.clicked() {
+                self.toggle_menu(Menu::Trim, rect);
+                self.trim_confirm = false;
+            }
+            self.hint(&button, Some(("save the trim".to_string(), String::new())));
+        } else if self.menu == Some(Menu::Trim) {
+            self.menu = None;
         }
         // the readout: where the clip is, in frames or timecode, and the total. a click switches between the two. a
         // held still's is in seconds, with nothing to switch to
         if let Some(galley) = fitted_readout(&painter, model, self.timecode, right - readout_at).filter(|_| timed) {
             let rect = Rect::from_min_size(Pos2::new(readout_at, middle - TEXT_BUTTON / 2.0), Vec2::new(galley.size().x + 2.0 * PAD, TEXT_BUTTON));
             if framed {
-                let switch = text_button(ui, rect, "readout", None, galley, false);
+                let switch = text_button(ui, rect, "readout", None, galley, Lit::No);
                 if switch.clicked() {
                     self.toggle_timecode();
                 }
@@ -2039,34 +2085,39 @@ pub(crate) const REVEAL: &str = if cfg!(target_os = "macos") { "reveal in finder
 
 /// what just happened, low in the middle of the window and over everything: what was done in bright, the rest of
 /// it, after the first dot, in dim. a toast that names a file ends with a link that reveals it, underlined dotted as
-/// the about card's link is. true while the pointer is on such a toast, which holds it up.
-fn toast(ui: &egui::Ui, full: Rect, said: &str, file: Option<&Path>, actions: &mut Vec<Action>) -> bool {
+/// the about card's link is, and one that follows a copy being saved with one that stops it. true while the pointer
+/// is on such a toast, which holds it up.
+fn toast(ui: &egui::Ui, full: Rect, said: &str, offer: Option<Offer>, actions: &mut Vec<Action>) -> bool {
+    let link = offer.map(|offer| match offer {
+        Offer::Reveal(file) => (REVEAL, Action::Reveal(file.to_path_buf())),
+        Offer::Stop => ("stop", Action::StopSaving),
+    });
     let (done, rest) = said.split_once(" · ").map_or((said, ""), |(done, rest)| (done, rest));
     let mut job = LayoutJob::default();
     job.append(done, 0.0, TextFormat { font_id: font(SANS, 12.5), color: FG, ..Default::default() });
     if !rest.is_empty() {
         job.append(&format!(" · {rest}"), 0.0, TextFormat { font_id: font(SANS, 12.5), color: DIM, ..Default::default() });
     }
-    if file.is_some() {
+    if link.is_some() {
         job.append(" · ", 0.0, TextFormat { font_id: font(SANS, 12.5), color: DIM, ..Default::default() });
     }
     let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
     let galley = painter.layout_job(job);
-    let link = file.map(|_| painter.layout_no_wrap(REVEAL.to_string(), font(SANS, 12.5), FG));
-    let wide = galley.size().x + link.as_ref().map_or(0.0, |l| l.size().x);
+    let words = link.as_ref().map(|(words, _)| painter.layout_no_wrap(words.to_string(), font(SANS, 12.5), FG));
+    let wide = galley.size().x + words.as_ref().map_or(0.0, |l| l.size().x);
     let rect = Align2::CENTER_BOTTOM.anchor_size(Pos2::new(full.center().x, full.bottom() - 64.0), Vec2::new(wide, galley.size().y) + Vec2::new(24.0, 18.0));
     painter.rect_filled(rect, 0.0, SOLID);
     painter.rect_stroke(rect, 0.0, (1.0, LINE), egui::StrokeKind::Inside);
     let at = Pos2::new(rect.left() + 12.0, text_top(&painter, font(SANS, 12.5), rect.center().y));
     let after = at.x + galley.size().x;
     painter.galley(at, galley, FG);
-    let (Some(file), Some(link)) = (file, link) else { return false };
+    let (Some((_, asked)), Some(words)) = (link, words) else { return false };
     let link_at = Pos2::new(after, at.y);
-    let link_rect = Rect::from_min_size(Pos2::new(after, rect.top()), Vec2::new(link.size().x, rect.height()));
-    dotted(&painter, font(SANS, 12.5), link_at, link.size().x, FG);
-    painter.galley(link_at, link, FG);
-    if ui.interact(link_rect, ui.scope_id().with("toast-reveal"), Sense::click()).clicked() {
-        actions.push(Action::Reveal(file.to_path_buf()));
+    let link_rect = Rect::from_min_size(Pos2::new(after, rect.top()), Vec2::new(words.size().x, rect.height()));
+    dotted(&painter, font(SANS, 12.5), link_at, words.size().x, FG);
+    painter.galley(link_at, words, FG);
+    if ui.interact(link_rect, ui.scope_id().with("toast-link"), Sense::click()).clicked() {
+        actions.push(asked);
     }
     ui.rect_contains_pointer(rect)
 }
@@ -2235,10 +2286,12 @@ fn icon_button(ui: &egui::Ui, rect: Rect, name: &str, icon: Icon, lit: Lit) -> e
     response
 }
 
-/// a 28-high button holding text, with an icon before it or none, lit while its menu is open.
-fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, galley: Arc<egui::Galley>, open: bool) -> egui::Response {
+/// a 28-high button holding text, with an icon before it or none, lit while its menu is open or what it is for is on.
+fn text_button(ui: &mut egui::Ui, rect: Rect, name: &str, icon: Option<Icon>, galley: Arc<egui::Galley>, lit: Lit) -> egui::Response {
     let response = ui.interact(rect, ui.scope_id().with(name), Sense::click());
-    if response.hovered() || open {
+    if lit == Lit::Active {
+        ui.painter().rect_filled(rect, 3.0, PRESSED);
+    } else if response.hovered() || lit == Lit::Open {
         ui.painter().rect_filled(rect, 3.0, HOVER);
     }
     let mut left = rect.left() + PAD;
@@ -2458,6 +2511,10 @@ pub(super) mod tests {
             seam: None,
             seam_seconds: 2.0,
             trim: (None, None),
+            cut: None,
+            sequence: false,
+            network: false,
+            saving: None,
             speed: 1.0,
             shuttle: 0,
             zoom_label: "fit 563%".to_string(),
@@ -2524,7 +2581,7 @@ pub(super) mod tests {
     fn a_saved_files_toast_reveals_it_and_stays_while_pointed_at() {
         let file = std::env::temp_dir().join("a.f000001.png");
         let said = "saved to pictures / eyepiece · a.f000001.png · 64 × 64";
-        let screen = |file: Option<&'static Path>| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: Some((said, file)), settings: &DEFAULTS };
+        let screen = |file: Option<&'static Path>| Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(model()), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: Some((said, file.map(Offer::Reveal))), settings: &DEFAULTS };
         let file: &'static Path = Box::leak(file.into_boxed_path());
         // the toast's middle is 64 + half its height above the window's foot, in the middle across
         let y = 700.0 - 64.0 - 17.0;
@@ -2864,6 +2921,100 @@ pub(super) mod tests {
         assert_eq!(drive_with(&mut ui, still(), &click(127.0, 342.0)), vec![]);
         drive_with(&mut ui, still(), &click(480.0, 342.0));
         assert!(ui.menu == Some(Menu::Zoom));
+    }
+
+    /// the trim's button (the owner's, 2026-11-26) stands on the bar while a clip of frames has a trim, and only then:
+    /// lit as a button whose setting is on, never in the accent, which the bar never carries. its menu says how the
+    /// copy is cut and saves it beside the clip, or, behind a prompt whose action is the accent, in its place; never in
+    /// its place on a network volume. a still has no trim, nor the button
+    #[test]
+    fn the_trim_button_saves_the_trim_and_leaves_the_accent_to_its_menu() {
+        let cut = Cut::of(8, 13, 2);
+        let trimmed = |network| Model { frames: 24, trim: (Some(11), Some(13)), cut: Some(Ok(&cut)), network, ..model() };
+        // where along the bar's row a click opens which menu
+        let opens = |model: &dyn Fn() -> Model<'static>| {
+            let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+            (200..640).step_by(4).filter_map(|x| {
+                drive_with(&mut ui, model(), &click(x as f32, 333.0));
+                ui.menu.take().map(|menu| (x as f32, menu))
+            }).collect::<Vec<_>>()
+        };
+        assert!(opens(&|| Model { frames: 24, ..model() }).iter().all(|(_, menu)| *menu != Menu::Trim));
+        assert!(opens(&|| Model { frames: 1, trim: (Some(0), None), ..model() }).iter().all(|(_, menu)| *menu != Menu::Trim));
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        let mut on = Vec::new();
+        for x in (200..640).step_by(4) {
+            drive_with(&mut ui, trimmed(false), &click(x as f32, 333.0));
+            if ui.menu.take() == Some(Menu::Trim) {
+                on.push(x as f32);
+            }
+        }
+        // one button, as wide as its word
+        assert!(!on.is_empty() && on[on.len() - 1] - on[0] < 48.0, "{on:?}");
+        let button = (on[0] + on[on.len() - 1]) / 2.0;
+        // left of the loop
+        let loops = opens(&|| Model { frames: 24, ..model() }).into_iter().find(|(_, menu)| *menu == Menu::Loop).unwrap().0;
+        assert!(button < loops, "the trim button at {button}, the loop at {loops}");
+        // the vertices' colors drawn with the controls up, once they have faded in
+        ui.ctx.tessellation_options_mut(|options| options.feathering = false);
+        let colors = |ui: &mut Ui| {
+            let pass = |ui: &mut Ui| {
+                ui.pointer_move(button, 333.0);
+                let mut out = ui.run(&Screen { tabs: vec!["clip"], current: 0, places: Vec::new(), clip: Some(trimmed(false)), error: None, opening: None, list: None, browsing: false, fullscreen: false, toast: None, settings: &DEFAULTS });
+                out.textures.clear();
+                out.primitives
+            };
+            pass(ui);
+            std::thread::sleep(Duration::from_millis(200));
+            let meshes = pass(ui).into_iter().filter_map(|p| if let egui::epaint::Primitive::Mesh(mesh) = p.primitive { Some(mesh) } else { None });
+            meshes.flat_map(|mesh| mesh.vertices).map(|v| v.color).collect::<Vec<Color32>>()
+        };
+        assert!(!colors(&mut ui).contains(&ACCENT), "the accent on the bar");
+        // the menu: the keep sound switch is on, in the accent. save new file saves beside the clip
+        drive_with(&mut ui, trimmed(false), &click(button, 333.0));
+        assert!(ui.menu == Some(Menu::Trim));
+        assert!(colors(&mut ui).contains(&ACCENT));
+        let menu = ui.menu_rect;
+        let row = menu.bottom() - 12.0 - 15.0;
+        assert_eq!(drive_with(&mut ui, trimmed(false), &click(menu.left() + 30.0, row)), vec![Action::Save { trim: true, sound: true, replace: false }]);
+        // replace original asks first, and its replace saves in the clip's place
+        assert_eq!(drive_with(&mut ui, trimmed(false), &click(menu.left() + 150.0, row)), vec![]);
+        assert!(ui.trim_confirm);
+        // (a menu whose words changed takes its new size a pass later)
+        drive_with(&mut ui, trimmed(false), &[(menu.left() + 150.0, row, None)]);
+        let prompt = ui.menu_rect;
+        assert_eq!(drive_with(&mut ui, trimmed(false), &click(prompt.right() - 30.0, prompt.bottom() - 12.0 - 15.0)), vec![Action::Save { trim: true, sound: true, replace: true }]);
+        // on a network volume only beside it
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        drive_with(&mut ui, trimmed(true), &click(button, 333.0));
+        drive_with(&mut ui, trimmed(true), &[(button, 333.0, None)]);
+        let menu = ui.menu_rect;
+        let mut asked = Vec::new();
+        // across its foot, where its buttons and the note under them are
+        for x in (menu.left() as i32 + 16..menu.right() as i32 - 16).step_by(12) {
+            for y in (menu.bottom() as i32 - 70..menu.bottom() as i32 - 8).step_by(6) {
+                asked.extend(drive_with(&mut ui, trimmed(true), &click(x as f32, y as f32)));
+                assert!(!ui.trim_confirm, "replace offered on a network volume");
+                ui.menu = Some(Menu::Trim);
+            }
+        }
+        // (the switch is clicked on the way too, so the sound goes either way)
+        assert!(asked.iter().any(|a| matches!(a, Action::Save { trim: true, replace: false, .. })) && asked.iter().all(|a| !matches!(a, Action::Save { replace: true, .. })), "{asked:?}");
+        // a sequence has the button, and its menu saves nothing yet
+        let sequence = || Model { sequence: true, ..trimmed(false) };
+        let mut ui = Ui::new((640, 360), 1.0, false, None, None);
+        drive_with(&mut ui, sequence(), &click(button, 333.0));
+        drive_with(&mut ui, sequence(), &[(button, 333.0, None)]);
+        assert!(ui.menu == Some(Menu::Trim));
+        let menu = ui.menu_rect;
+        let mut asked = Vec::new();
+        for x in (menu.left() as i32 + 8..menu.right() as i32 - 8).step_by(12) {
+            for y in (menu.top() as i32 + 8..menu.bottom() as i32 - 8).step_by(6) {
+                asked.extend(drive_with(&mut ui, sequence(), &click(x as f32, y as f32)));
+                ui.menu = Some(Menu::Trim);
+            }
+        }
+        assert_eq!(asked, vec![]);
     }
 
     /// the right-click menu leaves out what has to do with time over a still, as the bar does: "frame" finds the
