@@ -13,6 +13,7 @@ public static class EyepieceE2e {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int how);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern IntPtr GetClassLongPtrW(IntPtr h, int index);
@@ -103,10 +104,31 @@ $previews = Join-Path $env:EYEPIECE_CACHE 'eyepiece\cache\previews'
 # EYEPIECE_INSTANCE find each other and no other, so these never hand a file to one of the owner's
 $env:EYEPIECE_INSTANCE = "e2e-$PID"
 $script:failed = 0
+# the display's pixels for one of the design's: 1 at 100%, 1.5 at 150%
+function Get-Scale { [EyepieceE2e]::GetDpiForWindow($script:h) / 96.0 }
+# the picture area in the display's own pixels, which the player's zoom and its saved view are counted in
+function Get-Client { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c }
+# a count of the design's pixels, as many of the display's: an area grows with the square of the scale
+function Get-Area([double]$n) { $n * [math]::Pow((Get-Scale), 2) }
+# the window's size, as SetWindowPos took it at 100%: in the design's pixels, scaled, so the picture area has the room
+# it has at 100% whatever the display's scale
+function Set-Size([int]$w, [int]$ht) { [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, [int]($w * (Get-Scale)), [int]($ht * (Get-Scale)), 0x0006) }
+# the zooms = and shift + wheel step through (LADDER in src\view.rs), with the fit among them. a zoom counts the
+# display's pixels for one of the picture's, so a fit, and the stops after it, follow the scale: a 64 x 64 clip in a
+# 640 x 360 window fits at 562.5% at 100% and at 843.75% at 150%. a picture's fit in the picture area as it is now
+function Get-Fit([int]$w, [int]$ht) { $c = Get-Client; [math]::Min([double]$c.R / $w, [double]$c.B / $ht) }
+# the zoom so many stops in from another
+function Get-Stop([double]$from, [int]$stops, [double]$fit) {
+    $ladder = @(0.125, 0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64) + $fit | Sort-Object
+    for ($i = 0; $i -lt $stops; $i++) { $from = @($ladder | Where-Object { $_ -gt $from * 1.001 })[0] }
+    $from
+}
+# a zoom from 100% up as the title says it: whole percents, a half rounded up as the player rounds it
+function Format-Zoom([double]$zoom) { [math]::Round($zoom * 100, [MidpointRounding]::AwayFromZero) }
 # the pointer, in the design's pixels. a negative place counts from the right or the bottom edge of the picture area
 function Get-Place([double]$x, [double]$y) {
-    $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c)
-    $scale = [EyepieceE2e]::GetDpiForWindow($script:h) / 96.0
+    $c = Get-Client
+    $scale = Get-Scale
     $px = if ($x -lt 0) { $c.R + $x * $scale } else { $x * $scale }
     $py = if ($y -lt 0) { $c.B + $y * $scale } else { $y * $scale }
     [IntPtr][int64](([int]$py -shl 16) -bor ([int]$px -band 0xffff))
@@ -165,10 +187,10 @@ function Get-Changed([int[]]$before, [int[]]$after) { @(0..($before.Count - 1) |
 function Get-FirstBright([double]$x0, [double]$y0, [double]$x1, [double]$y1) {
     $a = (Get-Place $x0 $y0).ToInt64(); $b = (Get-Place $x1 $y1).ToInt64()
     $y = [EyepiecePicture]::FirstBright($script:h, [int]($a -band 0xffff), [int]($a -shr 16), [int]($b -band 0xffff), [int]($b -shr 16))
-    if ($y -lt 0) { -1 } else { $y / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
+    if ($y -lt 0) { -1 } else { $y / (Get-Scale) }
 }
-function Get-Height { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.B / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
-function Get-Width { $c = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetClientRect($script:h, [ref]$c); $c.R / ([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0) }
+function Get-Height { (Get-Client).B / (Get-Scale) }
+function Get-Width { (Get-Client).R / (Get-Scale) }
 function Get-Title { $s = New-Object Text.StringBuilder 512; [void][EyepieceE2e]::GetWindowText($script:h, $s, 512); $s.ToString() }
 function Send-Key([int]$vk, [int]$times = 1, [int]$with = 0) { foreach ($i in 1..$times) { [void][EyepieceE2e]::PostMessage($script:h, 0x100, [IntPtr]$vk, [IntPtr]$with); Start-Sleep -Milliseconds 200 } }
 function Send-Char([string]$text) { foreach ($c in $text.ToCharArray()) { [void][EyepieceE2e]::PostMessage($script:h, 0x102, [IntPtr][int]$c, [IntPtr]0); Start-Sleep -Milliseconds 80 } }
@@ -192,8 +214,16 @@ function Start-Player([string]$clip) {
     if ($clip) { $script:name = Split-Path $clip -Leaf; $more.ArgumentList = "`"$clip`"" }
     $script:p = Start-Process $Exe @more -PassThru
     $script:h = [IntPtr]::Zero
-    foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $script:p.Refresh(); if ($script:p.MainWindowHandle -ne [IntPtr]::Zero) { $script:h = $script:p.MainWindowHandle; return } }
-    throw 'the player opened no window'
+    foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $script:p.Refresh(); if ($script:p.MainWindowHandle -ne [IntPtr]::Zero) { $script:h = $script:p.MainWindowHandle; break } }
+    if ($script:h -eq [IntPtr]::Zero) { throw 'the player opened no window' }
+    # the browser's window opens, unless it is kept at another size, with a picture area of 1180 x 720 of the display's
+    # own pixels (src\win\mod.rs): less room on a scaled display, at 150% one card a row where the checks below count
+    # on two. there it is given the room it has at 100%, measured round its frame
+    $c = Get-Client
+    if (-not $clip -and (Get-Scale) -ne 1 -and $c.R -eq 1180 -and $c.B -eq 720) {
+        $r = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetWindowRect($script:h, [ref]$r)
+        [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, $r.R - $r.L + [int](1180 * (Get-Scale)) - $c.R, $r.B - $r.T + [int](720 * (Get-Scale)) - $c.B, 0x0006)
+    }
 }
 function Stop-Player {
     [void]$script:p.CloseMainWindow()
@@ -249,14 +279,19 @@ $mid = Get-Middle
 Move-Pointer $mid[0] $mid[1]
 Send-Key 0x31; Assert-Title '1 is 1:1, and the title names the pixel under the pointer with its values' ' . 100% . x 32 y 32 . \d+ \d+ \d+$'
 [void][EyepieceE2e]::PostMessage($script:h, 0x20A, [IntPtr](120 * 65536 + 0x8004), [IntPtr]0); Assert-Title 'shift + wheel zooms in one stop, about the pointer' ' . 200% . x 32 y 32 . '
-# the navigator: zoomed in past the window (several stops on, to 1200% or more: 64 pixels are then 768 or more), a
-# plan of the picture stands at the lower left, 112 square for this one, its foot 62 above the window's while the bar
-# is up. a press near its upper left corner brings that corner of the picture as near the middle as it goes: at
-# 1200% the window shows 53 by 30 of the picture's pixels, so the middle is then at 26, 15
-foreach ($i in 1..6) { Send-Key 0xBB }
-Move-Pointer $mid[0] $mid[1]; Assert-Title 'zoomed far in, the middle of the picture stays under the middle of the window' ' . 1[26]00% . x 32 y 32 . '
+# the navigator: zoomed in past the window (as many stops on as that takes: six, to 1200% at 100%, where 64 pixels are
+# 768 of the window's 640; seven, to 1600%, at 150%, where the window is 960 of the display's pixels), a plan of the
+# picture stands at the lower left, 112 square for this one, its foot 62 above the window's while the bar is up. a
+# press near its upper left corner brings that corner of the picture as near the middle as it goes: half the window's
+# width and height in the picture's pixels. at 1200% at 100% the window shows 53 by 30 of them, so the middle is then
+# at 26, 15
+$fit = Get-Fit 64 64; $c = Get-Client; $far = 2; $stops = 0
+while (64 * $far -le [math]::Max($c.R, $c.B)) { $far = Get-Stop $far 1 $fit; $stops++ }
+$half = [math]::Ceiling($c.R / $far / 2), [math]::Ceiling($c.B / $far / 2)
+Send-Key 0xBB $stops
+Move-Pointer $mid[0] $mid[1]; Assert-Title 'zoomed far in, the middle of the picture stays under the middle of the window' " . $(Format-Zoom $far)% . x 32 y 32 . "
 Click-At 16 -168; Move-Pointer $mid[0] $mid[1]
-Wait-Title 'a press in the navigator brings that part of the picture to the middle' { param($t) $t -match ' x (\d+) y (\d+) ' -and [int]$Matches[1] -le 27 -and [int]$Matches[2] -le 15 } 'x 26 y 15 or less'
+Wait-Title 'a press in the navigator brings that part of the picture to the middle' { param($t) $t -match ' x (\d+) y (\d+) ' -and [int]$Matches[1] -le $half[0] -and [int]$Matches[2] -le $half[1] } "x $($half[0]) y $($half[1]) or less"
 Send-Key 0x30; Assert-Frame '0 fits the picture again' 0 3
 # the bar, from the right: fullscreen, sound, screenshots, metadata and the view (30 wide each), then the zoom, the speed
 # and the loop by name.
@@ -264,20 +299,24 @@ Send-Key 0x30; Assert-Frame '0 fits the picture again' 0 3
 # bottom, 1:1 the second of five; its field is 143 up
 Click-At -203 -32; Click-At -346 -181; Assert-Title 'the zoom menu''s 1:1 choice' ' . 100%'
 Click-At -219 -143; Send-Key 0x41 1 4; Send-Char '250'; Send-Key 0x0D; Assert-Title 'a zoom typed into the menu''s field' ' . 250%'
-Click-At -219 -143; Send-Key 0x41 1 4; Send-Char '1600'; Send-Key 0x0D; Send-Key 0x1B
-Move-Pointer $mid[0] $mid[1]; Assert-Title 'escape closes the menu; at 1600% the middle of the picture is still under the middle of the window' ' . 1600% . x 32 y 32 . '
-Send-Key 0x25 1 2; Assert-Title 'alt + left moves the picture right by an eighth of the window' ' . 1600% . x 2\d y 32 . '
+# 1600% at 100%, and as much more as the scale: the picture's pixels are then as large in the window at any scale, and
+# an eighth of the window is 5 of them
+$typed = [int](1600 * (Get-Scale))
+Click-At -219 -143; Send-Key 0x41 1 4; Send-Char "$typed"; Send-Key 0x0D; Send-Key 0x1B
+Move-Pointer $mid[0] $mid[1]; Assert-Title "escape closes the menu; at $typed% the middle of the picture is still under the middle of the window" " . $typed% . x 32 y 32 . "
+Send-Key 0x25 1 2; Assert-Title 'alt + left moves the picture right by an eighth of the window' " . $typed% . x 2\d y 32 . "
 Send-Key 0x30; Assert-Frame '0 fits the picture' 0 3
 # a digit the player has no key for (3), typed by its key right after a key that types nothing (home), reaches the
-# field: the character of one press is never taken for the command before it. the field holds the fit's 563, and
-# what is typed goes in before it
+# field: the character of one press is never taken for the command before it. the field holds the fit's whole percent,
+# 563 at 100%, and what is typed goes in before it. the field takes no more than 6400%, the ladder's top
 Send-Key 0x24; Click-At -203 -32; Click-At -219 -143; Send-Key 0x33; Send-Key 0x0D
-Assert-Title 'a digit typed after a key that types nothing reaches the zoom field' ' . 3563%'
+Assert-Title 'a digit typed after a key that types nothing reaches the zoom field' " . $([math]::Min([int]"3$(Format-Zoom $fit)", 6400))%"
 Send-Key 0x1B; Send-Key 0x30; Move-Pointer $mid[0] $mid[1]; Assert-Frame '0 fits the picture again' 0 3
 
 # speed, loop and loop analysis, by key
 # - and = zoom; with shift they step the speed
-Send-Key 0xBB; Assert-Title '= zooms in one stop: from fit, 562.5%, to 600%' ' . 600% . x 32 y 32 . '
+$next = Format-Zoom (Get-Stop $fit 1 $fit)
+Send-Key 0xBB; Assert-Title "= zooms in one stop: from fit, $($fit * 100)%, to $next%" " . $next% . x 32 y 32 . "
 Send-Key 0xBD; Assert-Frame '- zooms out one stop, back to fit' 0 3
 Send-Key 0xBB 1 1; Assert-Title 'shift + = is one stop faster' ' . 1\.5.$'
 Send-Key 0x08; Assert-Frame 'backspace is 1x again' 0 3
@@ -348,7 +387,7 @@ Confirm-That 'and the next esc leaves fullscreen' (Test-Framed) "framed: $(Test-
 # what is typed finds the commands that say it. choosing a row does what its key does. "mirror" leaves one row, its
 # middle 81 under the menu's top at the pointer (13 to the field, which is 26 high, 10 after it, the section's name 16
 # and 4, half a 24-high row)
-[void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
+Set-Size 900 700; Start-Sleep -Milliseconds 300
 RightClick-At 120 100
 Confirm-That 'a right click opens the menu and chooses nothing' (Test-Framed) "framed: $(Test-Framed)"
 Assert-Frame 'and the picture is as it was' 0 3
@@ -385,7 +424,7 @@ DoubleClick-At $fullMid[0] $fullMid[1]; Start-Sleep -Milliseconds 500
 Confirm-That 'and another puts the window back as it was' ((Test-Framed) -and (Get-Width) -eq $before) "framed: $(Test-Framed), width $(Get-Width), was $before"
 
 # the window changes size: the renderer has to follow and keep answering
-[void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 900, 700, 0x0006); Start-Sleep -Milliseconds 300
+Set-Size 900 700; Start-Sleep -Milliseconds 300
 Send-Key 0x47; Assert-Frame 'still steps after the window is resized' 1 3
 [void][EyepieceE2e]::ShowWindow($script:h, 3); Start-Sleep -Milliseconds 400
 Send-Key 0x47; Assert-Frame 'still steps when maximized' 2 3
@@ -421,12 +460,12 @@ Assert-Title 'h.264 plays and pauses on a real frame, none unshowable' '^h264_32
 # the timebar's picture (fig. 04) while a clip with long groups plays, when no frame of it is read: the timebar strip's,
 # made while the clip stood still. the window is tall, so the picture's place, 82 to 172 up from the bottom, is over
 # black and not over the clip
-[void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 640, 900, 0x0006); Start-Sleep -Milliseconds 300
+Set-Size 640 900; Start-Sleep -Milliseconds 300
 $picture = 250, -165, 390, -90
 Move-Pointer 320 300; Start-Sleep -Milliseconds 300
 $before = Get-Bright @picture -Any
 Send-Key 0x20; Move-Pointer 320 -5; $during = Get-Bright @picture -Any; Send-Key 0x20
-Confirm-That 'while a clip with long groups plays, the timebar shows a picture of its timebar strip' ($before -eq 0 -and $during -gt 2000) "lit pixels: $before before, $during on the timebar"
+Confirm-That 'while a clip with long groups plays, the timebar shows a picture of its timebar strip' ($before -eq 0 -and $during -gt (Get-Area 2000)) "lit pixels: $before before, $during on the timebar"
 
 # ---- the controls themselves, with a pointer: the bar's buttons, the timebar, the strip's close button.
 # places are from the design: the row's buttons are 30 wide, 32 up from the bottom: the pin from 8, then first frame
@@ -505,9 +544,10 @@ foreach ($ms in 100, 1300) {
 # dragged from 19 to 22 moves the out point and nothing else: the clip stays on frame 0, where the same drag on the
 # track would leave it on 22. a press on a marker alone moves nothing and goes nowhere, which is looked at once the
 # title has had time to say otherwise; the in marker dragged past the out stops on it; and the track beside the
-# markers still goes where it is pressed
+# markers still goes where it is pressed. with a trim set, home goes to its in frame (the owner's word, 2026-11-27):
+# two shift + lefts, ten frames back each, take the clip to frame 0
 function Get-Along([int]$frame) { (Get-Width) * $frame / 23 }
-Send-Key 0x24
+Send-Key 0x25 2 1
 Drag-On (Get-Along 19) -5 (Get-Along 22) -5
 Assert-Title 'the out marker dragged along the timebar moves the trim''s out point, and the clip stays on its frame' '^h264_320\.mp4 . 0 / 24 . .* trim 16 to 22$'
 Click-At (Get-Along 16) -5; Start-Sleep -Milliseconds 500
@@ -585,7 +625,8 @@ $frame = Join-Path $shots 'hapq_64.f000000.png'
 Send-Key 0x53
 Confirm-That 'S saves the file''s own frame, named for the clip and the frame, at the file''s size' ((Wait-File $frame) -and (Get-PngSize $frame) -eq '64 x 64') "no $frame of 64 x 64"
 $view = Join-Path $shots 'hapq_64.f000000.view.png'
-$window = "$([int](Get-Width)) x $([int](Get-Height))"
+# in the display's own pixels, as the window shows it
+$c = Get-Client; $window = "$($c.R) x $($c.B)"
 Send-Key 0x53 1 1
 Confirm-That 'shift + S saves the view as shown, at the window''s size' ((Wait-File $view) -and (Get-PngSize $view) -eq $window) "no $view of $window"
 Send-Key 0x53
@@ -603,17 +644,18 @@ Stop-Player
 (Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^first_frame' } | Set-Content -LiteralPath $settings
 # chroma that is smaller than the picture (4:2:0 here, from the hardware decoder) is blended up where the file sites
 # it: at an edge from green to yellow the pixel between reads a blend. chroma = nearest in the settings file takes
-# the nearest sample instead
+# the nearest sample instead. six stops in from the fit, about the pointer: 1600% at 100%, from a fit of 200%
 Start-Player (Join-Path $media 'h264_320.mp4')
 Assert-Frame 'the 4:2:0 clip is open' 0 24
+$fit = Get-Fit 320 180; $close = Format-Zoom (Get-Stop $fit 6 $fit)
 Move-Pointer 215 150; Send-Key 0xBB 6
-Assert-Title 'at 1600% a pixel on an edge of color is blended from the chroma samples round it' ' . 1600% . x 107 y 75 . 90 218 0$'
+Assert-Title "at $close% a pixel on an edge of color is blended from the chroma samples round it" " . $close% . x 107 y 75 . 90 218 0$"
 Stop-Player
 @((Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^chroma' }) + 'chroma = nearest' | Set-Content -LiteralPath $settings
 Start-Player (Join-Path $media 'h264_320.mp4')
 Assert-Frame 'the 4:2:0 clip is open again' 0 24
 Move-Pointer 215 150; Send-Key 0xBB 6
-Assert-Title 'with chroma = nearest the same pixel is the nearest sample''s' ' . 1600% . x 107 y 75 . 0 255 1$'
+Assert-Title 'with chroma = nearest the same pixel is the nearest sample''s' " . $close% . x 107 y 75 . 0 255 1$"
 Stop-Player
 (Get-Content -LiteralPath $settings) | Where-Object { $_ -notmatch '^chroma' } | Set-Content -LiteralPath $settings
 # a clip whose file asks to be turned, as a phone held upright tags the picture it stores on its side, is shown
@@ -710,7 +752,7 @@ Confirm-That 'without shift the box is as the drag went' ((Get-Changed $untouche
 Send-Key 0x5A 1 4
 Drag-On 200 120 300 170 -Shift
 $drawn = Get-Pixels @band
-Confirm-That 'with shift held it is square: its far side is as far down as across' ((Get-Changed $untouched $drawn) -gt 20) "$(Get-Changed $untouched $drawn) pixels changed 100 down"
+Confirm-That 'with shift held it is square: its far side is as far down as across' ((Get-Changed $untouched $drawn) -gt (Get-Area 20)) "$(Get-Changed $untouched $drawn) pixels changed 100 down"
 Send-Key 0x5A 1 4; Assert-Title 'and control + Z takes that back' ' fps . markup$'
 # the select tool: the row of tools stands in the middle under the strip, its items 28 high from 46 down, the tool
 # chosen lit near white; select is the tool before the rectangle, which is chosen at first. a press on a mark selects
@@ -718,7 +760,7 @@ Send-Key 0x5A 1 4; Assert-Title 'and control + Z takes that back' ' fps . markup
 # seen in a band of the window's own picture, against how the band was with no mark
 function Get-ChosenTool {
     # 4 under the items' top: over every icon
-    $scale = [EyepieceE2e]::GetDpiForWindow($script:h) / 96.0; $at = (Get-Place ((Get-Width) / 2) 50).ToInt64()
+    $scale = Get-Scale; $at = (Get-Place ((Get-Width) / 2) 50).ToInt64()
     [EyepiecePicture]::RunLeft($script:h, [int]($at -band 0xffff), [int]($at -shr 16), [int](20 * $scale)) / $scale
 }
 $bands = @{ top = 220, 114, 280, 126; moved = 220, 204, 280, 216; grown = 330, 180, 346, 200 }
@@ -729,10 +771,10 @@ $rectangle = Get-ChosenTool
 Click-At ($rectangle - 47) 60
 Confirm-That 'a click on the tool before the rectangle chooses select' ([math]::Abs((Get-ChosenTool) - ($rectangle - 32)) -lt 3) "the rectangle tool's right end is at $rectangle, the lit tool's now at $(Get-ChosenTool)"
 Drag-On 250 120 250 160
-Confirm-That 'a drag from the box''s top side moves it 40 down' ((& $changed 'top') -eq 0 -and (& $changed 'moved') -gt 20) "$(& $changed 'top') pixels changed where its top was, $(& $changed 'moved') where its bottom went"
+Confirm-That 'a drag from the box''s top side moves it 40 down' ((& $changed 'top') -eq 0 -and (& $changed 'moved') -gt (Get-Area 20)) "$(& $changed 'top') pixels changed where its top was, $(& $changed 'moved') where its bottom went"
 Confirm-That 'its far side is not yet past 330' ((& $changed 'grown') -eq 0) "$(& $changed 'grown') pixels changed there"
 Drag-On 304 214 344 234
-Confirm-That 'its lower right corner dragged 40 across scales it past 330' ((& $changed 'grown') -gt 20) "$(& $changed 'grown') pixels changed there"
+Confirm-That 'its lower right corner dragged 40 across scales it past 330' ((& $changed 'grown') -gt (Get-Area 20)) "$(& $changed 'grown') pixels changed there"
 Assert-Title 'moved and scaled, it is still the one mark' ' fps . 1 mark . markup$'
 Send-Key 0x2E; Assert-Title 'delete takes the mark selected off' ' fps . markup$'
 Send-Key 0x5A 1 4; Assert-Title 'control + Z puts it back' ' fps . 1 mark . markup$'
@@ -886,7 +928,7 @@ Confirm-That 'a folder''s name typed into the address goes into that folder' ($k
 # the address's type, from 108 in (after the three buttons), with 20.7 of " / " between them; the line's middle is
 # 18 under the strip. the window is made wide enough for the whole address, which is otherwise cut short from the
 # left to leave room for the buttons at its right
-function Set-Wide { [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 1700, 700, 0x0006); Start-Sleep -Milliseconds 400 }
+function Set-Wide { Set-Size 1700 700; Start-Sleep -Milliseconds 400 }
 Start-Player
 Set-Wide
 Start-Sleep -Milliseconds 1000
@@ -1063,7 +1105,7 @@ function Go-First([int]$count) { foreach ($i in 1..($count + 1)) { if ((Get-Clip
 function Start-Nest {
     Set-Content -LiteralPath (Join-Path $env:APPDATA 'eyepiece\settings.txt') -Value "browser_folder = $nest", 'mute = on', 'play_on_open = off'
     Start-Player
-    [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, 1240, 800, 0x0006)
+    Set-Size 1240 800
     Start-Sleep -Milliseconds 1000
     $script:mainLeft = Get-MainLeft
 }
@@ -1146,7 +1188,7 @@ Open-Here 'c2.mov' 3 'left from the first card goes back to the column on it, wh
 $last = (Get-MainLeft -Meta) - 168
 $lit = Get-Bright ($last + 100) (76 + 26.25 + 4) ($last + 168 - 25) (76 + 26.25 * 2 - 4) -Any
 $way = Get-Bright ($last - 168 + 100) (76 + 4) ($last - 25) (76 + 26.25 - 4) -Any
-$room = (168 - 125) * (26.25 - 8) * [math]::Pow([EyepieceE2e]::GetDpiForWindow($script:h) / 96.0, 2)
+$room = Get-Area ((168 - 125) * (26.25 - 8))
 Confirm-That 'the selection where the keys are is lit, and the one in the column before is not' ($lit -gt 0.8 * $room -and $way -lt 0.05 * $room) "$lit and $way pixels lit of $([math]::Round($room))"
 # left goes to the column before, onto the folder of shots; down shows the empty folder, right goes nowhere from it,
 # and down moves on to a clip
