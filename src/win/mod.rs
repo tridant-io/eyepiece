@@ -45,11 +45,15 @@ pub fn run(first: Option<String>) -> Result<(), String> {
         let clip = Clip::open_known(&path);
         (path, clip)
     });
-    // with no clip to give it a shape, the window is as it was left, when that is kept, fitted to this display
+    // with no clip to give it a shape, the window is as it was left, when that is kept, fitted to this display; or the
+    // design's first size, in the display's own pixels
     let client = match (&first, settings.window_size.filter(|_| settings.remember_size)) {
         (Some((_, Ok(clip))), _) => window::client_for(clip.upright()),
         (_, Some((w, h))) => window::client_for((w as usize, h as usize)),
-        _ => (1180, 720),
+        _ => {
+            let (w, h) = window::on_display((1180, 720));
+            window::client_for((w as usize, h as usize))
+        }
     };
     let (tx, rx) = mpsc::channel();
     // the render thread's way to wake itself: what it has read or written in the background says when it is done

@@ -15,10 +15,10 @@ use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, POINT, 
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::Graphics::Dwm::{DwmGetCompositionTimingInfo, DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_VISIBLE_FRAME_BORDER_THICKNESS, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_TIMING_INFO};
-use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, GetStockObject, MonitorFromPoint, MonitorFromWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -81,6 +81,21 @@ fn work_area() -> RECT {
         let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut area as *mut RECT as *mut c_void), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
     }
     area
+}
+
+/// a size in the design's pixels as the main display's own, where the first window opens: the design's 1180 x 720 is
+/// 1770 x 1080 of a display at 150%. a clip's size is its own pixels and is never scaled
+pub fn on_display(size: (u32, u32)) -> (u32, u32) {
+    let (mut dpi, mut unused) = (96u32, 96u32);
+    unsafe {
+        let main = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let _ = GetDpiForMonitor(main, MDT_EFFECTIVE_DPI, &mut dpi, &mut unused);
+    }
+    scaled(size, dpi)
+}
+
+fn scaled((w, h): (u32, u32), dpi: u32) -> (u32, u32) {
+    (w * dpi / 96, h * dpi / 96)
 }
 
 /// the size of the picture area for a clip: its own size if that fits in 90% of the screen's work area, otherwise
@@ -825,5 +840,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// the first window's size is the design's, in the display's own pixels: on a display at 150% it is not two thirds
+    /// of the design (the e2e at the owner's scale, 2026-11-27)
+    #[test]
+    fn a_design_size_is_scaled_to_the_display() {
+        assert_eq!([scaled((1180, 720), 96), scaled((1180, 720), 144), scaled((1180, 720), 120)], [(1180, 720), (1770, 1080), (1475, 900)]);
     }
 }
