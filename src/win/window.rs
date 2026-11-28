@@ -143,10 +143,17 @@ fn outer(client: (u32, u32)) -> (i32, i32, i32, i32) {
     (area.left + ((area.right - area.left) - w) / 2, (area.top + ((area.bottom - area.top) - h) / 2).max(area.top), w, h)
 }
 
+/// the program sees the displays as they are, in their own pixels and scales. first of all: unaware, windows hands
+/// it a stand-in at 100%, and the work area and the scale read before the window exists would be that.
+pub fn aware() {
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
+
 /// the window, black, on screen at once. `client` is the picture area in physical pixels.
 pub fn create(client: (u32, u32), events: Sender<Event>) -> Result<Handle> {
     unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let inst = GetModuleHandleW(None)?;
         // a second launch finds this window by its class
         let name = HSTRING::from(instance::name());
