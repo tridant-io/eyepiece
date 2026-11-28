@@ -216,14 +216,6 @@ function Start-Player([string]$clip) {
     $script:h = [IntPtr]::Zero
     foreach ($i in 1..100) { Start-Sleep -Milliseconds 100; $script:p.Refresh(); if ($script:p.MainWindowHandle -ne [IntPtr]::Zero) { $script:h = $script:p.MainWindowHandle; break } }
     if ($script:h -eq [IntPtr]::Zero) { throw 'the player opened no window' }
-    # the browser's window opens, unless it is kept at another size, with a picture area of 1180 x 720 of the display's
-    # own pixels (src\win\mod.rs): less room on a scaled display, at 150% one card a row where the checks below count
-    # on two. there it is given the room it has at 100%, measured round its frame
-    $c = Get-Client
-    if (-not $clip -and (Get-Scale) -ne 1 -and $c.R -eq 1180 -and $c.B -eq 720) {
-        $r = New-Object EyepieceE2e+RECT; [void][EyepieceE2e]::GetWindowRect($script:h, [ref]$r)
-        [void][EyepieceE2e]::SetWindowPos($script:h, [IntPtr]::Zero, 0, 0, $r.R - $r.L + [int](1180 * (Get-Scale)) - $c.R, $r.B - $r.T + [int](720 * (Get-Scale)) - $c.B, 0x0006)
-    }
 }
 function Stop-Player {
     [void]$script:p.CloseMainWindow()
