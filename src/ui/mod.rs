@@ -3933,14 +3933,17 @@ pub(super) mod tests {
     }
 
     /// a panel's close mark and its pages light under the pointer, as the strip's buttons do (the owner's ask,
-    /// 2026-11-27). in 640 x 360 the panel is 16 to 624 across and 48 to 344 down: its close mark's middle is 22 in
-    /// from its right in the 44 of its head, and its second page is 109 to 137 down in the 176 of its sidebar
+    /// 2026-11-27). its close mark's middle is 22 in from the panel's right in the 44 of its head, and its second page
+    /// is 61 to 89 down the 176 of its sidebar
     #[test]
     fn a_panels_close_mark_and_pages_light_under_the_pointer() {
         let mut ui = Ui::new((640, 360), 1.0, false, None, None);
         ui.ctx.tessellation_options_mut(|options| options.feathering = false);
         drive(&mut ui, &[(400.0, 250.0, None)]);
-        ui.show_help();
+        ui.open_panel(panel::Which::Settings, 0);
+        // (a panel fades in where the system has motion on: its colors are its own once it has)
+        drive(&mut ui, &[(400.0, 250.0, None)]);
+        std::thread::sleep(Duration::from_millis(400));
         let lit = |ui: &mut Ui, x: f32, y: f32| {
             let mut count = 0;
             for _ in 0..2 {
@@ -3953,8 +3956,9 @@ pub(super) mod tests {
             count
         };
         let away = lit(&mut ui, 400.0, 250.0);
-        assert!(lit(&mut ui, 602.0, 70.0) > away, "the close mark");
-        assert!(lit(&mut ui, 100.0, 123.0) > away, "a page not shown");
+        let panel = ui.panel.as_ref().unwrap().rect;
+        assert!(lit(&mut ui, panel.right() - 22.0, panel.top() + 22.0) > away, "the close mark");
+        assert!(lit(&mut ui, panel.left() + 84.0, panel.top() + 75.0) > away, "a page not shown");
     }
 
     /// a press outside a panel closes it and does nothing else; a press in it does not close it; the next press
